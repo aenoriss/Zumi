@@ -15,8 +15,9 @@
   #turn { top: 12px; left: 50%; transform: translateX(-50%); font-size: 18px; font-weight: 600; }
   #turn.mine { background: #c98a4b; color: #1d1f24; }
   #help { bottom: 12px; left: 12px; max-width: 420px; opacity: .85; }
-  #toast { bottom: 12px; right: 12px; max-width: 320px; background: rgba(160,40,30,.85); }
+  #toast { bottom: 64px; right: 12px; max-width: 320px; background: rgba(160,40,30,.85); }
   #newGame { position: fixed; top: 12px; right: 12px; }
+  #xr { position: fixed; bottom: 12px; right: 12px; z-index: 10; }
   button { background: #c98a4b; color: #1d1f24; border: 0; border-radius: 6px; padding: 8px 16px; font-size: 15px; font-weight: 600; cursor: pointer; }
   button:hover { background: #e0a265; }
   button:disabled { opacity: .5; cursor: default; }
@@ -49,10 +50,12 @@
   En tu turno, arrastrá un bloque con el click izquierdo para empujarlo o sacarlo.<br>
   <b>Shift</b> + arrastrar, o la <b>rueda</b> mientras arrastrás: mover en vertical.<br>
   Arrastrar sobre el fondo: girar la cámara · Click derecho: desplazar · Rueda: zoom.<br>
-  Cada bloque que sacás suma un punto y pasa el turno. Pierde quien tira la torre.
+  Cada bloque que sacás suma un punto y pasa el turno. Pierde quien tira la torre.<br>
+  <b>En un visor VR:</b> entrá a la partida, tocá "Jugar en VR" y pellizcá un bloque con el índice y el pulgar para agarrarlo.
 </div>
 <div id="toast" class="panel" hidden></div>
 <button id="newGame" hidden>Nueva partida</button>
+<button id="xr" hidden>Jugar en VR</button>
 
 <div id="lobby" class="overlay">
   <div class="card">
@@ -89,6 +92,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 import * as CANNON from 'cannon-es';
 
 // Medidas del bloque: largo (x), alto (y), ancho (z)
@@ -103,11 +108,17 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.xr.enabled = true;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1d1f24);
 scene.fog = new THREE.Fog(0x1d1f24, 18, 40);
+
+// Todo lo del juego vive en gameRoot, en "unidades de juego" (un bloque mide 1.5 de largo).
+// En escritorio no tiene transformación; en VR se achica y se apoya sobre una mesa frente al jugador.
+const gameRoot = new THREE.Group();
+scene.add(gameRoot);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
 camera.position.set(6, 6, 8);
@@ -126,7 +137,7 @@ sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 40 });
 sun.shadow.bias = -0.0005;
-scene.add(sun);
+gameRoot.add(sun, sun.target);
 
 const table = new THREE.Mesh(
   new THREE.CircleGeometry(14, 64),
@@ -134,7 +145,14 @@ const table = new THREE.Mesh(
 );
 table.rotation.x = -Math.PI / 2;
 table.receiveShadow = true;
-scene.add(table);
+// Pata de la mesa, solo visible en VR (la mesa queda a 80 cm del piso)
+const tableLeg = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.6, 1.2, 8, 24),
+  new THREE.MeshStandardMaterial({ color: 0x2a332c, roughness: 0.9 })
+);
+tableLeg.position.y = -4;
+tableLeg.visible = false;
+gameRoot.add(table, tableLeg);
 
 // Texturas de madera procedurales
 function woodTexture() {
@@ -229,7 +247,7 @@ const dragLine = new THREE.Line(
   new THREE.LineBasicMaterial({ color: 0xff5533 })
 );
 grabMarker.visible = dragLine.visible = false;
-scene.add(grabMarker, dragLine);
+gameRoot.add(grabMarker, dragLine);
 
 // ---------- Estado ----------
 const ROOM_PREFIX = 'zumi-jenga-';
@@ -250,7 +268,7 @@ const netPos = [], netQuat = [];
 const remoteHeld = { index: -1, anchor: new THREE.Vector3(), target: new THREE.Vector3() };
 
 function buildTower() {
-  for (const b of blocks) { world.removeBody(b.body); scene.remove(b.mesh); b.mesh.material.dispose(); }
+  for (const b of blocks) { world.removeBody(b.body); gameRoot.remove(b.mesh); b.mesh.material.dispose(); }
   blocks = [];
   held = heldBy = null;
   for (let lvl = 0; lvl < LEVELS; lvl++) {
@@ -263,7 +281,7 @@ function buildTower() {
         roughness: 0.7,
       }));
       mesh.castShadow = mesh.receiveShadow = true;
-      scene.add(mesh);
+      gameRoot.add(mesh);
 
       const body = new CANNON.Body({
         mass: 1,
@@ -552,6 +570,7 @@ function renderUI() {
     overTimer = null;
     $('over').hidden = true;
   }
+  renderXrUI();
 }
 
 try { $('name').value = localStorage.getItem('jenga-name') || ''; } catch {}
@@ -617,6 +636,7 @@ function sendDrag(force = false) {
 function stopDragging() {
   if (!dragging) return;
   dragging = false;
+  xrDrag = null;
   controls.enabled = true;
   renderer.domElement.style.cursor = '';
   if (isHost) hostRelease(myId); else sendToHost({ t: 'release' });
@@ -677,6 +697,198 @@ window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ---------- WebXR: jugar con las manos en un visor ----------
+const VR_SCALE = 0.1;           // 1 unidad de juego = 10 cm: cada bloque mide 15 cm
+const XR_GRAB_MARGIN = 0.25;    // tolerancia para agarrar un bloque (2,5 cm)
+
+// Cartel flotante con el turno y los puntajes (el HTML no se ve dentro del visor)
+const panelCanvas = document.createElement('canvas');
+panelCanvas.width = 1024;
+panelCanvas.height = 512;
+const panelTex = new THREE.CanvasTexture(panelCanvas);
+panelTex.colorSpace = THREE.SRGBColorSpace;
+const panel = new THREE.Mesh(
+  new THREE.PlaneGeometry(8, 4),
+  new THREE.MeshBasicMaterial({ map: panelTex, transparent: true })
+);
+panel.position.set(0, TOP_Y + 4.5, -5);
+panel.visible = false;
+gameRoot.add(panel);
+
+// Botón rojo sobre la mesa, al alcance de la mano: el anfitrión lo pellizca para empezar
+const xrButton = new THREE.Group();
+const buttonBase = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.2, 32), new THREE.MeshStandardMaterial({ color: 0x333333 }));
+const buttonTop = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.3, 32), new THREE.MeshStandardMaterial({ color: 0xd8322a, emissive: 0x400000 }));
+buttonBase.position.y = 0.1;
+buttonTop.position.y = 0.35;
+xrButton.add(buttonBase, buttonTop);
+xrButton.position.set(4, 0, 5);
+xrButton.visible = false;
+gameRoot.add(xrButton);
+
+function renderXrUI() {
+  const presenting = renderer.xr.isPresenting;
+  xrButton.visible = presenting && isHost && !!myId && phase !== 'playing';
+  if (!presenting) return;
+
+  const g = panelCanvas.getContext('2d');
+  g.clearRect(0, 0, panelCanvas.width, panelCanvas.height);
+  g.fillStyle = 'rgba(20,22,26,0.85)';
+  g.beginPath();
+  g.roundRect(0, 0, panelCanvas.width, panelCanvas.height, 40);
+  g.fill();
+
+  const current = players[turn];
+  const title = !myId ? 'Creá o unite a una partida desde la pantalla'
+    : phase === 'lobby' ? (isHost ? 'Pellizcá el botón rojo para empezar' : 'Esperando al anfitrión…')
+    : phase === 'over' ? (loser ? `¡Cayó! La tiró ${loser}` : '¡La torre cayó!')
+    : myTurn() ? '¡Tu turno!' : `Turno de ${current?.name ?? '…'}`;
+  g.fillStyle = '#ffb36b';
+  g.font = 'bold 60px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.fillText(title, 512, 90, 960);
+
+  g.fillStyle = '#eeeeee';
+  g.font = '42px system-ui, sans-serif';
+  players.slice(0, 6).forEach((p, i) => {
+    const mark = phase === 'playing' && i === turn ? '▶ ' : '';
+    const you = p.id === myId ? ' (vos)' : '';
+    const pts = phase === 'lobby' ? '' : ` — ${p.score}`;
+    g.fillText(mark + p.name + you + pts, 512, 170 + i * 52, 960);
+  });
+
+  if (phase === 'over' && isHost) {
+    g.fillStyle = '#ffb36b';
+    g.font = '38px system-ui, sans-serif';
+    g.fillText('Pellizcá el botón rojo para otra partida', 512, 480, 960);
+  }
+  panelTex.needsUpdate = true;
+}
+
+function applyLayout(vr) {
+  const s = vr ? VR_SCALE : 1;
+  gameRoot.scale.setScalar(s);
+  gameRoot.position.set(0, vr ? 0.8 : 0, vr ? -0.9 : 0);
+  table.scale.setScalar(vr ? 0.5 : 1);
+  tableLeg.visible = panel.visible = vr;
+  Object.assign(sun.shadow.camera, { left: -7 * s, right: 7 * s, top: 7 * s, bottom: -7 * s, near: s, far: 40 * s });
+  sun.shadow.camera.updateProjectionMatrix();
+  camera.near = vr ? 0.02 : 0.1; // en VR las manos se acercan mucho a los ojos
+  camera.updateProjectionMatrix();
+  renderUI();
+}
+
+renderer.xr.addEventListener('sessionstart', () => applyLayout(true));
+renderer.xr.addEventListener('sessionend', () => { stopDragging(); applyLayout(false); });
+
+navigator.xr?.isSessionSupported('immersive-vr').then(ok => { $('xr').hidden = !ok; }).catch(() => {});
+$('xr').onclick = async () => {
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+    });
+    await renderer.xr.setSession(session);
+  } catch {
+    setStatus('No se pudo iniciar el modo VR.');
+  }
+};
+
+// Manos y controles. Pellizcar (o apretar el gatillo) dispara "select" en ambos casos.
+const controllerModels = new XRControllerModelFactory();
+const handModels = new XRHandModelFactory();
+let xrDrag = null;
+const xrOffset = new THREE.Vector3();
+const xrPoint = new THREE.Vector3();
+const xrTmp = new THREE.Vector3();
+
+const xrInputs = [0, 1].map(i => {
+  const controller = renderer.xr.getController(i);
+  const grip = renderer.xr.getControllerGrip(i);
+  const hand = renderer.xr.getHand(i);
+  grip.add(controllerModels.createControllerModel(grip));
+  hand.add(handModels.createHandModel(hand, 'mesh'));
+  scene.add(controller, grip, hand);
+
+  const input = { controller, hand, source: null };
+  controller.addEventListener('connected', e => { input.source = e.data; });
+  controller.addEventListener('disconnected', () => {
+    if (xrDrag === input) endXrDrag();
+    input.source = null;
+  });
+  controller.addEventListener('selectstart', () => startXrDrag(input));
+  controller.addEventListener('selectend', () => { if (xrDrag === input) endXrDrag(); });
+  return input;
+});
+
+// Punto de agarre en el mundo: entre la punta del índice y la del pulgar, o la punta del control
+function inputPoint(input, out) {
+  const j = input.hand.joints;
+  if (input.source?.hand && j['index-finger-tip'] && j['thumb-tip']) {
+    j['index-finger-tip'].getWorldPosition(out);
+    return out.add(j['thumb-tip'].getWorldPosition(xrTmp)).multiplyScalar(0.5);
+  }
+  return input.controller.getWorldPosition(out);
+}
+
+// Bloque más cercano a un punto del mundo, y el punto de su superficie más cercano (en unidades de juego)
+function nearestBlock(worldPoint) {
+  let best = null, bestDist = XR_GRAB_MARGIN;
+  for (const b of blocks) {
+    const lp = b.mesh.worldToLocal(xrTmp.copy(worldPoint));
+    const c = new THREE.Vector3(
+      THREE.MathUtils.clamp(lp.x, -L / 2, L / 2),
+      THREE.MathUtils.clamp(lp.y, -H / 2, H / 2),
+      THREE.MathUtils.clamp(lp.z, -W / 2, W / 2)
+    );
+    const d = lp.distanceTo(c);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = { block: b, point: gameRoot.worldToLocal(b.mesh.localToWorld(c)) };
+    }
+  }
+  return best;
+}
+
+function startXrDrag(input) {
+  const wp = inputPoint(input, new THREE.Vector3());
+  if (xrButton.visible && xrButton.getWorldPosition(xrTmp).distanceTo(wp) < 0.12) {
+    startGame();
+    return;
+  }
+  if (xrDrag || dragging || !myTurn()) return;
+  const hit = nearestBlock(wp);
+  if (!hit) return;
+  xrDrag = input;
+  dragging = true;
+  hovered = null;
+  // Guardamos la distancia entre los dedos y el bloque para que no "salte" al agarrarlo
+  xrOffset.copy(hit.point).sub(gameRoot.worldToLocal(wp));
+  localTarget.copy(hit.point);
+  const i = blocks.indexOf(hit.block), p = hit.point.toArray();
+  if (isHost) hostGrab(myId, i, p); else sendToHost({ t: 'grab', i, p });
+}
+
+function endXrDrag() {
+  sendDrag(true);
+  stopDragging();
+}
+
+function updateXrInput() {
+  if (xrDrag) {
+    gameRoot.worldToLocal(inputPoint(xrDrag, xrPoint)).add(xrOffset);
+    localTarget.set(...clampTarget(xrPoint.x, xrPoint.y, xrPoint.z));
+    sendDrag();
+    return;
+  }
+  hovered = null;
+  if (!myTurn()) return;
+  for (const input of xrInputs) {
+    if (!input.source) continue;
+    const hit = nearestBlock(inputPoint(input, xrPoint));
+    if (hit) { hovered = hit.block; break; }
+  }
+}
+
 // ---------- Loop ----------
 const clock = new THREE.Clock();
 let snapTimer = 0;
@@ -684,6 +896,7 @@ let snapTimer = 0;
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.1);
   let heldIndex = -1;
+  if (renderer.xr.isPresenting) updateXrInput();
 
   if (isHost) {
     world.step(PHYSICS_DT, dt, 30);
@@ -725,14 +938,14 @@ function animate() {
     grabMarker.position.copy(remoteHeld.target);
   }
 
-  controls.update();
+  if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);
-  requestAnimationFrame(animate);
 }
 
 buildTower();
 renderUI();
-animate();
+// setAnimationLoop (en vez de requestAnimationFrame) sigue funcionando dentro del visor
+renderer.setAnimationLoop(animate);
 </script>
 </body>
 </html>
