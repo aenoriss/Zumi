@@ -51,7 +51,7 @@
   <b>Shift</b> + arrastrar, o la <b>rueda</b> mientras arrastrás: mover en vertical.<br>
   Arrastrar sobre el fondo: girar la cámara · Click derecho: desplazar · Rueda: zoom.<br>
   Cada bloque que sacás suma un punto y pasa el turno. Pierde quien tira la torre.<br>
-  <b>En un visor VR:</b> entrá a la partida, tocá "Jugar en VR" y pellizcá un bloque con el índice y el pulgar para agarrarlo.
+  <b>En un visor VR:</b> entrá a la partida, tocá "Jugar en VR" y pellizcá un bloque con el índice y el pulgar para agarrarlo. Para girar la mesa, pellizcala y mové la mano de costado (o usá el joystick).
 </div>
 <div id="toast" class="panel" hidden></div>
 <button id="newGame" hidden>Nueva partida</button>
@@ -83,8 +83,7 @@
     <h1>¡La torre cayó!</h1>
     <p id="loserText"></p>
     <ol id="finalScores"></ol>
-    <button id="again" hidden>Nueva partida</button>
-    <p id="overWait" hidden>Esperando que el anfitrión empiece otra partida…</p>
+    <button id="again">Jugar otra vez</button>
   </div>
 </div>
 
@@ -119,6 +118,10 @@ scene.fog = new THREE.Fog(0x1d1f24, 18, 40);
 // En escritorio no tiene transformación; en VR se achica y se apoya sobre una mesa frente al jugador.
 const gameRoot = new THREE.Group();
 scene.add(gameRoot);
+// spinRoot gira la mesa en VR (cada jugador la gira solo en su propia vista).
+// Sus coordenadas locales son las de la física: todo lo que se sincroniza se expresa ahí.
+const spinRoot = new THREE.Group();
+gameRoot.add(spinRoot);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
 camera.position.set(6, 6, 8);
@@ -152,7 +155,7 @@ const tableLeg = new THREE.Mesh(
 );
 tableLeg.position.y = -4;
 tableLeg.visible = false;
-gameRoot.add(table, tableLeg);
+spinRoot.add(table, tableLeg);
 
 // Texturas de madera procedurales
 function woodTexture() {
@@ -247,7 +250,7 @@ const dragLine = new THREE.Line(
   new THREE.LineBasicMaterial({ color: 0xff5533 })
 );
 grabMarker.visible = dragLine.visible = false;
-gameRoot.add(grabMarker, dragLine);
+spinRoot.add(grabMarker, dragLine);
 
 // ---------- Estado ----------
 const ROOM_PREFIX = 'zumi-jenga-';
@@ -268,7 +271,7 @@ const netPos = [], netQuat = [];
 const remoteHeld = { index: -1, anchor: new THREE.Vector3(), target: new THREE.Vector3() };
 
 function buildTower() {
-  for (const b of blocks) { world.removeBody(b.body); gameRoot.remove(b.mesh); b.mesh.material.dispose(); }
+  for (const b of blocks) { world.removeBody(b.body); spinRoot.remove(b.mesh); b.mesh.material.dispose(); }
   blocks = [];
   held = heldBy = null;
   for (let lvl = 0; lvl < LEVELS; lvl++) {
@@ -281,7 +284,7 @@ function buildTower() {
         roughness: 0.7,
       }));
       mesh.castShadow = mesh.receiveShadow = true;
-      gameRoot.add(mesh);
+      spinRoot.add(mesh);
 
       const body = new CANNON.Body({
         mass: 1,
@@ -373,6 +376,7 @@ function checkCollapse() {
       phase = 'over';
       loser = players.find(pl => pl.id === lastToucher)?.name ?? '';
       release();
+      stopDragging(); // si el anfitrión tenía un bloque agarrado, se suelta también en su pantalla
       broadcastGame();
       return;
     }
@@ -380,6 +384,7 @@ function checkCollapse() {
 }
 
 function startGame() {
+  stopDragging();
   buildTower();
   players.forEach(p => { p.score = 0; });
   turn = 0;
@@ -496,6 +501,14 @@ function onHostMessage(conn, msg) {
   } else if (msg.t === 'grab') hostGrab(id, msg.i, msg.p);
   else if (msg.t === 'drag') hostDrag(id, msg.p);
   else if (msg.t === 'release') hostRelease(id);
+  else if (msg.t === 'restart') { if (phase === 'over') startGame(); }
+  else if (msg.t === 'hands') {
+    // Solo se reenvían las manos del jugador de turno
+    if (players[turn]?.id !== id) return;
+    const relay = { t: 'hands', from: id, l: msg.l, r: msg.r };
+    receiveHands(relay);
+    for (const [cid, c] of conns) if (cid !== id && c.open) c.send(relay);
+  }
 }
 
 function removePlayer(id) {
@@ -521,6 +534,7 @@ async function joinRoom(name) {
   hostConn.on('data', msg => {
     if (msg?.t === 'game') applyGame(msg);
     else if (msg?.t === 'snap') applySnapshot(msg);
+    else if (msg?.t === 'hands') receiveHands(msg);
   });
   hostConn.on('close', () => setStatus('Se perdió la conexión con el anfitrión.', true));
 }
@@ -560,8 +574,6 @@ function renderUI() {
     : myTurn() ? '¡Tu turno!' : `Turno de ${current?.name ?? '…'}`;
   $('turn').classList.toggle('mine', myTurn());
   $('loserText').textContent = loser ? `La tiró ${loser}.` : '';
-  $('again').hidden = !isHost;
-  $('overWait').hidden = isHost;
 
   if (phase === 'over') {
     if (!overTimer && $('over').hidden) overTimer = setTimeout(() => { $('over').hidden = false; overTimer = null; }, 1200);
@@ -604,8 +616,13 @@ $('copy').onclick = async () => {
   catch { $('link').select(); }
 };
 $('start').onclick = startGame;
-$('newGame').onclick = startGame;
-$('again').onclick = startGame;
+$('newGame').onclick = () => startGame();
+$('again').onclick = () => requestRestart();
+
+// Cualquier jugador puede pedir otra partida cuando la torre se cayó; el anfitrión la arranca
+function requestRestart() {
+  if (isHost) startGame(); else sendToHost({ t: 'restart' });
+}
 
 // ---------- Mouse / touch ----------
 const raycaster = new THREE.Raycaster();
@@ -622,7 +639,7 @@ function setRay(e) {
 
 function pick() {
   const hit = raycaster.intersectObjects(blocks.map(b => b.mesh), false)[0];
-  return hit ? { block: hit.object.userData.block, point: hit.point } : null;
+  return hit ? { block: hit.object.userData.block, point: spinRoot.worldToLocal(hit.point) } : null;
 }
 
 function sendDrag(force = false) {
@@ -715,7 +732,8 @@ panel.position.set(0, TOP_Y + 4.5, -5);
 panel.visible = false;
 gameRoot.add(panel);
 
-// Botón rojo sobre la mesa, al alcance de la mano: el anfitrión lo pellizca para empezar
+// Botón rojo sobre la mesa, al alcance de la mano: se toca (o pellizca) para empezar o jugar otra vez.
+// Está en gameRoot y no en spinRoot, así que no gira con la mesa y siempre queda a tu derecha.
 const xrButton = new THREE.Group();
 const buttonBase = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.2, 32), new THREE.MeshStandardMaterial({ color: 0x333333 }));
 const buttonTop = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.3, 32), new THREE.MeshStandardMaterial({ color: 0xd8322a, emissive: 0x400000 }));
@@ -728,7 +746,7 @@ gameRoot.add(xrButton);
 
 function renderXrUI() {
   const presenting = renderer.xr.isPresenting;
-  xrButton.visible = presenting && isHost && !!myId && phase !== 'playing';
+  xrButton.visible = presenting && !!myId && (phase === 'over' || (phase === 'lobby' && isHost));
   if (!presenting) return;
 
   const g = panelCanvas.getContext('2d');
@@ -740,7 +758,7 @@ function renderXrUI() {
 
   const current = players[turn];
   const title = !myId ? 'Creá o unite a una partida desde la pantalla'
-    : phase === 'lobby' ? (isHost ? 'Pellizcá el botón rojo para empezar' : 'Esperando al anfitrión…')
+    : phase === 'lobby' ? (isHost ? 'Tocá el botón rojo para empezar' : 'Esperando al anfitrión…')
     : phase === 'over' ? (loser ? `¡Cayó! La tiró ${loser}` : '¡La torre cayó!')
     : myTurn() ? '¡Tu turno!' : `Turno de ${current?.name ?? '…'}`;
   g.fillStyle = '#ffb36b';
@@ -757,11 +775,11 @@ function renderXrUI() {
     g.fillText(mark + p.name + you + pts, 512, 170 + i * 52, 960);
   });
 
-  if (phase === 'over' && isHost) {
-    g.fillStyle = '#ffb36b';
-    g.font = '38px system-ui, sans-serif';
-    g.fillText('Pellizcá el botón rojo para otra partida', 512, 480, 960);
-  }
+  g.fillStyle = '#ffb36b';
+  g.font = '34px system-ui, sans-serif';
+  const footer = phase === 'over' ? 'Tocá el botón rojo para jugar otra vez'
+    : phase === 'playing' ? 'Pellizcá la mesa y movela de costado para girarla' : '';
+  g.fillText(footer, 512, 480, 960);
   panelTex.needsUpdate = true;
 }
 
@@ -769,6 +787,7 @@ function applyLayout(vr) {
   const s = vr ? VR_SCALE : 1;
   gameRoot.scale.setScalar(s);
   gameRoot.position.set(0, vr ? 0.8 : 0, vr ? -0.9 : 0);
+  spinRoot.rotation.y = 0;
   table.scale.setScalar(vr ? 0.5 : 1);
   tableLeg.visible = panel.visible = vr;
   Object.assign(sun.shadow.camera, { left: -7 * s, right: 7 * s, top: 7 * s, bottom: -7 * s, near: s, far: 40 * s });
@@ -796,7 +815,9 @@ $('xr').onclick = async () => {
 // Manos y controles. Pellizcar (o apretar el gatillo) dispara "select" en ambos casos.
 const controllerModels = new XRControllerModelFactory();
 const handModels = new XRHandModelFactory();
-let xrDrag = null;
+let xrDrag = null;   // mano/control que está arrastrando un bloque
+let xrSpin = null;   // mano/control que está girando la mesa: { input, startAngle, startRot }
+let buttonCooldown = 0;
 const xrOffset = new THREE.Vector3();
 const xrPoint = new THREE.Vector3();
 const xrTmp = new THREE.Vector3();
@@ -813,12 +834,36 @@ const xrInputs = [0, 1].map(i => {
   controller.addEventListener('connected', e => { input.source = e.data; });
   controller.addEventListener('disconnected', () => {
     if (xrDrag === input) endXrDrag();
+    if (xrSpin?.input === input) xrSpin = null;
     input.source = null;
   });
   controller.addEventListener('selectstart', () => startXrDrag(input));
-  controller.addEventListener('selectend', () => { if (xrDrag === input) endXrDrag(); });
+  controller.addEventListener('selectend', () => {
+    if (xrDrag === input) endXrDrag();
+    if (xrSpin?.input === input) xrSpin = null;
+  });
   return input;
 });
+
+// Ángulo de un punto del mundo alrededor del eje de la torre (vista desde arriba)
+function angleAroundTower(worldPoint) {
+  const lp = gameRoot.worldToLocal(xrTmp.copy(worldPoint));
+  return Math.atan2(lp.x, lp.z);
+}
+
+// ¿El punto está sobre la mesa, cerca de su superficie y fuera de la torre?
+function isOnTable(worldPoint) {
+  const lp = gameRoot.worldToLocal(xrTmp.copy(worldPoint));
+  const r = Math.hypot(lp.x, lp.z);
+  return r > 1.2 && r < 7.5 && lp.y > -1.5 && lp.y < 2.5;
+}
+
+function pressButton() {
+  if (buttonCooldown > 0) return;
+  buttonCooldown = 1.5;
+  if (phase === 'lobby') { if (isHost) startGame(); }
+  else requestRestart();
+}
 
 // Punto de agarre en el mundo: entre la punta del índice y la del pulgar, o la punta del control
 function inputPoint(input, out) {
@@ -843,7 +888,7 @@ function nearestBlock(worldPoint) {
     const d = lp.distanceTo(c);
     if (d <= bestDist) {
       bestDist = d;
-      best = { block: b, point: gameRoot.worldToLocal(b.mesh.localToWorld(c)) };
+      best = { block: b, point: spinRoot.worldToLocal(b.mesh.localToWorld(c)) };
     }
   }
   return best;
@@ -851,18 +896,21 @@ function nearestBlock(worldPoint) {
 
 function startXrDrag(input) {
   const wp = inputPoint(input, new THREE.Vector3());
-  if (xrButton.visible && xrButton.getWorldPosition(xrTmp).distanceTo(wp) < 0.12) {
-    startGame();
+  if (xrButton.visible && buttonTop.getWorldPosition(xrTmp).distanceTo(wp) < 0.12) {
+    pressButton();
     return;
   }
-  if (xrDrag || dragging || !myTurn()) return;
-  const hit = nearestBlock(wp);
-  if (!hit) return;
+  const hit = myTurn() && !xrDrag && !dragging ? nearestBlock(wp) : null;
+  if (!hit) {
+    // Pellizcar la mesa (no un bloque) la agarra para girarla; se puede en cualquier turno
+    if (!xrSpin && isOnTable(wp)) xrSpin = { input, startAngle: angleAroundTower(wp), startRot: spinRoot.rotation.y };
+    return;
+  }
   xrDrag = input;
   dragging = true;
   hovered = null;
   // Guardamos la distancia entre los dedos y el bloque para que no "salte" al agarrarlo
-  xrOffset.copy(hit.point).sub(gameRoot.worldToLocal(wp));
+  xrOffset.copy(hit.point).sub(spinRoot.worldToLocal(wp));
   localTarget.copy(hit.point);
   const i = blocks.indexOf(hit.block), p = hit.point.toArray();
   if (isHost) hostGrab(myId, i, p); else sendToHost({ t: 'grab', i, p });
@@ -873,19 +921,130 @@ function endXrDrag() {
   stopDragging();
 }
 
-function updateXrInput() {
-  if (xrDrag) {
-    gameRoot.worldToLocal(inputPoint(xrDrag, xrPoint)).add(xrOffset);
-    localTarget.set(...clampTarget(xrPoint.x, xrPoint.y, xrPoint.z));
-    sendDrag();
-    return;
-  }
-  hovered = null;
-  if (!myTurn()) return;
+function updateXrInput(dt) {
+  buttonCooldown = Math.max(0, buttonCooldown - dt);
+
   for (const input of xrInputs) {
     if (!input.source) continue;
-    const hit = nearestBlock(inputPoint(input, xrPoint));
-    if (hit) { hovered = hit.block; break; }
+    // Tocar el botón rojo con la punta del índice (o del control) también lo aprieta
+    if (xrButton.visible) {
+      const tip = input.source.hand ? input.hand.joints['index-finger-tip'] : input.controller;
+      if (tip && tip.getWorldPosition(xrPoint).distanceTo(buttonTop.getWorldPosition(xrTmp)) < 0.06) pressButton();
+    }
+    // Joystick de los controles: girar la mesa
+    const axes = input.source.gamepad?.axes;
+    const stickX = axes ? (axes[2] ?? axes[0] ?? 0) : 0;
+    if (Math.abs(stickX) > 0.15) spinRoot.rotation.y -= stickX * 1.8 * dt;
+  }
+
+  if (xrSpin) {
+    const now = angleAroundTower(inputPoint(xrSpin.input, xrPoint));
+    spinRoot.rotation.y = xrSpin.startRot + (now - xrSpin.startAngle);
+  }
+
+  if (xrDrag) {
+    spinRoot.worldToLocal(inputPoint(xrDrag, xrPoint)).add(xrOffset);
+    localTarget.set(...clampTarget(xrPoint.x, xrPoint.y, xrPoint.z));
+    sendDrag();
+  } else {
+    hovered = null;
+    if (myTurn()) {
+      for (const input of xrInputs) {
+        if (!input.source) continue;
+        const hit = nearestBlock(inputPoint(input, xrPoint));
+        if (hit) { hovered = hit.block; break; }
+      }
+    }
+  }
+
+  sendMyHands(dt);
+}
+
+// ---------- Manos de los otros jugadores ----------
+// Las 25 articulaciones estándar de WebXR, en orden
+const FINGERS = ['index-finger', 'middle-finger', 'ring-finger', 'pinky-finger'];
+const JOINTS = ['wrist', 'thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip',
+  ...FINGERS.flatMap(f => ['metacarpal', 'phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'].map(p => `${f}-${p}`))];
+// Huesos: de la muñeca a la base de cada dedo, y cada articulación con la siguiente
+const BONES = [];
+for (let j = 1; j < JOINTS.length; j++) {
+  const isFingerBase = j === 1 || (j >= 5 && (j - 5) % 5 === 0);
+  BONES.push(isFingerBase ? 0 : j - 1, j);
+}
+
+let handSendTimer = 0;
+
+// En tu turno y en VR, mandás la posición de tus dedos (en coordenadas de la torre) 20 veces por segundo
+function sendMyHands(dt) {
+  handSendTimer += dt;
+  if (handSendTimer < 0.05 || !myTurn() || (!isHost && !hostConn?.open)) return;
+  handSendTimer = 0;
+  const msg = { t: 'hands', l: null, r: null };
+  for (const input of xrInputs) {
+    const side = input.source?.handedness;
+    if (!input.source?.hand || (side !== 'left' && side !== 'right')) continue;
+    const data = [];
+    for (const name of JOINTS) {
+      const joint = input.hand.joints[name];
+      if (!joint) { data.length = 0; break; }
+      spinRoot.worldToLocal(joint.getWorldPosition(xrTmp));
+      data.push(r4(xrTmp.x), r4(xrTmp.y), r4(xrTmp.z));
+    }
+    if (data.length) msg[side === 'left' ? 'l' : 'r'] = data;
+  }
+  if (!msg.l && !msg.r) return;
+  if (isHost) broadcast({ ...msg, from: myId }); else sendToHost(msg);
+}
+
+const remoteHandMat = new THREE.MeshStandardMaterial({ color: 0x8fd0ff, emissive: 0x1a3a55, transparent: true, opacity: 0.85 });
+const remoteBoneMat = new THREE.LineBasicMaterial({ color: 0x8fd0ff });
+const remoteHands = ['l', 'r'].map(side => {
+  const joints = new THREE.InstancedMesh(new THREE.SphereGeometry(0.09, 10, 8), remoteHandMat, JOINTS.length);
+  const bones = new THREE.LineSegments(
+    new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(BONES.length * 3), 3)),
+    remoteBoneMat
+  );
+  joints.frustumCulled = bones.frustumCulled = false;
+  joints.visible = bones.visible = false;
+  spinRoot.add(joints, bones);
+  return {
+    side, joints, bones, from: null, lastSeen: -Infinity,
+    target: Array.from({ length: JOINTS.length }, () => new THREE.Vector3()),
+    current: Array.from({ length: JOINTS.length }, () => new THREE.Vector3()),
+  };
+});
+
+function receiveHands(msg) {
+  if (msg.from === myId) return;
+  const now = performance.now();
+  for (const h of remoteHands) {
+    const data = msg[h.side];
+    if (!Array.isArray(data) || data.length !== JOINTS.length * 3 || !data.every(Number.isFinite)) continue;
+    const fresh = now - h.lastSeen > 500 || h.from !== msg.from; // reaparece: sin animar desde la posición vieja
+    h.target.forEach((v, i) => v.set(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]));
+    if (fresh) h.current.forEach((v, i) => v.copy(h.target[i]));
+    h.from = msg.from;
+    h.lastSeen = now;
+  }
+}
+
+const handMatrix = new THREE.Matrix4();
+function updateRemoteHands(dt) {
+  const k = 1 - Math.exp(-dt * 20);
+  const now = performance.now();
+  const turnId = players[turn]?.id;
+  for (const h of remoteHands) {
+    const show = phase === 'playing' && h.from === turnId && h.from !== myId && now - h.lastSeen < 500;
+    h.joints.visible = h.bones.visible = show;
+    if (!show) continue;
+    h.current.forEach((v, i) => {
+      v.lerp(h.target[i], k);
+      h.joints.setMatrixAt(i, handMatrix.makeTranslation(v.x, v.y, v.z));
+    });
+    h.joints.instanceMatrix.needsUpdate = true;
+    const pos = h.bones.geometry.attributes.position;
+    BONES.forEach((j, i) => pos.setXYZ(i, h.current[j].x, h.current[j].y, h.current[j].z));
+    pos.needsUpdate = true;
   }
 }
 
@@ -896,7 +1055,8 @@ let snapTimer = 0;
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.1);
   let heldIndex = -1;
-  if (renderer.xr.isPresenting) updateXrInput();
+  if (renderer.xr.isPresenting) updateXrInput(dt);
+  updateRemoteHands(dt);
 
   if (isHost) {
     world.step(PHYSICS_DT, dt, 30);
