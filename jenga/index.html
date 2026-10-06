@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jenga 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f24; font-family: system-ui, sans-serif; color: #eee; }
+  canvas { display: block; touch-action: none; }
+  [hidden] { display: none !important; }
+  .panel { position: fixed; background: rgba(0,0,0,.5); padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.5; user-select: none; }
+  #hud { top: 12px; left: 12px; min-width: 160px; }
+  #hud ol { margin: 4px 0 0; padding-left: 20px; }
+  #hud li.turn { color: #ffb36b; font-weight: 700; }
+  #turn { top: 12px; left: 50%; transform: translateX(-50%); font-size: 18px; font-weight: 600; }
+  #turn.mine { background: #c98a4b; color: #1d1f24; }
+  #help { bottom: 12px; left: 12px; max-width: 420px; opacity: .85; }
+  #toast { bottom: 12px; right: 12px; max-width: 320px; background: rgba(160,40,30,.85); }
+  #newGame { position: fixed; top: 12px; right: 12px; }
+  button { background: #c98a4b; color: #1d1f24; border: 0; border-radius: 6px; padding: 8px 16px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #e0a265; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { background: #1d1f24; color: #eee; border: 1px solid #555; border-radius: 6px; padding: 8px 10px; font-size: 15px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); }
+  .card { background: #2a2d34; padding: 24px 28px; border-radius: 12px; width: min(420px, calc(100vw - 32px)); box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; }
+  .card h1 { margin: 0; font-size: 32px; }
+  .card h3 { margin: 4px 0 0; }
+  .card ol { margin: 0; padding-left: 22px; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; min-width: 0; }
+  #status { margin: 0; color: #ff9b8a; min-height: 1em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud" class="panel" hidden>Jugadores<ol id="players"></ol></div>
+<div id="turn" class="panel" hidden></div>
+<div id="help" class="panel">
+  <b>Cómo jugar</b><br>
+  En tu turno, arrastrá un bloque con el click izquierdo para empujarlo o sacarlo.<br>
+  <b>Shift</b> + arrastrar, o la <b>rueda</b> mientras arrastrás: mover en vertical.<br>
+  Arrastrar sobre el fondo: girar la cámara · Click derecho: desplazar · Rueda: zoom.<br>
+  Cada bloque que sacás suma un punto y pasa el turno. Pierde quien tira la torre.
+</div>
+<div id="toast" class="panel" hidden></div>
+<button id="newGame" hidden>Nueva partida</button>
+
+<div id="lobby" class="overlay">
+  <div class="card">
+    <h1>Jenga 3D</h1>
+    <div id="lobbyForm" class="row">
+      <input id="name" maxlength="16" placeholder="Tu nombre">
+      <button id="enter">Crear partida</button>
+    </div>
+    <div id="lobbyRoom" hidden>
+      <div id="shareBox" hidden>
+        Compartí este link con los otros jugadores:
+        <div class="row"><input id="link" readonly><button id="copy">Copiar</button></div>
+      </div>
+      <h3>Jugadores</h3>
+      <ol id="lobbyPlayers"></ol>
+      <p id="waiting" hidden>Esperando que el anfitrión empiece…</p>
+      <button id="start" hidden>Empezar</button>
+    </div>
+    <p id="status"></p>
+  </div>
+</div>
+
+<div id="over" class="overlay" hidden>
+  <div class="card">
+    <h1>¡La torre cayó!</h1>
+    <p id="loserText"></p>
+    <ol id="finalScores"></ol>
+    <button id="again" hidden>Nueva partida</button>
+    <p id="overWait" hidden>Esperando que el anfitrión empiece otra partida…</p>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import * as CANNON from 'cannon-es';
+
+// Medidas del bloque: largo (x), alto (y), ancho (z)
+const LEVELS = 18, L = 1.5, H = 0.3, W = 0.5, GAP = 0.005;
+const TOP_Y = H / 2 + (LEVELS - 1) * H;
+const UP = new THREE.Vector3(0, 1, 0);
+const $ = id => document.getElementById(id);
+
+// ---------- Render ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d1f24);
+scene.fog = new THREE.Fog(0x1d1f24, 18, 40);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(6, 6, 8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, TOP_Y / 2, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI / 2 - 0.05;
+controls.minDistance = 3;
+controls.maxDistance = 22;
+
+scene.add(new THREE.HemisphereLight(0xfff4e6, 0x30303a, 0.8));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(6, 12, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 40 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const table = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 64),
+  new THREE.MeshStandardMaterial({ color: 0x3b4a3f, roughness: 0.9 })
+);
+table.rotation.x = -Math.PI / 2;
+table.receiveShadow = true;
+scene.add(table);
+
+// Texturas de madera procedurales
+function woodTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = `hsl(${28 + Math.random() * 8}, ${45 + Math.random() * 12}%, ${60 + Math.random() * 10}%)`;
+  g.fillRect(0, 0, c.width, c.height);
+  for (let i = 0; i < 60; i++) {
+    g.strokeStyle = `rgba(110,60,25,${0.04 + Math.random() * 0.14})`;
+    g.lineWidth = 0.5 + Math.random() * 2;
+    g.beginPath();
+    let y = Math.random() * c.height;
+    g.moveTo(0, y);
+    for (let x = 0; x <= c.width; x += 16) {
+      y += (Math.random() - 0.5) * 2.5;
+      g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+const textures = Array.from({ length: 8 }, woodTexture);
+const blockGeo = new RoundedBoxGeometry(L, H, W, 2, 0.02);
+
+// ---------- Física (solo la simula el anfitrión) ----------
+const PHYSICS_DT = 1 / 240; // paso chico + contactos rígidos = apilado firme
+const BLOCK_DAMPING = { linear: 0.1, angular: 0.4 };
+
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -25, 0) });
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.allowSleep = true;
+world.solver.iterations = 40;
+world.solver.tolerance = 1e-8;
+const cm = world.defaultContactMaterial;
+cm.friction = 0.5;
+cm.restitution = 0;
+cm.contactEquationStiffness = 1e9;
+cm.contactEquationRelaxation = 4;
+cm.frictionEquationStiffness = 1e9;
+cm.frictionEquationRelaxation = 4;
+
+const ground = new CANNON.Body({ mass: 0, shape: new CANNON.Plane() });
+ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+world.addBody(ground);
+
+// El bloque agarrado resbala contra los demás, como un bloque flojo en un Jenga real
+const woodMat = new CANNON.Material('wood');
+const heldMat = new CANNON.Material('held');
+world.addContactMaterial(new CANNON.ContactMaterial(heldMat, woodMat, {
+  friction: 0.08,
+  restitution: 0,
+  contactEquationStiffness: 1e9,
+  contactEquationRelaxation: 4,
+  frictionEquationStiffness: 1e9,
+  frictionEquationRelaxation: 4,
+}));
+
+// Arrastre con resorte amortiguado: tira suave y proporcional a la distancia
+const DRAG = { spring: 160, damping: 25, maxForce: 100, leash: 0.6 };
+const grabLocal = new CANNON.Vec3();  // punto agarrado, en coordenadas del bloque
+const dragTarget = new CANNON.Vec3(); // punto bajo el mouse del jugador de turno
+const pull = new CANNON.Vec3();
+const grabAnchor = new CANNON.Vec3();
+
+world.addEventListener('preStep', () => {
+  if (!held) return;
+  const b = held.body;
+  b.wakeUp();
+  b.pointToWorldFrame(grabLocal, grabAnchor);
+  // Correa: aunque el mouse se aleje, el tirón nunca supera "leash" de distancia
+  dragTarget.vsub(grabAnchor, pull);
+  const d = pull.length();
+  if (d > DRAG.leash) pull.scale(DRAG.leash / d, pull);
+  const vel = b.getVelocityAtWorldPoint(grabAnchor, new CANNON.Vec3());
+  const f = pull.scale(DRAG.spring).vsub(vel.scale(DRAG.damping));
+  const fl = f.length();
+  if (fl > DRAG.maxForce) f.scale(DRAG.maxForce / fl, f);
+  b.applyForce(f, grabAnchor.vsub(b.position));
+  b.applyForce(new CANNON.Vec3(0, -b.mass * world.gravity.y, 0)); // anula su peso mientras lo sostenés
+});
+
+const grabMarker = new THREE.Mesh(
+  new THREE.SphereGeometry(0.04, 16, 16),
+  new THREE.MeshBasicMaterial({ color: 0xff5533 })
+);
+const dragLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({ color: 0xff5533 })
+);
+grabMarker.visible = dragLine.visible = false;
+scene.add(grabMarker, dragLine);
+
+// ---------- Estado ----------
+const ROOM_PREFIX = 'zumi-jenga-';
+const roomParam = new URLSearchParams(location.search).get('sala');
+const isHost = !roomParam;
+
+let peer = null, hostConn = null, myId = null;
+const conns = new Map();           // anfitrión: id de jugador -> conexión
+let players = [];                  // { id, name, score }
+let phase = 'lobby', turn = 0, loser = '';
+
+let blocks = [];
+let held = null, heldBy = null, lastToucher = null;
+let hovered = null, elapsed = 0;
+
+// Lo que los invitados reciben del anfitrión
+const netPos = [], netQuat = [];
+const remoteHeld = { index: -1, anchor: new THREE.Vector3(), target: new THREE.Vector3() };
+
+function buildTower() {
+  for (const b of blocks) { world.removeBody(b.body); scene.remove(b.mesh); b.mesh.material.dispose(); }
+  blocks = [];
+  held = heldBy = null;
+  for (let lvl = 0; lvl < LEVELS; lvl++) {
+    const rotated = lvl % 2 === 1;
+    for (let i = 0; i < 3; i++) {
+      const off = (i - 1) * (W + GAP);
+      const y = H / 2 + lvl * H;
+      const mesh = new THREE.Mesh(blockGeo, new THREE.MeshStandardMaterial({
+        map: textures[(Math.random() * textures.length) | 0],
+        roughness: 0.7,
+      }));
+      mesh.castShadow = mesh.receiveShadow = true;
+      scene.add(mesh);
+
+      const body = new CANNON.Body({
+        mass: 1,
+        shape: new CANNON.Box(new CANNON.Vec3(L / 2, H / 2, W / 2)),
+        position: new CANNON.Vec3(rotated ? off : 0, y, rotated ? 0 : off),
+        material: woodMat,
+        linearDamping: BLOCK_DAMPING.linear,
+        angularDamping: BLOCK_DAMPING.angular,
+        sleepSpeedLimit: 0.25,
+        sleepTimeLimit: 0.25,
+      });
+      if (rotated) body.quaternion.setFromEuler(0, Math.PI / 2, 0);
+      world.addBody(body);
+      body.sleep(); // la torre arranca quieta y se despierta al tocarla
+
+      mesh.position.copy(body.position);
+      mesh.quaternion.copy(body.quaternion);
+      const block = { mesh, body, origin: body.position.clone(), removed: false };
+      mesh.userData.block = block;
+      blocks.push(block);
+    }
+  }
+  blocks.forEach((b, i) => {
+    netPos[i] = b.mesh.position.clone();
+    netQuat[i] = b.mesh.quaternion.clone();
+  });
+  elapsed = 0;
+}
+
+// ---------- Lógica del juego (corre en el anfitrión) ----------
+const isVec = p => Array.isArray(p) && p.length === 3 && p.every(Number.isFinite);
+
+function clampTarget(x, y, z) {
+  const r = Math.hypot(x, z);
+  if (r > 8) { x *= 8 / r; z *= 8 / r; }
+  return [x, Math.min(Math.max(y, 0.05), TOP_Y + 4), z];
+}
+
+function isOutOfTower(body) {
+  const p = body.position;
+  return Math.hypot(p.x, p.z) > 1.0 || p.y > TOP_Y + H * 0.5;
+}
+
+function hostGrab(id, i, p) {
+  if (phase !== 'playing' || held || players[turn]?.id !== id) return;
+  if (!Number.isInteger(i) || !blocks[i] || !isVec(p)) return;
+  held = blocks[i];
+  heldBy = lastToucher = id;
+  held.body.wakeUp();
+  held.body.material = heldMat;
+  held.body.linearDamping = 0.6;
+  held.body.angularDamping = 0.9;
+  dragTarget.set(...p);
+  held.body.pointToLocalFrame(dragTarget, grabLocal);
+}
+
+function hostDrag(id, p) {
+  if (held && heldBy === id && isVec(p)) dragTarget.set(...clampTarget(...p));
+}
+
+function hostRelease(id) {
+  if (held && heldBy === id) release(true);
+}
+
+// Suelta el bloque. Si salió de la torre, suma un punto y pasa el turno.
+function release(allowScore = false) {
+  if (!held) return;
+  const scored = allowScore && phase === 'playing' && !held.removed && isOutOfTower(held.body);
+  held.body.material = woodMat;
+  held.body.linearDamping = BLOCK_DAMPING.linear;
+  held.body.angularDamping = BLOCK_DAMPING.angular;
+  if (scored) {
+    held.removed = true;
+    players[turn].score++;
+    turn = (turn + 1) % players.length;
+  }
+  held = heldBy = null;
+  if (scored) broadcastGame();
+}
+
+// La torre se cayó si algún bloque que sigue en ella bajó o se desplazó de su lugar
+function checkCollapse() {
+  for (const b of blocks) {
+    if (b === held || b.removed) continue;
+    const p = b.body.position;
+    const drop = b.origin.y - p.y;
+    const shift = Math.hypot(p.x - b.origin.x, p.z - b.origin.z);
+    if (drop > H * 1.5 || shift > 1.2) {
+      phase = 'over';
+      loser = players.find(pl => pl.id === lastToucher)?.name ?? '';
+      release();
+      broadcastGame();
+      return;
+    }
+  }
+}
+
+function startGame() {
+  buildTower();
+  players.forEach(p => { p.score = 0; });
+  turn = 0;
+  loser = '';
+  lastToucher = null;
+  phase = 'playing';
+  broadcastGame();
+  broadcast(makeSnapshot());
+}
+
+// ---------- Red: el anfitrión manda, los invitados envían sus movimientos ----------
+const r4 = v => Math.round(v * 1e4) / 1e4;
+
+function makeSnapshot() {
+  const b = [];
+  for (const { body: { position: p, quaternion: q } } of blocks) b.push(r4(p.x), r4(p.y), r4(p.z), r4(q.x), r4(q.y), r4(q.z), r4(q.w));
+  const snap = { t: 'snap', b, h: held ? blocks.indexOf(held) : -1 };
+  if (held) {
+    held.body.pointToWorldFrame(grabLocal, grabAnchor);
+    snap.a = [grabAnchor.x, grabAnchor.y, grabAnchor.z].map(r4);
+    snap.g = [dragTarget.x, dragTarget.y, dragTarget.z].map(r4);
+  }
+  return snap;
+}
+
+function applySnapshot(s) {
+  if (!Array.isArray(s.b) || s.b.length !== blocks.length * 7) return;
+  for (let i = 0, k = 0; i < blocks.length; i++, k += 7) {
+    netPos[i].set(s.b[k], s.b[k + 1], s.b[k + 2]);
+    netQuat[i].set(s.b[k + 3], s.b[k + 4], s.b[k + 5], s.b[k + 6]);
+  }
+  remoteHeld.index = s.h;
+  if (s.h >= 0 && isVec(s.a) && isVec(s.g)) {
+    remoteHeld.anchor.set(...s.a);
+    remoteHeld.target.set(...s.g);
+  }
+}
+
+function gameState() {
+  return { t: 'game', phase, turn, loser, players: players.map(({ id, name, score }) => ({ id, name, score })) };
+}
+
+function broadcast(msg) {
+  for (const c of conns.values()) if (c.open) c.send(msg);
+}
+
+function broadcastGame() {
+  broadcast(gameState());
+  renderUI();
+}
+
+function applyGame(s) {
+  phase = s.phase;
+  turn = s.turn;
+  loser = s.loser;
+  players = s.players;
+  if (phase !== 'playing') stopDragging();
+  renderUI();
+}
+
+function sendToHost(msg) {
+  if (hostConn?.open) hostConn.send(msg);
+}
+
+function peerErrorText(e) {
+  switch (e.type) {
+    case 'peer-unavailable': return 'No se encontró la partida. Revisá el link o pedile uno nuevo al anfitrión.';
+    case 'browser-incompatible': return 'Tu navegador no soporta partidas online.';
+    case 'network': case 'server-error': case 'socket-error': case 'socket-closed':
+      return 'No se pudo conectar con el servidor de partidas. Probá de nuevo.';
+    default: return `Error de conexión (${e.type}).`;
+  }
+}
+
+function connectPeer(id) {
+  return new Promise((resolve, reject) => {
+    const PeerCtor = window.Peer ?? window.peerjs?.Peer;
+    if (!PeerCtor) return reject({ type: 'network' });
+    const p = id ? new PeerCtor(id) : new PeerCtor();
+    p.on('open', () => resolve(p));
+    p.on('error', e => { reject(e); setStatus(peerErrorText(e)); });
+  });
+}
+
+async function createRoom(name) {
+  for (let tries = 0; !peer && tries < 3; tries++) {
+    const code = Math.random().toString(36).slice(2, 8);
+    try { peer = await connectPeer(ROOM_PREFIX + code); }
+    catch (e) { if (e.type !== 'unavailable-id') throw e; }
+  }
+  if (!peer) throw new Error('unavailable-id');
+  myId = peer.id;
+  players = [{ id: myId, name, score: 0 }];
+
+  peer.on('connection', conn => {
+    conn.on('data', msg => onHostMessage(conn, msg));
+    conn.on('close', () => removePlayer(conn.peer));
+    conn.on('error', () => removePlayer(conn.peer));
+  });
+
+  $('link').value = `${location.origin}${location.pathname}?sala=${peer.id.slice(ROOM_PREFIX.length)}`;
+  $('shareBox').hidden = false;
+}
+
+function onHostMessage(conn, msg) {
+  const id = conn.peer;
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.t === 'hello') {
+    if (conns.has(id)) return;
+    conns.set(id, conn);
+    players.push({ id, name: String(msg.name || 'Jugador').slice(0, 16), score: 0 });
+    broadcastGame();
+    conn.send(makeSnapshot());
+  } else if (msg.t === 'grab') hostGrab(id, msg.i, msg.p);
+  else if (msg.t === 'drag') hostDrag(id, msg.p);
+  else if (msg.t === 'release') hostRelease(id);
+}
+
+function removePlayer(id) {
+  if (!conns.delete(id)) return;
+  const idx = players.findIndex(p => p.id === id);
+  if (idx < 0) return;
+  if (heldBy === id) release();
+  players.splice(idx, 1);
+  if (idx < turn) turn--;
+  if (turn >= players.length) turn = 0;
+  broadcastGame();
+}
+
+async function joinRoom(name) {
+  peer = await connectPeer();
+  myId = peer.id;
+  await new Promise((resolve, reject) => {
+    hostConn = peer.connect(ROOM_PREFIX + roomParam, { serialization: 'json', reliable: true });
+    hostConn.on('open', () => { hostConn.send({ t: 'hello', name }); resolve(); });
+    hostConn.on('error', reject);
+    peer.on('error', reject);
+  });
+  hostConn.on('data', msg => {
+    if (msg?.t === 'game') applyGame(msg);
+    else if (msg?.t === 'snap') applySnapshot(msg);
+  });
+  hostConn.on('close', () => setStatus('Se perdió la conexión con el anfitrión.', true));
+}
+
+// ---------- Interfaz ----------
+let toastTimer = null, overTimer = null;
+
+function setStatus(msg, sticky = false) {
+  $('status').textContent = msg;
+  $('toast').textContent = msg;
+  $('toast').hidden = phase === 'lobby' || !msg;
+  clearTimeout(toastTimer);
+  if (!sticky) toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5000);
+}
+
+function fillPlayers(list, highlightTurn) {
+  list.replaceChildren(...players.map((p, i) => {
+    const li = document.createElement('li');
+    li.textContent = p.name + (p.id === myId ? ' (vos)' : '') + (phase === 'lobby' ? '' : ` — ${p.score}`);
+    if (highlightTurn && phase === 'playing' && i === turn) li.className = 'turn';
+    return li;
+  }));
+}
+
+const myTurn = () => phase === 'playing' && players[turn]?.id === myId;
+
+function renderUI() {
+  $('lobby').hidden = phase !== 'lobby';
+  $('hud').hidden = $('turn').hidden = phase === 'lobby';
+  $('newGame').hidden = !isHost || phase === 'lobby';
+  fillPlayers($('lobbyPlayers'), false);
+  fillPlayers($('players'), true);
+  fillPlayers($('finalScores'), false);
+
+  const current = players[turn];
+  $('turn').textContent = phase === 'over' ? 'Fin de la partida'
+    : myTurn() ? '¡Tu turno!' : `Turno de ${current?.name ?? '…'}`;
+  $('turn').classList.toggle('mine', myTurn());
+  $('loserText').textContent = loser ? `La tiró ${loser}.` : '';
+  $('again').hidden = !isHost;
+  $('overWait').hidden = isHost;
+
+  if (phase === 'over') {
+    if (!overTimer && $('over').hidden) overTimer = setTimeout(() => { $('over').hidden = false; overTimer = null; }, 1200);
+  } else {
+    clearTimeout(overTimer);
+    overTimer = null;
+    $('over').hidden = true;
+  }
+}
+
+try { $('name').value = localStorage.getItem('jenga-name') || ''; } catch {}
+if (!isHost) $('enter').textContent = 'Unirse a la partida';
+$('name').addEventListener('keydown', e => { if (e.key === 'Enter') $('enter').click(); });
+
+$('enter').onclick = async () => {
+  const name = $('name').value.trim().slice(0, 16) || 'Jugador';
+  try { localStorage.setItem('jenga-name', name); } catch {}
+  $('enter').disabled = true;
+  setStatus('Conectando…');
+  try {
+    if (isHost) await createRoom(name); else await joinRoom(name);
+    setStatus('');
+    $('lobbyForm').hidden = true;
+    $('lobbyRoom').hidden = false;
+    $('start').hidden = !isHost;
+    $('waiting').hidden = isHost;
+    renderUI();
+  } catch (e) {
+    if (e?.type) setStatus(peerErrorText(e));
+    else setStatus('No se pudo conectar. Probá de nuevo.');
+    peer?.destroy();
+    peer = null;
+    $('enter').disabled = false;
+  }
+};
+
+$('copy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('link').value); $('copy').textContent = '¡Copiado!'; }
+  catch { $('link').select(); }
+};
+$('start').onclick = startGame;
+$('newGame').onclick = startGame;
+$('again').onclick = startGame;
+
+// ---------- Mouse / touch ----------
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const dragPlane = new THREE.Plane();
+const localTarget = new THREE.Vector3();
+const tmp = new THREE.Vector3();
+let dragging = false, lastDragSend = 0;
+
+function setRay(e) {
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+}
+
+function pick() {
+  const hit = raycaster.intersectObjects(blocks.map(b => b.mesh), false)[0];
+  return hit ? { block: hit.object.userData.block, point: hit.point } : null;
+}
+
+function sendDrag(force = false) {
+  const now = performance.now();
+  if (!force && now - lastDragSend < 33) return;
+  lastDragSend = now;
+  const p = localTarget.toArray();
+  if (isHost) hostDrag(myId, p); else sendToHost({ t: 'drag', p });
+}
+
+function stopDragging() {
+  if (!dragging) return;
+  dragging = false;
+  controls.enabled = true;
+  renderer.domElement.style.cursor = '';
+  if (isHost) hostRelease(myId); else sendToHost({ t: 'release' });
+}
+
+// Se escucha en captura sobre window para ganarle a OrbitControls
+window.addEventListener('pointerdown', e => {
+  if (e.target !== renderer.domElement || e.button !== 0 || !myTurn()) return;
+  setRay(e);
+  const hit = pick();
+  if (!hit) return;
+  controls.enabled = false;
+  dragging = true;
+  hovered = null;
+  localTarget.copy(hit.point);
+  const i = blocks.indexOf(hit.block), p = hit.point.toArray();
+  if (isHost) hostGrab(myId, i, p); else sendToHost({ t: 'grab', i, p });
+  renderer.domElement.style.cursor = 'grabbing';
+}, true);
+
+window.addEventListener('pointermove', e => {
+  setRay(e);
+  if (dragging) {
+    if (e.shiftKey) {
+      camera.getWorldDirection(tmp);
+      tmp.y = 0;
+      dragPlane.setFromNormalAndCoplanarPoint(tmp.normalize(), localTarget);
+    } else {
+      dragPlane.setFromNormalAndCoplanarPoint(UP, localTarget);
+    }
+    if (raycaster.ray.intersectPlane(dragPlane, tmp)) {
+      localTarget.set(...clampTarget(tmp.x, tmp.y, tmp.z));
+      sendDrag();
+    }
+  } else if (e.target === renderer.domElement && e.buttons === 0) {
+    hovered = myTurn() ? pick()?.block ?? null : null;
+    renderer.domElement.style.cursor = hovered ? 'grab' : '';
+  }
+});
+
+window.addEventListener('pointerup', () => {
+  if (!dragging) return;
+  sendDrag(true);
+  stopDragging();
+});
+
+window.addEventListener('wheel', e => {
+  if (!dragging) return;
+  e.preventDefault();
+  e.stopPropagation();
+  localTarget.set(...clampTarget(localTarget.x, localTarget.y - e.deltaY * 0.003, localTarget.z));
+  sendDrag(true);
+}, { capture: true, passive: false });
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- Loop ----------
+const clock = new THREE.Clock();
+let snapTimer = 0;
+
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  let heldIndex = -1;
+
+  if (isHost) {
+    world.step(PHYSICS_DT, dt, 30);
+    elapsed += dt;
+    for (const b of blocks) {
+      b.mesh.position.copy(b.body.position);
+      b.mesh.quaternion.copy(b.body.quaternion);
+    }
+    if (phase === 'playing' && elapsed > 0.5) checkCollapse();
+    snapTimer += dt;
+    if (snapTimer > 0.05 && conns.size) { snapTimer = 0; broadcast(makeSnapshot()); }
+    if (held) {
+      heldIndex = blocks.indexOf(held);
+      held.body.pointToWorldFrame(grabLocal, grabAnchor);
+      remoteHeld.anchor.copy(grabAnchor);
+      remoteHeld.target.copy(dragTarget);
+    }
+  } else {
+    // Los invitados suavizan hacia las posiciones que manda el anfitrión (20 por segundo)
+    const k = 1 - Math.exp(-dt * 15);
+    blocks.forEach((b, i) => {
+      b.mesh.position.lerp(netPos[i], k);
+      b.mesh.quaternion.slerp(netQuat[i], k);
+    });
+    heldIndex = remoteHeld.index;
+  }
+
+  blocks.forEach((b, i) => {
+    b.mesh.material.emissive.setHex(i === heldIndex ? 0x553010 : b === hovered ? 0x3a2410 : 0x000000);
+  });
+
+  grabMarker.visible = dragLine.visible = heldIndex >= 0;
+  if (heldIndex >= 0) {
+    // Línea "elástica" entre el punto agarrado del bloque y el mouse
+    const pos = dragLine.geometry.attributes.position;
+    pos.setXYZ(0, remoteHeld.anchor.x, remoteHeld.anchor.y, remoteHeld.anchor.z);
+    pos.setXYZ(1, remoteHeld.target.x, remoteHeld.target.y, remoteHeld.target.z);
+    pos.needsUpdate = true;
+    grabMarker.position.copy(remoteHeld.target);
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+buildTower();
+renderUI();
+animate();
+</script>
+</body>
+</html>
