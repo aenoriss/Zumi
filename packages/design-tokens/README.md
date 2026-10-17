@@ -5,7 +5,10 @@ Single source of truth for Zumi's visual tokens across web (CSS variables), Unit
 ## Flow
 
 ```
-tokens/*.tokens.json           W3C Design Tokens (DTCG 2025.10), edited by hand, reviewed in Storybook
+design/zumi.pen                SOURCE OF TRUTH: Pencil variables + "mode" theme (paper | midnight) and every screen
+    │  export (Pencil MCP get_variables -> DTCG JSON; script todo, done by hand until then)
+    ▼
+tokens/*.tokens.json           W3C Design Tokens (DTCG 2025.10), a mirror of the Pencil variables
     │  style-dictionary build  (config in build/)
     ▼
 dist/css/tokens.css            :root + [data-theme] custom properties for apps/web and packages/ui
@@ -25,6 +28,6 @@ dist/csharp/ZumiTokens.cs      static class for apps/xr
 - No literal colour outside `primitives.tokens.json`.
 - Theme files must have identical key sets; the build fails otherwise.
 - Names: `group.sub.name` in DTCG become `--group-sub-name` in CSS, `--group-sub-name` in USS, `Group.Sub.Name` in C#.
-- Visual tweaks are made here and checked in Storybook's token pages, which render every token live in both themes.
+- Edit tokens in Pencil, not here. Names: Pencil `group/sub/name` = DTCG `group.sub.name` = CSS/USS `--group-sub-name` = C# `GroupSubName`.
 
 Design decisions behind the values: `docs/design/brief.md`.

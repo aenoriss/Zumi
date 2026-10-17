@@ -21,7 +21,7 @@ Reference the user likes: Deadlock "City Never Sleeps" page (hand-made feel, dar
 | B9 | Shape language | Two registers: sharp (0-2 px) for content containers so art edges stay printed; round for controls and the orb; bubbles their own shape. Tokens: `radius.container`, `radius.control`, `radius.bubble`. |
 | B11 | Vocabulary | Creator, Series, Episode, Panel, Scene (panorama / 3D), Room, Zumi (the orb mascot: reader avatar in XR, loading mark on web, logo mark), Emote, `.zumi` episode file. "Comic" only in marketing copy. |
 | B12 | Mascot | Zumi has a face: one flat-shaded sphere, ~10 expressions driven by a single `mood` parameter (two eye shapes, one mouth path) so web and Unity animate the same data. Expression sheet drawn by the artist. Emote set maps 1:1 to expressions. Each reader's Zumi gets a random colour from a curated token set of ~8 hues (all legible on the dark field and on white), unique within a room when possible. |
-| D2 | Token source of truth | REVISED 2026-10-17 (Pencil dropped): the W3C DTCG JSON in `packages/design-tokens/tokens` is the source of truth, edited in code and reviewed in Storybook's token pages -> Style Dictionary -> CSS vars, USS, C#. XR-only tokens in `xr.tokens.json`. Manual visual tweaks happen in Storybook with live token controls, not in a design tool. |
+| D2 | Design system source of truth | FINAL 2026-10-17: the Pencil file (`design/zumi.pen`, save it into the repo from Pencil's documents folder) is the source of truth for both the tokens (its variables and the Paper/Midnight mode theme) and the screens. `packages/design-tokens/tokens` mirrors the variables and is regenerated from them (export via the Pencil MCP `get_variables`), then Style Dictionary builds USS + C# for Unity. Never edit the JSON by hand when the file disagrees; re-export. |
 | D3 | Component base | Radix Primitives + Tailwind v4 reading token variables; Storybook 10 catalogue with a11y addon. |
 | D4 | Preview renderer | react-three-fiber (shares depth, carousel and animation-track math with Unity). |
 
@@ -67,6 +67,10 @@ Rules: Midnight is at least 60% blue-black with one amber pocket, never #121212.
 ## Pending
 
 - Component inventory (D4 list in conversation, to confirm during Storybook setup).
+
+## Screen design (decided 2026-10-17)
+
+The user designs every screen in Pencil (`.pen`). Claude copies from the file: reads the frame tree (sizes, positions, fonts, variable bindings), screenshots it as the comp, builds to match, and diffs the build against the comp until it matches. Claude does not originate screen compositions. Tokens stay in `packages/design-tokens`; Claude writes them into each new `.pen` file as variables on request.
 
 ## Process
 
