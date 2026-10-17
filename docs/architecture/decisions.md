@@ -99,10 +99,14 @@ The only web surface is `apps/landing`: a single static "coming soon" page with 
 
 ```
 apps/xr/                 Unity 6 project (Git LFS for binaries, strict .gitignore)   <- the product
-apps/landing/            static coming-soon page (index.html + token CSS + Meta Quest badge)
 pipeline/                Python CLI + Modal functions: sketches -> .zumi episode -> upload
 packages/format/         .zumi JSON Schema -> C# types (and TS for the pipeline's validator)
-packages/design-tokens/  tokens JSON -> USS + C# for Unity, CSS for the landing
+packages/design-tokens/  tokens JSON (colour, type, space, radius, motion) -> USS + C# for Unity; CSS kept for any future web surface
+```
+
+All frontend was removed on 2026-10-17 (apps/web, packages/ui, apps/landing; history in commits 0fd1c89, 94ea37e, a53f611). The design system survives as the token package plus `docs/design/brief.md`; web surfaces return only when the XR app is done.
+
+```
 docs/                    research, architecture, format spec
 ```
 
@@ -132,7 +136,7 @@ Interactive elements and AI suggestions; translation tracks; audience-triggerabl
 
 - Verify which Meta API model accepts images (Muse Wonder vs Spark) and Muse Glimmer's multimodality.
 - Panorama generator choice (step 10).
-- Brand/design system: brief locked in `docs/design/brief.md`. Tokens: W3C DTCG JSON in `packages/design-tokens` -> Style Dictionary -> USS + C# (CSS kept). The React component library and Storybook were descoped with the web app; the design system now lives in Unity UI Toolkit (USS from tokens) and the XR space itself (midnight library lighting, orbs, paper panels).
+- Brand/design system: brief locked in `docs/design/brief.md`. Tokens: W3C DTCG JSON in `packages/design-tokens` -> Style Dictionary -> USS + C# (CSS kept). The design system now lives in the XR space itself (midnight library lighting, orbs, paper panels) and in headset panels built on Meta's UI Set (uGUI Canvas + TextMeshPro prefabs with Theme ScriptableObjects), with the DTCG tokens exported to C# theme values. Unity UI Toolkit in world space is still pre-release (no ray input, no Meta ISDK path) so it is not used for headset panels; the USS export stays for editor tooling only. `apps/web` and `packages/ui` were restored on 2026-10-17 as a design-method test bed (impeccable loop), not as product scope. Research: `docs/research/design-quality-tooling-2026-10.md`.
 
 ## 11. Build order after the descope (2026-10-17)
 

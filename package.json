@@ -9,7 +9,6 @@
   "scripts": {
     "tokens": "pnpm --filter @zumi/design-tokens build",
     "tokens:check": "pnpm --filter @zumi/design-tokens check",
-    "format:build": "pnpm --filter @zumi/format build",
     "build": "pnpm -r build"
   }
 }

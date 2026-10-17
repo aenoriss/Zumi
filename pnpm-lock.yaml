@@ -8,12 +8,6 @@ importers:
 
   .: {}
 
-  apps/landing:
-    devDependencies:
-      '@zumi/design-tokens':
-        specifier: workspace:*
-        version: link:../../packages/design-tokens
-
   packages/design-tokens:
     devDependencies:
       style-dictionary:
