@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zumi.app/schema/zumi-manifest/1.0.0",
   "title": "Zumi episode manifest",
-  "description": "manifest.json at the root of a .zumi file (a zip). Everything else in the zip is referenced by relative path from here. Version 1.0.0, 2026-10-17. See docs/architecture/decisions.md section 3.",
+  "description": "manifest.json at the root of a .zumi file (a zip). Assets are grouped per panel under panels/<panelId>/ and referenced by relative path from the root. Version 1.0.0, 2026-10-17. See docs/architecture/decisions.md section 3.",
   "type": "object",
   "required": ["formatVersion", "episode", "series", "cast", "panels"],
   "additionalProperties": false,
@@ -19,7 +19,7 @@
         "title": { "type": "string" },
         "creator": { "type": "string" },
         "language": { "type": "string", "default": "en", "description": "BCP 47" },
-        "cover": { "$ref": "#/$defs/imagePath" },
+        "cover": { "$ref": "#/$defs/episodeImagePath" },
         "style": {
           "type": "object",
           "description": "Snapshot of the series style definition used for this episode",
@@ -27,7 +27,7 @@
           "properties": {
             "preset": { "type": "string" },
             "prompt": { "type": "string" },
-            "references": { "type": "array", "items": { "$ref": "#/$defs/imagePath" } }
+            "references": { "type": "array", "items": { "$ref": "#/$defs/episodeImagePath" } }
           }
         }
       }
@@ -41,8 +41,8 @@
         "index": { "type": "integer", "minimum": 1, "description": "1-based episode number within the series" },
         "title": { "type": "string" },
         "summary": { "type": "string" },
-        "thumbnail": { "$ref": "#/$defs/imagePath" },
-        "music": { "$ref": "#/$defs/audioPath", "description": "Optional per-episode instrumental track, looped under the ambience" },
+        "thumbnail": { "$ref": "#/$defs/episodeImagePath" },
+        "music": { "$ref": "#/$defs/episodeAudioPath", "description": "Optional per-episode instrumental track, looped under the ambience" },
         "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, sum of panel durations; informational" }
       }
     },
@@ -76,9 +76,11 @@
     }
   },
   "$defs": {
-    "imagePath": { "type": "string", "pattern": "^(layers|panoramas|thumbs|refs)/[^/]+\\.(png|jpg|jpeg|webp)$" },
-    "audioPath": { "type": "string", "pattern": "^audio/(voice|ambience|music|emotes)/[^/]+\\.(ogg|mp3|wav)$" },
-    "scenePath": { "type": "string", "pattern": "^scenes/[^/]+\\.glb$" },
+    "episodeImagePath": { "type": "string", "pattern": "^(cover\\.(png|jpg)|thumbnail\\.(png|jpg)|refs/[^/]+\\.(png|jpg|jpeg|webp))$", "description": "Episode-level image: cover.png, thumbnail.png, or refs/<name>" },
+    "panelImagePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(layers/[a-z0-9_-]+\\.png|panorama\\.(jpg|jpeg|png)|depth/[a-z0-9_-]+\\.png)$", "description": "Inside the panel's own folder: layers/<layerId>.png, panorama.jpg, depth/<layerId>.png" },
+    "panelAudioPath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(voice/[a-z0-9_-]+\\.(ogg|mp3|wav)|ambience\\.(ogg|mp3|wav))$", "description": "Inside the panel's own folder: voice/<bubbleId>.ogg or ambience.ogg" },
+    "episodeAudioPath": { "type": "string", "pattern": "^episode/music\\.(ogg|mp3|wav)$" },
+    "scenePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/scene\\.glb$" },
     "hexColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
     "vec2": {
       "type": "object",
@@ -104,7 +106,7 @@
       "required": ["id", "index", "renderMode", "size", "layers"],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string" },
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]+$", "description": "Also the panel's folder name under panels/" },
         "index": { "type": "integer", "minimum": 0 },
         "renderMode": { "type": "string", "enum": ["panel", "panorama", "scene3d"] },
         "size": {
@@ -120,8 +122,8 @@
         "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" } },
         "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" } },
         "animations": { "type": "array", "items": { "$ref": "#/$defs/animation" } },
-        "ambience": { "$ref": "#/$defs/audioPath" },
-        "panorama": { "$ref": "#/$defs/imagePath", "description": "Equirectangular image, required when renderMode is panorama" },
+        "ambience": { "$ref": "#/$defs/panelAudioPath" },
+        "panorama": { "$ref": "#/$defs/panelImagePath", "description": "Equirectangular image, required when renderMode is panorama" },
         "scene": { "$ref": "#/$defs/scenePath", "description": "glb, required when renderMode is scene3d" },
         "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" }, "description": "Reserved; post-MVP" }
       },
@@ -135,13 +137,13 @@
       "required": ["id", "image", "depth", "band"],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string" },
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
         "name": { "type": "string", "description": "Human label from segmentation, e.g. 'girl', 'lamp post'" },
-        "image": { "$ref": "#/$defs/imagePath", "description": "RGBA PNG at panel size, holes behind it inpainted into the layer below" },
+        "image": { "$ref": "#/$defs/panelImagePath", "description": "RGBA PNG at panel size, holes behind it inpainted into the layer below" },
         "depth": { "type": "number", "minimum": 0, "maximum": 1, "description": "0 = farthest, 1 = nearest" },
         "band": { "type": "string", "enum": ["background", "mid", "foreground"] },
         "bbox": { "$ref": "#/$defs/bbox" },
-        "depthMap": { "$ref": "#/$defs/imagePath", "description": "Reserved: per-layer relief" },
+        "depthMap": { "$ref": "#/$defs/panelImagePath", "description": "Reserved: per-layer relief, panels/<panel>/depth/<layer>.png" },
         "interactive": { "type": "boolean", "default": false }
       }
     },
@@ -157,7 +159,7 @@
         "position": { "$ref": "#/$defs/vec2", "description": "Bubble centre" },
         "anchor": { "$ref": "#/$defs/vec2", "description": "Tail target, usually the speaker's mouth" },
         "anchorLayer": { "type": "string", "description": "layer id the tail follows in parallax" },
-        "audio": { "$ref": "#/$defs/audioPath" },
+        "audio": { "$ref": "#/$defs/panelAudioPath" },
         "startOffset": { "type": "number", "minimum": 0, "description": "Seconds after the panel appears" },
         "durationHint": { "type": "number", "minimum": 0 }
       }

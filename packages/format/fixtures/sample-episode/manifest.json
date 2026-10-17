@@ -7,10 +7,10 @@
     "title": "Sample Series",
     "creator": "Zumi team",
     "language": "en",
-    "cover": "thumbs/cover.png",
-    "style": { "preset": "ink-wash", "prompt": "", "references": [] }
+    "cover": "cover.png",
+    "style": { "preset": "ink-wash", "prompt": "", "references": ["refs/style-1.png"] }
   },
-  "episode": { "id": "sample-ep1", "index": 1, "title": "The Door", "summary": "Two panels used to validate the schema and exercise the Unity reader.", "thumbnail": "thumbs/ep1.png" },
+  "episode": { "id": "sample-ep1", "index": 1, "title": "The Door", "summary": "Two panels used to validate the schema and exercise the Unity reader.", "thumbnail": "thumbnail.png", "music": "episode/music.ogg" },
   "cast": [
     { "id": "ren", "name": "Ren", "voice": { "engine": "gemini-tts", "voiceId": "ren-v1", "description": "young man, low, tired" }, "color": "#5AD1FF" },
     { "id": "narrator", "name": "Narrator", "voice": { "engine": "gemini-tts", "voiceId": "narr-v1", "description": "calm, warm, slow" } }
@@ -24,19 +24,19 @@
       "depthScale": 0.6,
       "mood": "quiet alley at night, rain just stopped",
       "layers": [
-        { "id": "l0", "name": "alley background", "image": "layers/p0-l0.png", "depth": 0.0, "band": "background" },
-        { "id": "l1", "name": "lamp post", "image": "layers/p0-l1.png", "depth": 0.45, "band": "mid", "bbox": { "x": 0.62, "y": 0.1, "w": 0.12, "h": 0.7 } },
-        { "id": "l2", "name": "ren", "image": "layers/p0-l2.png", "depth": 0.9, "band": "foreground", "bbox": { "x": 0.2, "y": 0.3, "w": 0.35, "h": 0.65 } }
+        { "id": "l0", "name": "alley background", "image": "panels/p0/layers/l0.png", "depth": 0.0, "band": "background" },
+        { "id": "l1", "name": "lamp post", "image": "panels/p0/layers/l1.png", "depth": 0.45, "band": "mid", "bbox": { "x": 0.62, "y": 0.1, "w": 0.12, "h": 0.7 } },
+        { "id": "l2", "name": "ren", "image": "panels/p0/layers/l2.png", "depth": 0.9, "band": "foreground", "bbox": { "x": 0.2, "y": 0.3, "w": 0.35, "h": 0.65 } }
       ],
       "bubbles": [
-        { "id": "b0", "text": "The door was never locked.", "kind": "caption", "position": { "x": 0.5, "y": 0.08 }, "speakerId": "narrator", "audio": "audio/voice/p0-b0.ogg", "startOffset": 0.3 },
-        { "id": "b1", "text": "...so why did I wait?", "kind": "thought", "speakerId": "ren", "position": { "x": 0.72, "y": 0.35 }, "anchor": { "x": 0.38, "y": 0.42 }, "anchorLayer": "l2", "audio": "audio/voice/p0-b1.ogg", "startOffset": 2.4 }
+        { "id": "b0", "text": "The door was never locked.", "kind": "caption", "position": { "x": 0.5, "y": 0.08 }, "speakerId": "narrator", "audio": "panels/p0/voice/b0.ogg", "startOffset": 0.3 },
+        { "id": "b1", "text": "...so why did I wait?", "kind": "thought", "speakerId": "ren", "position": { "x": 0.72, "y": 0.35 }, "anchor": { "x": 0.38, "y": 0.42 }, "anchorLayer": "l2", "audio": "panels/p0/voice/b1.ogg", "startOffset": 2.4 }
       ],
       "animations": [
         { "id": "a0", "target": "l1", "track": "opacity", "duration": 1.2, "loop": true, "keyframes": [ { "t": 0, "v": 1 }, { "t": 0.5, "v": 0.6 }, { "t": 1, "v": 1 } ] },
         { "id": "a1", "target": "l2", "track": "sway", "duration": 4, "loop": true, "params": { "amplitude": 0.004, "frequency": 0.25 } }
       ],
-      "ambience": "audio/ambience/p0.ogg"
+      "ambience": "panels/p0/ambience.ogg"
     },
     {
       "id": "p1",
@@ -44,10 +44,10 @@
       "renderMode": "panorama",
       "size": { "w": 4096, "h": 2048 },
       "mood": "inside the city behind the door, neon, impossible scale",
-      "layers": [ { "id": "l0", "name": "city sphere", "image": "panoramas/p1.jpg", "depth": 0.0, "band": "background" } ],
-      "panorama": "panoramas/p1.jpg",
-      "bubbles": [ { "id": "b0", "text": "Oh.", "kind": "speech", "speakerId": "ren", "position": { "x": 0.5, "y": 0.55 }, "audio": "audio/voice/p1-b0.ogg", "startOffset": 1.5 } ],
-      "ambience": "audio/ambience/p1.ogg",
+      "layers": [ { "id": "l0", "name": "city sphere", "image": "panels/p1/panorama.jpg", "depth": 0.0, "band": "background" } ],
+      "panorama": "panels/p1/panorama.jpg",
+      "bubbles": [ { "id": "b0", "text": "Oh.", "kind": "speech", "speakerId": "ren", "position": { "x": 0.5, "y": 0.55 }, "audio": "panels/p1/voice/b0.ogg", "startOffset": 1.5 } ],
+      "ambience": "panels/p1/ambience.ogg",
       "durationOverride": 24
     }
   ]

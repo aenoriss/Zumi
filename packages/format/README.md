@@ -4,16 +4,21 @@ The `.zumi` episode file: a zip with `manifest.json` at the root and assets refe
 
 ```
 manifest.json
-layers/<panel>-<layer>.png     RGBA cut-outs at panel size, holes inpainted
-panoramas/<panel>.jpg          equirectangular, for renderMode "panorama"
-scenes/<panel>.glb             Blender export, for renderMode "scene3d"
-audio/voice/<panel>-<bubble>.ogg
-audio/ambience/<panel>.ogg
-audio/music/<episode>.ogg
-audio/emotes/<id>.ogg          orb emote lines (shared, not per episode; reserved)
-thumbs/
-refs/                          style reference images (snapshot)
+cover.png                      series cover, 3:4
+thumbnail.png                  episode thumbnail, 3:4
+refs/<name>.png                style reference images (snapshot)
+episode/music.ogg              optional instrumental track for the whole episode
+panels/
+  <panelId>/                   one folder per panel; the reader streams one folder at a time
+    layers/<layerId>.png       RGBA cut-outs at panel size, holes inpainted into the layer below
+    depth/<layerId>.png        reserved: per-layer relief
+    panorama.jpg               equirectangular 2:1, for renderMode "panorama"
+    scene.glb                  Blender export, for renderMode "scene3d"
+    voice/<bubbleId>.ogg       one clip per bubble
+    ambience.ogg               one loop per panel
 ```
+
+Panel, layer and bubble ids are `[a-z0-9_-]+` and double as file and folder names. Orb emote lines are not part of an episode file; they ship with the app.
 
 - `schema/zumi.schema.json`: JSON Schema 2020-12 for the manifest. The only normative definition.
 - `csharp/ZumiManifest.cs`: hand-kept C# mirror for Unity, plus the pacing rule (`Pacing.Duration`). Copy into `apps/xr/Assets/Zumi/Format/` (a sync script will replace the copy later).

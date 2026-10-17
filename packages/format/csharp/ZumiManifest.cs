@@ -1,6 +1,7 @@
 // Zumi episode manifest, format 1.0.0. Hand-kept mirror of schema/zumi.schema.json.
 // Deserialise with Newtonsoft.Json (com.unity.nuget.newtonsoft-json) or System.Text.Json.
-// Paths are relative to the .zumi zip root. Normalised coordinates are 0..1, origin top-left.
+// Paths are relative to the .zumi zip root; every panel's assets live under panels/<panelId>/.
+// Normalised coordinates are 0..1, origin top-left.
 using System;
 using System.Collections.Generic;
 
