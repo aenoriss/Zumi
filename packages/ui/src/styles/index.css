@@ -1,0 +1,82 @@
+@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Noto+Sans:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap");
+@import "tailwindcss";
+@import "@zumi/design-tokens/css";
+
+/* Tailwind v4 theme bridge: every utility resolves to a runtime CSS variable from @zumi/design-tokens,
+   so switching data-theme on <html> re-themes every component without a rebuild. */
+@theme inline {
+  --color-*: initial;
+  --color-room-field: var(--color-room-field);
+  --color-room-raised: var(--color-room-raised);
+  --color-room-banner: var(--color-room-banner);
+  --color-hairline: var(--color-hairline-default);
+  --color-hairline-strong: var(--color-hairline-strong);
+  --color-paper: var(--color-paper);
+  --color-text-default: var(--color-text-default);
+  --color-text-dim: var(--color-text-dim);
+  --color-text-faint: var(--color-text-faint);
+  --color-text-on-accent: var(--color-text-onAccent);
+  --color-text-on-cta: var(--color-text-onCta);
+  --color-accent: var(--color-accent-default);
+  --color-accent-glow: var(--color-accent-glow);
+  --color-cta: var(--color-cta-default);
+  --color-cta-hover: var(--color-cta-hover);
+  --color-alert: var(--color-alert);
+  --color-wood: var(--color-wood);
+  --color-mascot-orange: var(--color-mascot-orange);
+  --color-mascot-sky: var(--color-mascot-sky);
+  --color-mascot-lime: var(--color-mascot-lime);
+  --color-mascot-coral: var(--color-mascot-coral);
+  --color-mascot-lilac: var(--color-mascot-lilac);
+  --color-mascot-yellow: var(--color-mascot-yellow);
+  --color-mascot-mint: var(--color-mascot-mint);
+  --color-mascot-pink: var(--color-mascot-pink);
+
+  --font-*: initial;
+  --font-display: var(--font-family-display);
+  --font-body: var(--font-family-body);
+
+  --text-*: initial;
+  --text-xs: var(--font-size-xs);
+  --text-sm: var(--font-size-sm);
+  --text-md: var(--font-size-md);
+  --text-lg: var(--font-size-lg);
+  --text-xl: var(--font-size-xl);
+  --text-2xl: var(--font-size-2xl);
+  --text-3xl: var(--font-size-3xl);
+  --text-4xl: var(--font-size-4xl);
+  --text-numeral: var(--font-size-numeral);
+
+  --radius-*: initial;
+  --radius-container: var(--radius-container);
+  --radius-panel: var(--radius-panel);
+  --radius-control: var(--radius-control);
+  --radius-pill: var(--radius-pill);
+  --radius-bubble: var(--radius-bubble);
+
+  /* 4px base so numeric utilities (gap-2.5 = 10px, p-4 = 16px) land on the token grid. */
+  --spacing: 4px;
+
+  --ease-standard: var(--motion-easing-standard);
+  --ease-in-out: var(--motion-easing-inOut);
+  --duration-fast: var(--motion-duration-fast);
+  --duration-base: var(--motion-duration-base);
+}
+
+html {
+  color-scheme: light;
+}
+html[data-theme="midnight"] {
+  color-scheme: dark;
+}
+
+/* Signals: the only things allowed to breathe. */
+@keyframes zumi-pulse {
+  50% { opacity: 0.35; }
+}
+@keyframes zumi-bob {
+  50% { transform: translateY(-4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion-signal { animation: none !important; }
+}

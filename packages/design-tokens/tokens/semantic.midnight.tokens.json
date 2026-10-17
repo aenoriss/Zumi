@@ -1,7 +1,7 @@
 {
-  "$description": "Zumi semantic tokens (tier 2), Midnight theme: the library at midnight. Default in XR, optional on web. Same keys as Paper.",
   "color": {
     "$type": "color",
+    "$description": "Zumi semantic tokens (tier 2), Midnight theme: the library at midnight. Default in XR, optional on web. Same keys as Paper.",
     "room": {
       "field": { "$value": "{color.night.900}" },
       "raised": { "$value": "{color.night.800}" },
@@ -11,7 +11,7 @@
       "default": { "$value": "{color.night.700}" },
       "strong": { "$value": "{color.night.600}" }
     },
-    "paper": { "$value": "{color.paper.600}" },
+    "paper": { "$value": "{color.cream.600}" },
     "text": {
       "default": { "$value": "{color.night.100}" },
       "dim": { "$value": "{color.night.300}" },

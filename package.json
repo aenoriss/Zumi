@@ -1,0 +1,17 @@
+{
+  "name": "zumi",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Zumi: interactive XR comics from rough sketches, read together on Meta Quest 3.",
+  "packageManager": "pnpm@10.34.7",
+  "engines": { "node": ">=22" },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
+  "scripts": {
+    "tokens": "pnpm --filter @zumi/design-tokens build",
+    "storybook": "pnpm --filter @zumi/ui storybook",
+    "dev:web": "pnpm --filter @zumi/web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

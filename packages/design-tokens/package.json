@@ -1,0 +1,20 @@
+{
+  "name": "@zumi/design-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zumi design tokens: W3C DTCG source, built to CSS, Unity USS and C#.",
+  "files": ["dist", "tokens"],
+  "exports": {
+    "./css": "./dist/css/tokens.css",
+    "./manifest": "./dist/tokens.json",
+    "./tokens/*": "./tokens/*"
+  },
+  "scripts": {
+    "build": "node build/build.mjs",
+    "check": "node build/check.mjs"
+  },
+  "devDependencies": {
+    "style-dictionary": "^5.7.0"
+  }
+}

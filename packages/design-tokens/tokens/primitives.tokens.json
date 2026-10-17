@@ -3,7 +3,7 @@
   "color": {
     "$type": "color",
     "white": { "$value": "#FFFFFF" },
-    "paper": {
+    "cream": {
       "100": { "$value": "#FFFFFF" },
       "200": { "$value": "#F7F4EF" },
       "300": { "$value": "#F4ECE4" },

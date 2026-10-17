@@ -1,15 +1,15 @@
 {
-  "$description": "Zumi semantic tokens (tier 2), Paper theme: the default on the web. Only aliases to primitives.",
   "color": {
     "$type": "color",
+    "$description": "Zumi semantic tokens (tier 2), Paper theme: the default on the web. Only aliases to primitives.",
     "room": {
-      "field": { "$value": "{color.paper.100}", "$description": "Page background" },
-      "raised": { "$value": "{color.paper.200}", "$description": "Cards, rail, inputs, chips" },
-      "banner": { "$value": "{color.paper.300}", "$description": "Promo strips" }
+      "field": { "$value": "{color.cream.100}", "$description": "Page background" },
+      "raised": { "$value": "{color.cream.200}", "$description": "Cards, rail, inputs, chips" },
+      "banner": { "$value": "{color.cream.300}", "$description": "Promo strips" }
     },
     "hairline": {
-      "default": { "$value": "{color.paper.400}" },
-      "strong": { "$value": "{color.paper.500}" }
+      "default": { "$value": "{color.cream.400}" },
+      "strong": { "$value": "{color.cream.500}" }
     },
     "paper": { "$value": "{color.white}", "$description": "Comic covers and panels" },
     "text": {

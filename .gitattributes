@@ -1,0 +1,19 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.glb binary
+*.gltf binary
+*.fbx binary
+*.unitypackage binary
+*.asset binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zumi binary
