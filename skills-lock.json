@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "skills": {
+    "angular": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/frameworks/angular/SKILL.md",
+      "computedHash": "7a3bea7baf51511bcdf7a2ec2e47e6659bce0dfb2faf10e0fd2a3639bdbb4b9a"
+    },
+    "animation-principles": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/patterns/animation-principles/SKILL.md",
+      "computedHash": "dab0b9d1b69a16c606adc1dd13ed4173385ac7f067dcda0cd228240334806f71"
+    },
+    "aria-patterns": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/accessibility/aria-patterns/SKILL.md",
+      "computedHash": "0f1d4df5cdaf7792d869b45b46da6d44d14d8da78e787fb836130f5dcb29137a"
+    },
+    "breakpoints": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/breakpoints/SKILL.md",
+      "computedHash": "86dff460284fde1242d385707fd49babea92650e466d5c784aac99f3d2a4a12c"
+    },
+    "color-contrast": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/accessibility/color-contrast/SKILL.md",
+      "computedHash": "9589fede728b8ab25a946430b72fd7b42798507f27e107286052d6bcf021b690"
+    },
+    "color-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/color-scale/SKILL.md",
+      "computedHash": "b971e3dc816fb61314b000e70c5782029c0b93cb144e464005bdd727def32fce"
+    },
+    "component-docs": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/documentation/component-docs/SKILL.md",
+      "computedHash": "40b6943432dd2f38944ef304fd87f90b033e9df412425e008e4c1f7909688b25"
+    },
+    "compound-components": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/patterns/compound-components/SKILL.md",
+      "computedHash": "a75696fc4b0b82614f8f794bd67efe1379c6c22bee3587747682b41be218fb77"
+    },
+    "dark-mode": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/patterns/dark-mode/SKILL.md",
+      "computedHash": "c0680bd4adefe913c9f2ff67d5ceecc3ba92c0712575124ff93f5df7d8ab5a23"
+    },
+    "design-tokens-structure": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/design-tokens-structure/SKILL.md",
+      "computedHash": "91b69ead687e877639f67cbdb4313d7ac0a24991a9e84b39001c6032228179e4"
+    },
+    "figma": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tools/figma/SKILL.md",
+      "computedHash": "789acf537ff61ba04d84d6aeb72d126aee63563f60d843acca686e196ff5d3fb"
+    },
+    "focus-states": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/accessibility/focus-states/SKILL.md",
+      "computedHash": "34ffeb62b87851926fc41afc06766e4c7c0d139a429b237e258d1947c5d14781"
+    },
+    "framer": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tools/framer/SKILL.md",
+      "computedHash": "146b2cacd489b2826563397cfa18bfdd1acba5c00dc18e0aab3c3bd8896685f7"
+    },
+    "getting-started": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/getting-started/SKILL.md",
+      "computedHash": "ecc1e6b2bf8c261a703f5f508f6fad4ed549882a153695c962730669f80fe2b2"
+    },
+    "icon-system": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/patterns/icon-system/SKILL.md",
+      "computedHash": "ac47926b1ced49c9f1128694befd84efe0641250ea36cc222aa3123fdd3935ad"
+    },
+    "layout-primitives": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/patterns/layout-primitives/SKILL.md",
+      "computedHash": "f8d4b82e422a65c490781b0c2d1cd5cda7495607606ee7287652ccf9473a6de6"
+    },
+    "motion-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/motion-scale/SKILL.md",
+      "computedHash": "1333d20fc5e23e0fb7918acf3dbf56305c493d58d16881ac3731cd1c0ded4308"
+    },
+    "radius-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/radius-scale/SKILL.md",
+      "computedHash": "5514d1adc5603340edd8ad88cd7945541cf359256e2d145c7421f928e532208a"
+    },
+    "react": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/frameworks/react/SKILL.md",
+      "computedHash": "c27fa430936f12efdd60340cb5aeeebcb2b7791ad9056c50c1443f257e14104c"
+    },
+    "responsive-typography": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/responsive-typography/SKILL.md",
+      "computedHash": "b12e3acf421507d10bb817c30a35374534e3c88eda612774124e3e3df9578166"
+    },
+    "shadow-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/shadow-scale/SKILL.md",
+      "computedHash": "835b9d41bea9e5a3666be68a85591c3ac86b1264246d8075b945b3c7960a4eff"
+    },
+    "spacing-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/spacing-scale/SKILL.md",
+      "computedHash": "ef342d4a8c0527ea7ca72ebfd09184854ee8e4cef99717c73980ea41f03e3709"
+    },
+    "storybook": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tools/storybook/SKILL.md",
+      "computedHash": "7985fc39e9972aec698efbebc662601fb8c87ae9319eb51780733aae9551a8ec"
+    },
+    "style-dictionary": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tools/style-dictionary/SKILL.md",
+      "computedHash": "0f4012aaddae1317461d25a0cacce6994cd13d668b8bb099217afe1385a3a071"
+    },
+    "svelte": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/frameworks/svelte/SKILL.md",
+      "computedHash": "e7ae2a15948f1a9f4c4dc847284713df4f2873541cb07891bfeae91ceaaf8227"
+    },
+    "token-docs": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/documentation/token-docs/SKILL.md",
+      "computedHash": "220b24cc3c76d24a77188e72175c02a10d6970b8c68354a8e9637245bfd7f072"
+    },
+    "type-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/type-scale/SKILL.md",
+      "computedHash": "2ce579cbcdd9e612caa2bee1c7f90b43e0303d8f5ccfdb09bc066206ae3bb08b"
+    },
+    "vue": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/frameworks/vue/SKILL.md",
+      "computedHash": "c143961603fc9ab0430a745cdeee62a0931398da87b54bacd2ade59dff8b2e04"
+    },
+    "z-index-scale": {
+      "source": "dylantarre/design-system-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tokens/z-index-scale/SKILL.md",
+      "computedHash": "b382c97d7b0823d8566864aa5563525c150ab4491a5572e387095b708da29a0a"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+# deps
+node_modules/
+.pnpm-store/
+__pycache__/
+.venv/
+
+# builds
+dist/
+.next/
+out/
+storybook-static/
+*.tsbuildinfo
+
+# env and secrets
+.env
+.env.*
+!.env.example
+
+# editor / os
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# unity (apps/xr)
+apps/xr/[Ll]ibrary/
+apps/xr/[Tt]emp/
+apps/xr/[Oo]bj/
+apps/xr/[Bb]uild/
+apps/xr/[Bb]uilds/
+apps/xr/[Ll]ogs/
+apps/xr/[Uu]ser[Ss]ettings/
+apps/xr/*.csproj
+apps/xr/*.sln
+apps/xr/.vs/
+
+# claude local
+.claude/settings.local.json
+.claude-pin/

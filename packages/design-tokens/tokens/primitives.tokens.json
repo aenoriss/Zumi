@@ -1,0 +1,137 @@
+{
+  "$description": "Zumi primitives (tier 1). Raw values only. This folder is the source of truth for all tokens. See docs/design/brief.md.",
+  "color": {
+    "$type": "color",
+    "white": { "$value": "#FFFFFF" },
+    "paper": {
+      "100": { "$value": "#FFFFFF" },
+      "200": { "$value": "#F7F4EF" },
+      "300": { "$value": "#F4ECE4" },
+      "400": { "$value": "#EAE4DA" },
+      "500": { "$value": "#E2DCD1" },
+      "600": { "$value": "#F5EDDC", "$description": "Warm paper used for comic surfaces inside the midnight room" }
+    },
+    "ink": {
+      "900": { "$value": "#222222" },
+      "800": { "$value": "#2A211B", "$description": "Warm ink, text on amber" },
+      "600": { "$value": "#6B5E52" },
+      "500": { "$value": "#8A8178" },
+      "400": { "$value": "#B5ADA3" }
+    },
+    "night": {
+      "900": { "$value": "#121A22", "$description": "Blue-black room field (Ghibli night floor)" },
+      "800": { "$value": "#1B2430" },
+      "700": { "$value": "#2A3340" },
+      "600": { "$value": "#343E4D" },
+      "400": { "$value": "#6D747D" },
+      "300": { "$value": "#9AA0A8" },
+      "100": { "$value": "#EDE4D3", "$description": "Cream text on midnight" }
+    },
+    "brown": {
+      "500": { "$value": "#A5673E", "$description": "Cozy brown accent on paper" },
+      "700": { "$value": "#8C5A33" },
+      "900": { "$value": "#5A4330", "$description": "Wood" }
+    },
+    "amber": {
+      "400": { "$value": "#F0B03A", "$description": "CTA amber on paper" },
+      "500": { "$value": "#E0A24A", "$description": "Lamp amber in the midnight room" }
+    },
+    "brass": { "500": { "$value": "#B8955A" } },
+    "red": { "500": { "$value": "#E5332A", "$description": "Alert dot and release sticker (platform convention)" } },
+    "mascot": {
+      "$description": "Reader orb hues. One per reader, assigned at join, unique within a room when possible.",
+      "orange": { "$value": "#FFB13D" },
+      "sky": { "$value": "#5AD1FF" },
+      "lime": { "$value": "#9BFF6A" },
+      "coral": { "$value": "#FF6A6A" },
+      "lilac": { "$value": "#C49BFF" },
+      "yellow": { "$value": "#FFE14D" },
+      "mint": { "$value": "#4DFFC3" },
+      "pink": { "$value": "#FF9BD6" }
+    }
+  },
+  "font": {
+    "family": {
+      "$type": "fontFamily",
+      "display": { "$value": ["Barlow Condensed", "Arial Narrow", "sans-serif"] },
+      "body": { "$value": ["Noto Sans", "Noto Sans KR", "Noto Sans JP", "system-ui", "sans-serif"] }
+    },
+    "weight": {
+      "$type": "fontWeight",
+      "regular": { "$value": 400 },
+      "medium": { "$value": 500 },
+      "bold": { "$value": 700 },
+      "black": { "$value": 800 }
+    },
+    "size": {
+      "$type": "dimension",
+      "xs": { "$value": { "value": 11, "unit": "px" } },
+      "sm": { "$value": { "value": 12, "unit": "px" } },
+      "md": { "$value": { "value": 13, "unit": "px" } },
+      "lg": { "$value": { "value": 15, "unit": "px" } },
+      "xl": { "$value": { "value": 18, "unit": "px" } },
+      "2xl": { "$value": { "value": 22, "unit": "px" } },
+      "3xl": { "$value": { "value": 26, "unit": "px" } },
+      "4xl": { "$value": { "value": 34, "unit": "px" } },
+      "numeral": { "$value": { "value": 58, "unit": "px" }, "$description": "Ranked-pick numerals" }
+    },
+    "lineHeight": {
+      "$type": "number",
+      "tight": { "$value": 1.05 },
+      "snug": { "$value": 1.25 },
+      "normal": { "$value": 1.4 },
+      "relaxed": { "$value": 1.5 }
+    },
+    "letterSpacing": {
+      "$type": "dimension",
+      "display": { "$value": { "value": 0.01, "unit": "em" } },
+      "label": { "$value": { "value": 0.06, "unit": "em" } }
+    }
+  },
+  "space": {
+    "$type": "dimension",
+    "1": { "$value": { "value": 4, "unit": "px" } },
+    "2": { "$value": { "value": 8, "unit": "px" } },
+    "3": { "$value": { "value": 12, "unit": "px" } },
+    "4": { "$value": { "value": 16, "unit": "px" } },
+    "5": { "$value": { "value": 22, "unit": "px" } },
+    "6": { "$value": { "value": 30, "unit": "px" } },
+    "7": { "$value": { "value": 34, "unit": "px" } },
+    "8": { "$value": { "value": 48, "unit": "px" } }
+  },
+  "radius": {
+    "$type": "dimension",
+    "container": { "$value": { "value": 3, "unit": "px" }, "$description": "Covers, cards, panels: sharp so art edges stay printed" },
+    "panel": { "$value": { "value": 6, "unit": "px" }, "$description": "Banners, promos, room cards" },
+    "control": { "$value": { "value": 4, "unit": "px" }, "$description": "Buttons" },
+    "pill": { "$value": { "value": 999, "unit": "px" }, "$description": "Search, chips, UP badge, orb" },
+    "bubble": { "$value": { "value": 12, "unit": "px" } }
+  },
+  "ratio": {
+    "$type": "number",
+    "$description": "Cover aspect ratios as height/width",
+    "coverHome": { "$value": 1.19 },
+    "coverSquare": { "$value": 1 },
+    "coverEpisode": { "$value": 1.5 }
+  },
+  "motion": {
+    "duration": {
+      "$type": "duration",
+      "fast": { "$value": { "value": 150, "unit": "ms" } },
+      "base": { "$value": { "value": 220, "unit": "ms" } },
+      "pulse": { "$value": { "value": 1800, "unit": "ms" }, "$description": "Live dot breathing" },
+      "bob": { "$value": { "value": 3000, "unit": "ms" }, "$description": "Orb float loop" }
+    },
+    "easing": {
+      "$type": "cubicBezier",
+      "standard": { "$value": [0.4, 0, 0.2, 1] },
+      "inOut": { "$value": [0.45, 0, 0.55, 1] }
+    }
+  },
+  "texture": {
+    "grain": {
+      "$type": "number",
+      "opacity": { "$value": 0.05, "$description": "Room-field grain opacity. Never on covers." }
+    }
+  }
+}

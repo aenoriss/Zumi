@@ -1,0 +1,33 @@
+{
+  "$description": "Zumi semantic tokens (tier 2), Paper theme: the default on the web. Only aliases to primitives.",
+  "color": {
+    "$type": "color",
+    "room": {
+      "field": { "$value": "{color.paper.100}", "$description": "Page background" },
+      "raised": { "$value": "{color.paper.200}", "$description": "Cards, rail, inputs, chips" },
+      "banner": { "$value": "{color.paper.300}", "$description": "Promo strips" }
+    },
+    "hairline": {
+      "default": { "$value": "{color.paper.400}" },
+      "strong": { "$value": "{color.paper.500}" }
+    },
+    "paper": { "$value": "{color.white}", "$description": "Comic covers and panels" },
+    "text": {
+      "default": { "$value": "{color.ink.900}" },
+      "dim": { "$value": "{color.ink.500}" },
+      "faint": { "$value": "{color.ink.400}" },
+      "onAccent": { "$value": "{color.white}" },
+      "onCta": { "$value": "{color.ink.800}" }
+    },
+    "accent": {
+      "default": { "$value": "{color.brown.500}", "$description": "Links, active tab, UP badges, rank numbers, live dots" },
+      "glow": { "$value": "#A5673E2E", "$description": "Hover halo, 18% of accent" }
+    },
+    "cta": {
+      "default": { "$value": "{color.amber.400}", "$description": "Enter, Join, Creator's, primary buttons" },
+      "hover": { "$value": "{color.amber.500}" }
+    },
+    "alert": { "$value": "{color.red.500}" },
+    "wood": { "$value": "{color.brown.900}" }
+  }
+}

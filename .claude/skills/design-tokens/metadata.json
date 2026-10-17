@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "name": "design-tokens",
+  "displayName": "Design Tokens (W3C DTCG)",
+  "description": "Use when authoring, structuring, or consuming design tokens in the W3C Design Tokens Community Group (DTCG) format. Covers token types, groups, aliases, composite tokens, and file conventions.",
+  "author": "Tyler-R-Kendrick",
+  "license": "MIT",
+  "date": "February 2026",
+  "compatibility": "claude, copilot, cursor",
+  "references": [
+    {
+      "title": "W3C Design Tokens Community Group",
+      "url": "https://www.w3.org/community/design-tokens/"
+    },
+    {
+      "title": "Design Tokens Specification",
+      "url": "https://www.designtokens.org/"
+    },
+    {
+      "title": "Design Tokens Community Group — GitHub",
+      "url": "https://github.com/design-tokens/community-group"
+    }
+  ]
+}

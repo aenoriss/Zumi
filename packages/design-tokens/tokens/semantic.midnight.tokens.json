@@ -1,0 +1,33 @@
+{
+  "$description": "Zumi semantic tokens (tier 2), Midnight theme: the library at midnight. Default in XR, optional on web. Same keys as Paper.",
+  "color": {
+    "$type": "color",
+    "room": {
+      "field": { "$value": "{color.night.900}" },
+      "raised": { "$value": "{color.night.800}" },
+      "banner": { "$value": "{color.night.800}" }
+    },
+    "hairline": {
+      "default": { "$value": "{color.night.700}" },
+      "strong": { "$value": "{color.night.600}" }
+    },
+    "paper": { "$value": "{color.paper.600}" },
+    "text": {
+      "default": { "$value": "{color.night.100}" },
+      "dim": { "$value": "{color.night.300}" },
+      "faint": { "$value": "{color.night.400}" },
+      "onAccent": { "$value": "{color.ink.800}" },
+      "onCta": { "$value": "{color.ink.800}" }
+    },
+    "accent": {
+      "default": { "$value": "{color.amber.500}", "$description": "The lamp" },
+      "glow": { "$value": "#E0A24A38", "$description": "Lamp halo, 22% of amber" }
+    },
+    "cta": {
+      "default": { "$value": "{color.amber.500}" },
+      "hover": { "$value": "{color.amber.400}" }
+    },
+    "alert": { "$value": "{color.red.500}" },
+    "wood": { "$value": "{color.brown.900}" }
+  }
+}

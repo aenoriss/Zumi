@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "name": "style-dictionary",
+  "displayName": "Style Dictionary",
+  "description": "Use when transforming design tokens into platform-specific outputs using Style Dictionary. Covers configuration, transforms, formats, DTCG support, and multi-platform builds.",
+  "author": "Tyler-R-Kendrick",
+  "license": "MIT",
+  "date": "February 2026",
+  "compatibility": "claude, copilot, cursor",
+  "references": [
+    {
+      "title": "Style Dictionary Official Documentation",
+      "url": "https://styledictionary.com/"
+    },
+    {
+      "title": "Style Dictionary — GitHub Repository",
+      "url": "https://github.com/amzn/style-dictionary"
+    }
+  ]
+}
