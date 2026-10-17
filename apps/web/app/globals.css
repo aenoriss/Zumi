@@ -1,0 +1,11 @@
+@import "@zumi/ui/styles.css";
+/* Tailwind must scan the component sources so their utilities are generated here too. */
+@source "../../../packages/ui/src";
+
+body {
+  background: var(--color-room-field);
+  color: var(--color-text-default);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-md);
+  line-height: 1.4;
+}
