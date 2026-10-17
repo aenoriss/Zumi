@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zumi.app/schema/zumi-manifest/1.0.0",
+  "title": "Zumi episode manifest",
+  "description": "manifest.json at the root of a .zumi file (a zip). Everything else in the zip is referenced by relative path from here. Version 1.0.0, 2026-10-17. See docs/architecture/decisions.md section 3.",
+  "type": "object",
+  "required": ["formatVersion", "episode", "series", "cast", "panels"],
+  "additionalProperties": false,
+  "properties": {
+    "formatVersion": { "type": "string", "pattern": "^1\\.\\d+\\.\\d+$" },
+    "generator": { "type": "string", "description": "Tool and version that packed this file, e.g. zumi-pipeline 0.3.1" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "series": {
+      "type": "object",
+      "required": ["id", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "creator": { "type": "string" },
+        "language": { "type": "string", "default": "en", "description": "BCP 47" },
+        "cover": { "$ref": "#/$defs/imagePath" },
+        "style": {
+          "type": "object",
+          "description": "Snapshot of the series style definition used for this episode",
+          "additionalProperties": false,
+          "properties": {
+            "preset": { "type": "string" },
+            "prompt": { "type": "string" },
+            "references": { "type": "array", "items": { "$ref": "#/$defs/imagePath" } }
+          }
+        }
+      }
+    },
+    "episode": {
+      "type": "object",
+      "required": ["id", "index", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "index": { "type": "integer", "minimum": 1, "description": "1-based episode number within the series" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "thumbnail": { "$ref": "#/$defs/imagePath" },
+        "music": { "$ref": "#/$defs/audioPath", "description": "Optional per-episode instrumental track, looped under the ambience" },
+        "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, sum of panel durations; informational" }
+      }
+    },
+    "cast": {
+      "type": "array",
+      "description": "Characters with voices. Snapshot of the series cast at publish time.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "voice": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "engine": { "type": "string", "description": "e.g. gemini-tts, elevenlabs" },
+              "voiceId": { "type": "string" },
+              "description": { "type": "string", "description": "The text the voice was designed from" }
+            }
+          },
+          "color": { "$ref": "#/$defs/hexColor", "description": "Bubble accent for this speaker" }
+        }
+      }
+    },
+    "panels": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/panel" }
+    }
+  },
+  "$defs": {
+    "imagePath": { "type": "string", "pattern": "^(layers|panoramas|thumbs|refs)/[^/]+\\.(png|jpg|jpeg|webp)$" },
+    "audioPath": { "type": "string", "pattern": "^audio/(voice|ambience|music|emotes)/[^/]+\\.(ogg|mp3|wav)$" },
+    "scenePath": { "type": "string", "pattern": "^scenes/[^/]+\\.glb$" },
+    "hexColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+    "vec2": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+      "description": "Normalised panel coordinates, 0..1, origin top-left"
+    },
+    "bbox": {
+      "type": "object",
+      "required": ["x", "y", "w", "h"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "w": { "type": "number", "minimum": 0, "maximum": 1 },
+        "h": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "description": "Normalised to the panel's full image size"
+    },
+    "panel": {
+      "type": "object",
+      "required": ["id", "index", "renderMode", "size", "layers"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "index": { "type": "integer", "minimum": 0 },
+        "renderMode": { "type": "string", "enum": ["panel", "panorama", "scene3d"] },
+        "size": {
+          "type": "object",
+          "required": ["w", "h"],
+          "additionalProperties": false,
+          "properties": { "w": { "type": "integer", "minimum": 1 }, "h": { "type": "integer", "minimum": 1 } },
+          "description": "Pixel size of the regenerated panel image; layer PNGs share it"
+        },
+        "depthScale": { "type": "number", "minimum": 0, "default": 0.6, "description": "Metres of parallax spread between depth 0 and 1 at the default reading distance" },
+        "durationOverride": { "type": "number", "minimum": 0, "description": "Seconds; when absent the reader computes voices + 1.5 s per bubble, min 3 s, min 20 s for immersive modes, never below the longest animation" },
+        "mood": { "type": "string", "description": "Free text from the understanding pass; drives ambience and music prompts" },
+        "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" } },
+        "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" } },
+        "animations": { "type": "array", "items": { "$ref": "#/$defs/animation" } },
+        "ambience": { "$ref": "#/$defs/audioPath" },
+        "panorama": { "$ref": "#/$defs/imagePath", "description": "Equirectangular image, required when renderMode is panorama" },
+        "scene": { "$ref": "#/$defs/scenePath", "description": "glb, required when renderMode is scene3d" },
+        "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" }, "description": "Reserved; post-MVP" }
+      },
+      "allOf": [
+        { "if": { "properties": { "renderMode": { "const": "panorama" } } }, "then": { "required": ["panorama"] } },
+        { "if": { "properties": { "renderMode": { "const": "scene3d" } } }, "then": { "required": ["scene"] } }
+      ]
+    },
+    "layer": {
+      "type": "object",
+      "required": ["id", "image", "depth", "band"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "description": "Human label from segmentation, e.g. 'girl', 'lamp post'" },
+        "image": { "$ref": "#/$defs/imagePath", "description": "RGBA PNG at panel size, holes behind it inpainted into the layer below" },
+        "depth": { "type": "number", "minimum": 0, "maximum": 1, "description": "0 = farthest, 1 = nearest" },
+        "band": { "type": "string", "enum": ["background", "mid", "foreground"] },
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "depthMap": { "$ref": "#/$defs/imagePath", "description": "Reserved: per-layer relief" },
+        "interactive": { "type": "boolean", "default": false }
+      }
+    },
+    "bubble": {
+      "type": "object",
+      "required": ["id", "text", "position"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "speakerId": { "type": "string", "description": "cast[].id; absent for captions" },
+        "kind": { "type": "string", "enum": ["speech", "thought", "shout", "caption"], "default": "speech" },
+        "position": { "$ref": "#/$defs/vec2", "description": "Bubble centre" },
+        "anchor": { "$ref": "#/$defs/vec2", "description": "Tail target, usually the speaker's mouth" },
+        "anchorLayer": { "type": "string", "description": "layer id the tail follows in parallax" },
+        "audio": { "$ref": "#/$defs/audioPath" },
+        "startOffset": { "type": "number", "minimum": 0, "description": "Seconds after the panel appears" },
+        "durationHint": { "type": "number", "minimum": 0 }
+      }
+    },
+    "animation": {
+      "type": "object",
+      "required": ["id", "target", "track"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "target": { "type": "string", "description": "layer id" },
+        "track": { "type": "string", "enum": ["translate", "rotate", "scale", "opacity", "sway", "shake", "spriteCycle"] },
+        "duration": { "type": "number", "minimum": 0, "default": 2 },
+        "delay": { "type": "number", "minimum": 0, "default": 0 },
+        "loop": { "type": "boolean", "default": true },
+        "easing": { "type": "string", "enum": ["linear", "inOut", "out", "in"], "default": "inOut" },
+        "keyframes": {
+          "type": "array",
+          "description": "For translate/rotate/scale/opacity: time 0..1 and a value; translate in panel-normalised units, rotate in degrees, scale as factor, opacity 0..1",
+          "items": {
+            "type": "object",
+            "required": ["t", "v"],
+            "additionalProperties": false,
+            "properties": {
+              "t": { "type": "number", "minimum": 0, "maximum": 1 },
+              "v": { "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/vec2" }] }
+            }
+          }
+        },
+        "params": {
+          "type": "object",
+          "description": "For sway/shake/spriteCycle: amplitude (normalised), frequency (Hz), frames (image paths) etc.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "interaction": {
+      "type": "object",
+      "required": ["id", "target", "trigger", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "target": { "type": "string" },
+        "trigger": { "type": "string", "enum": ["gaze", "pinch", "proximity", "time"] },
+        "action": { "type": "string", "enum": ["wiggle", "playSound", "revealLayer", "revealBubble", "nextPanel", "enterScene", "playAnimation"] },
+        "params": { "type": "object", "additionalProperties": true }
+      }
+    }
+  }
+}

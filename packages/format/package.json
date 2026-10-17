@@ -1,0 +1,15 @@
+{
+  "name": "@zumi/format",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The .zumi episode format: JSON Schema for manifest.json, C# types for Unity, fixtures and a validator.",
+  "scripts": {
+    "validate": "node validate.mjs",
+    "build": "node validate.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}
