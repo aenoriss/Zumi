@@ -23,6 +23,7 @@ for (const file of targets) {
   const errors = [];
   if (!validate(m)) errors.push(...validate.errors.map((e) => `${e.instancePath || "/"} ${e.message}`));
   const castIds = new Set(m.cast?.map((c) => c.id));
+  const trackIds = new Set(m.episode?.music?.map((t) => t.id));
   const seen = new Set();
   for (const p of m.panels ?? []) {
     if (seen.has(p.id)) errors.push(`duplicate panel id ${p.id}`);
@@ -33,6 +34,7 @@ for (const file of targets) {
       if (b.anchorLayer && !layerIds.has(b.anchorLayer)) errors.push(`panel ${p.id} bubble ${b.id}: unknown anchorLayer ${b.anchorLayer}`);
     }
     for (const a of p.animations ?? []) if (!layerIds.has(a.target)) errors.push(`panel ${p.id} animation ${a.id}: unknown target ${a.target}`);
+    if (p.musicCue && p.musicCue.track !== "none" && !trackIds.has(p.musicCue.track)) errors.push(`panel ${p.id}: musicCue names unknown track ${p.musicCue.track}`);
     for (const i of p.interactions ?? []) if (!layerIds.has(i.target)) errors.push(`panel ${p.id} interaction ${i.id}: unknown target ${i.target}`);
   }
   const rel = path.relative(process.cwd(), file);

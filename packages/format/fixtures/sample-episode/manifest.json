@@ -10,7 +10,17 @@
     "cover": "cover.png",
     "style": { "preset": "ink-wash", "prompt": "", "references": ["refs/style-1.png"] }
   },
-  "episode": { "id": "sample-ep1", "index": 1, "title": "The Door", "summary": "Two panels used to validate the schema and exercise the Unity reader.", "thumbnail": "thumbnail.png", "music": "episode/music.ogg" },
+  "episode": {
+    "id": "sample-ep1",
+    "index": 1,
+    "title": "The Door",
+    "summary": "Two panels used to validate the schema and exercise the Unity reader.",
+    "thumbnail": "thumbnail.png",
+    "music": [
+      { "id": "alley", "file": "episode/music/alley.ogg", "loop": true, "gain": 0.5, "mood": "sparse piano, rain" },
+      { "id": "city", "file": "episode/music/city.ogg", "loop": true, "gain": 0.6, "mood": "neon synth swell" }
+    ]
+  },
   "cast": [
     { "id": "ren", "name": "Ren", "voice": { "engine": "gemini-tts", "voiceId": "ren-v1", "description": "young man, low, tired" }, "color": "#5AD1FF" },
     { "id": "narrator", "name": "Narrator", "voice": { "engine": "gemini-tts", "voiceId": "narr-v1", "description": "calm, warm, slow" } }
@@ -48,6 +58,7 @@
       "panorama": "panels/p1/panorama.jpg",
       "bubbles": [ { "id": "b0", "text": "Oh.", "kind": "speech", "speakerId": "ren", "position": { "x": 0.5, "y": 0.55 }, "audio": "panels/p1/voice/b0.ogg", "startOffset": 1.5 } ],
       "ambience": "panels/p1/ambience.ogg",
+      "musicCue": { "track": "city", "transition": "crossfade", "seconds": 3 },
       "durationOverride": 24
     }
   ]

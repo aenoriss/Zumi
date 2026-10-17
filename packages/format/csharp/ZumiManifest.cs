@@ -46,8 +46,32 @@ namespace Zumi.Format
         public string title;
         public string summary;
         public string thumbnail;
-        public string music;
+        public List<MusicTrack> music = new();
         public float durationHint;
+    }
+
+    [Serializable]
+    public sealed class MusicTrack
+    {
+        public string id;
+        public string file;
+        public bool loop = true;
+        public float gain = 0.6f;
+        public float? loopStart;
+        public float? loopEnd;
+        public string mood;
+    }
+
+    public enum MusicTransition { crossfade, fadeOutIn, cut }
+
+    [Serializable]
+    public sealed class MusicCue
+    {
+        /// <summary>episode.music[].id, or "none" to fade the music out.</summary>
+        public string track;
+        public MusicTransition transition = MusicTransition.crossfade;
+        public float seconds = 2.5f;
+        public float startAt;
     }
 
     [Serializable]
@@ -98,6 +122,7 @@ namespace Zumi.Format
         public List<Bubble> bubbles = new();
         public List<Animation> animations = new();
         public string ambience;
+        public MusicCue musicCue;
         public string panorama;
         public string scene;
         public List<Interaction> interactions = new();

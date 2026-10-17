@@ -42,7 +42,11 @@
         "title": { "type": "string" },
         "summary": { "type": "string" },
         "thumbnail": { "$ref": "#/$defs/episodeImagePath" },
-        "music": { "$ref": "#/$defs/episodeAudioPath", "description": "Optional per-episode instrumental track, looped under the ambience" },
+        "music": {
+          "type": "array",
+          "description": "Instrumental tracks available to this episode. The first one starts with panel 0 unless panel 0 names a cue. Panels switch tracks with musicCue.",
+          "items": { "$ref": "#/$defs/musicTrack" }
+        },
         "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, sum of panel durations; informational" }
       }
     },
@@ -79,7 +83,33 @@
     "episodeImagePath": { "type": "string", "pattern": "^(cover\\.(png|jpg)|thumbnail\\.(png|jpg)|refs/[^/]+\\.(png|jpg|jpeg|webp))$", "description": "Episode-level image: cover.png, thumbnail.png, or refs/<name>" },
     "panelImagePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(layers/[a-z0-9_-]+\\.png|panorama\\.(jpg|jpeg|png)|depth/[a-z0-9_-]+\\.png)$", "description": "Inside the panel's own folder: layers/<layerId>.png, panorama.jpg, depth/<layerId>.png" },
     "panelAudioPath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(voice/[a-z0-9_-]+\\.(ogg|mp3|wav)|ambience\\.(ogg|mp3|wav))$", "description": "Inside the panel's own folder: voice/<bubbleId>.ogg or ambience.ogg" },
-    "episodeAudioPath": { "type": "string", "pattern": "^episode/music\\.(ogg|mp3|wav)$" },
+    "episodeAudioPath": { "type": "string", "pattern": "^episode/music/[a-z0-9_-]+\\.(ogg|mp3|wav)$" },
+    "musicTrack": {
+      "type": "object",
+      "required": ["id", "file"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "file": { "$ref": "#/$defs/episodeAudioPath" },
+        "loop": { "type": "boolean", "default": true },
+        "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6, "description": "Linear gain relative to voices; the reader also ducks music under speech" },
+        "loopStart": { "type": "number", "minimum": 0, "description": "Seconds; loop region start for seamless loops (optional)" },
+        "loopEnd": { "type": "number", "minimum": 0, "description": "Seconds; loop region end (optional)" },
+        "mood": { "type": "string" }
+      }
+    },
+    "musicCue": {
+      "type": "object",
+      "required": ["track"],
+      "additionalProperties": false,
+      "description": "Placed on a panel: when the panel appears, switch to this track with the given transition.",
+      "properties": {
+        "track": { "type": "string", "description": "episode.music[].id, or 'none' to fade music out" },
+        "transition": { "type": "string", "enum": ["crossfade", "fadeOutIn", "cut"], "default": "crossfade", "description": "crossfade: equal-power overlap; fadeOutIn: silence gap between tracks; cut: immediate (use only on hard scene breaks)" },
+        "seconds": { "type": "number", "minimum": 0, "default": 2.5, "description": "Total transition time" },
+        "startAt": { "type": "number", "minimum": 0, "default": 0, "description": "Seconds into the new track to start from" }
+      }
+    },
     "scenePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/scene\\.glb$" },
     "hexColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
     "vec2": {
@@ -123,6 +153,7 @@
         "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" } },
         "animations": { "type": "array", "items": { "$ref": "#/$defs/animation" } },
         "ambience": { "$ref": "#/$defs/panelAudioPath" },
+        "musicCue": { "$ref": "#/$defs/musicCue" },
         "panorama": { "$ref": "#/$defs/panelImagePath", "description": "Equirectangular image, required when renderMode is panorama" },
         "scene": { "$ref": "#/$defs/scenePath", "description": "glb, required when renderMode is scene3d" },
         "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" }, "description": "Reserved; post-MVP" }
