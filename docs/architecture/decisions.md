@@ -87,27 +87,22 @@ Controls: per-chapter budget cap ($10 default; a 10-page chapter is ~$6), per-st
 
 Interactive elements (touch triggers, fixed action enum, AI-suggested never auto-applied, no scripting) are post-MVP; the format reserves the fields.
 
-## 5. Web app
+## 5. Web app: DESCOPED 2026-10-17
 
-| Decision | Choice |
-|---|---|
-| Frontend | Next.js on Vercel. |
-| API | Bun + Elysia on Render. Orchestrates jobs, talks to Modal, Supabase, OpenRouter, Meta API, Google. |
-| Data | Supabase: Auth, Postgres, Storage (signed URLs for the headset), Realtime. |
-| Landing | Competition showcase (trailer, pitch, links) + public gallery of chapters with a browser parallax preview (CSS 3D, mouse-move, plays animation tracks). English only. |
-| Editor (MVP) | Upload one sketch per panel; style (preset/text/refs); cast list with voice pick and line preview; dialog text fix, speaker reassign, bubble reposition; layer merge + Z nudge; animation instruction per panel with preview; regenerate single panel with tweaked prompt/refs; panel order, render mode, duration override; 2D parallax preview; publish chapter. |
-| Language | English for MVP; `language` is a per-comic field for later translation tracks. |
+The creation platform (web editor, creator accounts, portal, Elysia API, Render) is out of the MVP. The competition deliverable is the XR app. The pipeline runs as a command-line tool, operated by us, on the artist's comic to produce the demo episodes. Episodes are uploaded to Supabase Storage by the same tool; the XR app reads a public manifest from there.
+
+The only web surface is `apps/landing`: a single static "coming soon" page with the Zumi mark and the official "Available on Meta Quest" store badge (asset from Meta's brand resources, linked to the Horizon Store listing once it exists). Static HTML on the token CSS, hosted on Vercel or GitHub Pages.
+
+`apps/web`, `packages/ui` and the web-only skills were removed on 2026-10-17 (history: commits 0fd1c89, 94ea37e). `packages/design-tokens` stays: its USS and C# outputs feed the Unity UI and the CSS feeds the landing.
 
 ## 6. Repo layout (monorepo)
 
 ```
-apps/web/                Next.js
-apps/api/                Bun + Elysia
-apps/xr/                 Unity 6 project (Git LFS for binaries, strict .gitignore)
-pipeline/                Python, Modal functions
-packages/format/         .zumi JSON Schema -> TS + C# types
-packages/design-tokens/  tokens JSON -> CSS vars + Unity ScriptableObject
-packages/ui/             Storybook component library (brand grill pending)
+apps/xr/                 Unity 6 project (Git LFS for binaries, strict .gitignore)   <- the product
+apps/landing/            static coming-soon page (index.html + token CSS + Meta Quest badge)
+pipeline/                Python CLI + Modal functions: sketches -> .zumi episode -> upload
+packages/format/         .zumi JSON Schema -> C# types (and TS for the pipeline's validator)
+packages/design-tokens/  tokens JSON -> USS + C# for Unity, CSS for the landing
 docs/                    research, architecture, format spec
 ```
 
@@ -123,9 +118,9 @@ Unity Play mode with Quest Link daily; device builds occasionally over adb. Mult
 4. Google AI Studio key (Gemini TTS, Lyria 3, vision fallback).
 5. ElevenLabs key (Sound Effects v2 ambience; TTS A/B).
 6. Photon: Fusion app ID + Voice app ID.
-7. Supabase project.
+7. Supabase project (Storage + one Postgres table for the episode manifest; no Auth).
 8. Modal account + token.
-9. Vercel project, Render service.
+9. Vercel project or GitHub Pages for the landing only. Meta Quest store badge from Meta's brand resources page.
 
 All keys go in untracked `.env` files and are never committed.
 
@@ -137,4 +132,13 @@ Interactive elements and AI suggestions; translation tracks; audience-triggerabl
 
 - Verify which Meta API model accepts images (Muse Wonder vs Spark) and Muse Glimmer's multimodality.
 - Panorama generator choice (step 10).
-- Brand/design system: separate grill in progress. Decided so far: W3C DTCG JSON in `packages/design-tokens` is the token source of truth (Pencil dropped 2026-10-17) -> Style Dictionary -> CSS, USS, C#; components on Radix Primitives + Tailwind v4 from tokens, catalogued in Storybook 10; ParallaxPreview in react-three-fiber (shares animation/depth math with Unity).
+- Brand/design system: brief locked in `docs/design/brief.md`. Tokens: W3C DTCG JSON in `packages/design-tokens` -> Style Dictionary -> USS + C# (CSS kept). The React component library and Storybook were descoped with the web app; the design system now lives in Unity UI Toolkit (USS from tokens) and the XR space itself (midnight library lighting, orbs, paper panels).
+
+## 11. Build order after the descope (2026-10-17)
+
+1. `packages/format`: `.zumi` schema + C# types, and a hand-built sample episode from 3 to 5 of the artist's panels (cut-outs made manually if needed) so Unity work never waits on the pipeline.
+2. `apps/xr`: Unity 6 + Meta XR SDK. Passthrough room, `.zumi` streaming from Supabase, carousel of paper panels with parallax layers, voices + ambience, automated pacing. Single reader first.
+3. Multiplayer: Photon Fusion rooms with the shared panel index, Zumi orbs, emotes, pause vote, Meta Group Presence invites.
+4. `pipeline/`: Muse Image A/B, SAM 3.1 cut-outs, depth, inpainting, voices, ambience, animation tracks, Blender scenes, packer, uploader. Produces the real demo episodes.
+5. Immersive frames (panorama, 3D scene) in Unity once the pipeline emits them.
+6. Trailer, `apps/landing` coming-soon page, store submission.

@@ -8,10 +8,8 @@
   "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
   "scripts": {
     "tokens": "pnpm --filter @zumi/design-tokens build",
-    "storybook": "pnpm --filter @zumi/ui storybook",
-    "dev:web": "pnpm --filter @zumi/web dev",
-    "build": "pnpm -r build",
-    "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "tokens:check": "pnpm --filter @zumi/design-tokens check",
+    "format:build": "pnpm --filter @zumi/format build",
+    "build": "pnpm -r build"
   }
 }
