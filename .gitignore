@@ -38,3 +38,6 @@ apps/xr/.vs/
 # claude local
 .claude/settings.local.json
 .claude-pin/
+
+# Research-only test data (scraped webtoons, never redistributed)
+pipeline/.data/

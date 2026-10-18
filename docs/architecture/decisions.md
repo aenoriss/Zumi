@@ -83,7 +83,9 @@ Order per panel:
 11. **3D scene frames**: Muse Glimmer drives headless Blender through MCP in a Modal container (primitives, curated low-poly library, materials, lights, panel cut-outs placed inside). Export `.glb`, loaded by glTFast. Tool-call cap per scene.
 12. **Pack**: `.zumi` built, uploaded to Supabase Storage.
 
-Controls: per-chapter budget cap ($10 default; a 10-page chapter is ~$6), per-step retry limit 2, Blender agent tool-call cap. Jobs are rows in Postgres; Modal functions update rows via service key (Modal has no webhooks); Supabase Realtime pushes status to the editor.
+Controls: per-episode budget cap ($10 default; a 10-page episode is ~$6), per-step retry limit 2, Blender agent tool-call cap.
+
+Execution and monitoring (decided 2026-10-17): the pipeline is a Python CLI (`pipeline/`) whose steps run remotely as Modal functions; progress, per-panel artefacts (regenerated image, cut-outs, voice clips, timings, cost) and errors are reported to **Weights & Biases** (one W&B run per episode, one step per panel) so the episode can be watched coming together in the browser. No Postgres job table and no web editor: the CLI packs the `.zumi` and uploads it to Supabase Storage at the end.
 
 Interactive elements (touch triggers, fixed action enum, AI-suggested never auto-applied, no scripting) are post-MVP; the format reserves the fields.
 
