@@ -17,7 +17,7 @@ lo9 = Lore Olympus 9, sh14 = Sweet Home 14, cpc1 = Cursed Princess Club 1. Run: 
 | split-title | one title card cut into pieces at the small gaps between its lines/ornaments (tog235 logo + season card; it0 review) |
 | bridged-sfx | lettering that runs across a gutter cut in two (tog235 "SL|ICE"; it0 review) |
 | false-gutter | a flat area inside one panel (pale sky) cut as a gutter (cpc1 22/23; it0 review) |
-| no-gap-merge | two panels with no blank row between them (diagonal border, bubble bridging the gutter), so one box (lo9 13, u395 72, sh14 60; it0 review). Needs a bubble detector to mask bubbles before the scan |
+| no-gap-merge | two panels with no blank row between them (diagonal border, bubble bridging the gutter), so one box (lo9 13, u395 72, sh14 60; it0 review). Needs a bubble detector to mask bubbles before the scan. **Amended 2026-10-18 by the user's decision (see end of log): when the link is deliberate overlap (a bubble, burst or SFX laid across the gutter), one long box is correct and is not a defect. Only diagonal or staggered frames with no overlapping element still count** |
 | pan-cut | one borderless shot over a flat sky cut where the sky is plain (cpc1 0-2; it0 review). Needs delivery: sky rows are pixel-identical to gutter rows |
 | padded-edge | a box that runs past its beat's soft fade into flat page background, because isolated grain rows break the blank run (sh14 27 "NOTHING": 228 px of background inside the box, 54 px of a ~280-px pause cut; found by the user in it1) |
 
@@ -594,3 +594,15 @@ Illustrator verdict, iteration 6 (verbatim):
 Stop: six iterations (rule 3). Needs delivery or a detector (not stops): pan-cut (cpc1 0-2), no-gap-merge (lo9 12,
 sh14 60, tog235 73, lo9 37), caption plate vs small flat art panel (cpc1 26/37), shared bridging SFX. Product
 question: transition gradients and fades as explicit elements.
+
+## Decision 2026-10-18 (user): overlap-linked beats are one frame
+
+When an artist overlaps art across a gutter to link two beats (a bubble or dialog sitting across the gutter, a burst
+spanning two frames, an SFX laid over the gap), the two frames and the gutter between them are a **single long
+frame**. Row segmentation already returns this, so these boxes are correct, not defects: tog235 73 (SFX over the
+gutter, 5529 px), sh14 60 ("OF MARIA!!" burst), u395 72 (bubble ladder), and bridged-sfx in general (never cut
+lettering that crosses a gutter). The stepped reader already handles panels taller than the view by scrolling through
+them in screen-height stops (packages/format README, Layout), so height alone is not a reason to split.
+
+Still defects: diagonal or staggered frames with no overlapping element (lo9 12/13, lo9 37/38), which need a 2D panel
+detector or per-panel files. Recount under this rule: iteration 6 goes from 9 to 8 (sh14 60 no longer counted).
