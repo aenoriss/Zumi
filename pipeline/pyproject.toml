@@ -1,0 +1,21 @@
+[project]
+name = "zumi-pipeline"
+version = "0.1.0"
+description = "Zumi episode pipeline: webtoon strip or panel files in, .zumi episode out"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pillow>=11.0",
+    "pydantic>=2.9",
+    "typer>=0.15",
+]
+
+[project.scripts]
+zumi = "zumi.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zumi"]
