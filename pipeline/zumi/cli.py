@@ -30,7 +30,9 @@ def intake_cmd(
     episode_index: int = typer.Option(1, "--index"),
     tolerance: int = typer.Option(20, help="Per-channel distance from the row's median colour that makes a pixel an outlier; a row is blank with < 0.2 % outliers"),
     min_gutter: int = typer.Option(40, help="Blank rows needed to count as a gutter"),
-    min_panel: int = typer.Option(120, help="Slabs shorter than this merge into the panel above"),
+    max_floater: int = typer.Option(700, help="Slabs shorter than this and flat enough are floaters (bubble, caption, sfx)"),
+    min_flatness: float = typer.Option(0.85, help="Share of pixels in a slab's 4 most frequent colours that makes it a floater"),
+    gap_factor: float = typer.Option(0.75, help="A floater joins its nearer panel only across a gap under this x the median gutter"),
 ):
     """Stitch, cut at gutters and pack a .zumi with one flat base layer per panel."""
     files = intake.list_images(folder)
@@ -48,7 +50,14 @@ def intake_cmd(
     layout: Layout | None = None
 
     if mode == "strip":
-        strip = intake.split_strip(files, tolerance=tolerance, min_gutter=min_gutter, min_panel=min_panel)
+        strip = intake.split_strip(
+            files,
+            tolerance=tolerance,
+            min_gutter=min_gutter,
+            max_floater=max_floater,
+            min_flatness=min_flatness,
+            gap_factor=gap_factor,
+        )
         bg = "#{:02X}{:02X}{:02X}".format(*strip.background)
         layout = Layout(mode="scroll", width=strip.image.width, height=strip.image.height, background=bg)
         for i, (slab, im) in enumerate(zip(strip.slabs, intake.crop_slabs(strip))):

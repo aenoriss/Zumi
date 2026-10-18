@@ -11,8 +11,8 @@ Gutter scan (see docs/research/webtoon-panel-splitting-2026-10.md):
 3. a break of <= 2 non-blank rows between blank rows is grain and counts as blank;
 4. a run of >= `min_gutter` blank rows is a gutter; the panel boundary is the run's edges.
 Slice seams are invisible after stitching, so they never produce a cut. A bubble sitting in a gutter
-shortens the gutter but is not blank, so until the bubble detector runs first (next step) it comes out
-as its own small slab; `min_panel` merges such slivers into the panel above.
+shortens the gutter but is not blank, so it comes out as its own small slab; `attach_floaters` joins
+such flat, short slabs to the nearer panel (until a bubble detector runs first).
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def blank_rows(arr: np.ndarray, tolerance: int, max_outliers: float = 0.002, chu
     as one 67 000-px panel (tuning-log iteration 0). 20 is the knee of that grain: the share of dark
     rows passing goes 0.8 % at 10, 26 % at 15, 32 % at 20, 32 % at 30.
     The cost is that a flat block inside a panel (a black "everything went dark" beat) also reads as
-    blank; min_gutter and min_panel absorb the short ones.
+    blank; min_gutter absorbs the short ones.
     """
     out = np.empty(arr.shape[0], dtype=bool)
     for y in range(0, arr.shape[0], chunk):
@@ -115,7 +115,7 @@ def bridge_breaks(blank: np.ndarray, max_break: int) -> np.ndarray:
     return out
 
 
-def find_slabs(blank: np.ndarray, min_gutter: int, min_panel: int, max_break: int = 2) -> list[Slab]:
+def find_slabs(blank: np.ndarray, min_gutter: int, max_break: int = 2) -> list[Slab]:
     """Split rows into content slabs separated by blank runs of at least min_gutter rows."""
     blank = bridge_breaks(blank, max_break)
     n = len(blank)
@@ -140,33 +140,86 @@ def find_slabs(blank: np.ndarray, min_gutter: int, min_panel: int, max_break: in
                 y, in_content = s, True
     if in_content:
         slabs.append(Slab(y=y, h=n - y, gutter_after=0))
+    return slabs
 
-    # merge slivers (gutter bubbles, stray marks) into the slab above; the first one merges down
-    merged: list[Slab] = []
-    for slab in slabs:
-        if slab.h < min_panel and merged:
-            prev = merged[-1]
-            prev.h = slab.y + slab.h - prev.y
-            prev.gutter_after = slab.gutter_after
-        elif slab.h < min_panel and not merged:
-            merged.append(slab)  # merged into the next one below
+
+def flatness(region: np.ndarray, top: int = 4) -> float:
+    """Share of pixels covered by the `top` most frequent colours (5 bits per channel).
+
+    A bubble, caption box, sound effect or speck is a fill, an outline and lettering: 0.73-0.99 on the fixture
+    episodes, mostly >= 0.93. Art is shaded: Sweet Home 14's red text plates 0.23-0.41, Lore Olympus 9's tiny
+    reaction panels 0.53-0.67. Height alone could not separate the two (tuning-log, iteration 2).
+    """
+    q = (region[..., 0] >> 3).astype(np.int32) << 10 | (region[..., 1] >> 3).astype(np.int32) << 5 | region[..., 2] >> 3
+    counts = np.sort(np.bincount(q.ravel()))[::-1]
+    return float(counts[:top].sum() / counts.sum())
+
+
+def attach_floaters(
+    slabs: list[Slab],
+    arr: np.ndarray,
+    max_floater: int,
+    min_flatness: float,
+    gap_factor: float,
+    min_panel: int = 120,
+) -> list[Slab]:
+    """Join floaters (slabs under `max_floater` px that are at least `min_flatness` flat) to the panel they belong to.
+
+    1. consecutive floaters closer than the cap group into one unit (a title card's lines, a speck trail);
+    2. a floater unit joins the nearer non-floater neighbour if that gap is under the cap, otherwise it stays a box.
+    cap = `gap_factor` x the strip's median gutter. Nearer, not "always the one above": captions head the panel
+    below them (Lore Olympus 9's dog roll call). Capped, because the old always-up sliver rule welded a 116-px
+    title ornament onto a scream panel across a 1960-px gradient and a frame onto a cemetery panel across a
+    2734-px pause (tuning-log, iterations 1-2).
+    """
+    if len(slabs) < 2:
+        return slabs
+    cap = gap_factor * float(np.median([s.gutter_after for s in slabs[:-1]]))
+    units: list[tuple[Slab, bool]] = []
+    for s in slabs:
+        # under min_panel nothing is a panel, flat or not (a credit line on grainy dark brown is not flat)
+        floater = s.h < min_panel or (s.h < max_floater and flatness(arr[s.y : s.y + s.h]) >= min_flatness)
+        prev = units[-1] if units else None
+        if floater and prev and prev[1] and prev[0].gutter_after < cap:
+            units[-1] = (Slab(y=prev[0].y, h=s.y + s.h - prev[0].y, gutter_after=s.gutter_after), True)
         else:
-            if merged and merged[-1].h < min_panel:
-                first = merged.pop()
-                slab.h = slab.y + slab.h - first.y
-                slab.y = first.y
-            merged.append(slab)
-    return merged
+            units.append((Slab(y=s.y, h=s.h, gutter_after=s.gutter_after), floater))
+
+    out: list[Slab] = []
+    pending: Slab | None = None  # a floater unit joining the next panel down
+    for i, (u, floater) in enumerate(units):
+        if not floater:
+            if pending is not None:
+                u = Slab(y=pending.y, h=u.y + u.h - pending.y, gutter_after=u.gutter_after)
+                pending = None
+            out.append(u)
+            continue
+        gap_up = units[i - 1][0].gutter_after if i > 0 and not units[i - 1][1] else None
+        gap_down = u.gutter_after if i + 1 < len(units) and not units[i + 1][1] else None
+        options = [(g, side) for g, side in ((gap_up, "up"), (gap_down, "down")) if g is not None and g < cap]
+        if not options:
+            out.append(u)
+        elif min(options)[1] == "up":
+            out[-1] = Slab(y=out[-1].y, h=u.y + u.h - out[-1].y, gutter_after=u.gutter_after)
+        else:
+            pending = u
+    return out
 
 
 def split_strip(
-    files: list[Path], *, tolerance: int = 20, min_gutter: int = 40, min_panel: int = 120
+    files: list[Path],
+    *,
+    tolerance: int = 20,
+    min_gutter: int = 40,
+    max_floater: int = 700,
+    min_flatness: float = 0.85,
+    gap_factor: float = 0.75,
 ) -> Strip:
     image, seams = stitch(files)
     arr = np.asarray(image)
     bg = background_colour(arr)  # dominant margin colour, informational
     blank = blank_rows(arr, tolerance)
-    slabs = find_slabs(blank, min_gutter, min_panel)
+    slabs = attach_floaters(find_slabs(blank, min_gutter), arr, max_floater, min_flatness, gap_factor)
     # leading blank rows are not a slab; record them as the first slab's offset only
     return Strip(image=image, background=bg, slabs=slabs, seams=seams)
 

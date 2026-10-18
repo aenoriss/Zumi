@@ -313,3 +313,87 @@ captions, lettering and specks are a fill, an outline and text; art is not (meas
 than the cap group first (title cards, speck trails), then the group joins the nearer non-floater neighbour if that gap
 is under 0.75 x the strip's median gutter, else stands alone. Scratch sweep on it2's slabs: 10 missed / 27 extra
 against 11 / 51 now. Height alone (the reviewer's simulation and mine) could not separate floaters from short panels.
+
+## Iteration 3 (change: flatness-based floater attachment replaces the always-up sliver rule)
+
+Rules: iteration 2, with the sliver rule (< 120 px merges into the slab above, across any gap) replaced by
+`attach_floaters`: a slab is a floater when it is under 120 px, or under 700 px with its 4 most frequent colours
+(5-bit) covering >= 85 % of its pixels; consecutive floaters closer than the cap group; a floater group joins its
+nearer non-floater neighbour if that gap is under 0.75 x the strip's median gutter, else stays a box. (The "under
+120 px is always a floater" clause was added before the review, after the first run showed a 23-px credit line on
+sh14's grainy brown, flatness 0.61, standing alone.) Flatness at coarser quantisation was measured and rejected:
+at 3 bits sh14's red plates reach 0.88 while textured parchment captions only reach 0.80-0.90, so no threshold
+separates them.
+
+| ep | panels | h min/med/max | gutter min/q1/med/q3/max | <300 | >5000 | recall | precision |
+|---|---|---|---|---|---|---|---|
+| u395 | 117 | 39/1255/2508 | 53/282/422/538/2734 | 6 | 0 | 0.965 | 0.957 |
+| tog235 | 83 | 164/1544/5523 | 66/335/436/724/1567 | 2 | 1 | 1.000 | 0.975 |
+| lo9 | 75 | 30/795/2369 | 41/140/206/290/1304 | 3 | 0 | 0.973 | 0.986 |
+| sh14 | 89 | 234/587/2940 | 54/205/310/384/841 | 4 | 0 | 1.000 | 1.000 |
+| cpc1 | 58 | 165/825/2046 | 70/353/397/486/1976 | 8 | 0 | 1.000 | 0.906 |
+
+Label changes from this review (all reviewer-judged, applied before the scores above; iteration 2 on the same labels:
+u395 0.965/0.932, tog235 0.987/0.835, lo9 0.919/0.883, sh14 1/1, cpc1 0.958/0.793): u395 -197498 (inside the credits
+card), 60361 -> 59995 (a boundary inside one continuous black run; the box starts 50 px higher, in solid black),
+16537 and 82777 ambiguous (debris field; caption-or-dissolve pacing); tog235 145872 ambiguous (KWOOSH dissolving into
+the reveal); cpc1 31951 -> 31713 (box starts at the first confetti speck of a panel fading in from white), 13711 and
+22160 ambiguous ("rustle" with a 372/384 tie; "pant", same unseen voice as the already-ambiguous 16-18).
+
+New kind, **text-clip**: thin, small type has so few ink pixels per row that its ascender/descender rows pass as
+blank, so a box edge clips the line (u395 115 "[end]", tog235 17 "SIU" credit, lo9 11 "Edited by", 12 "Episode 09",
+sh14 31 credit line). Present since iteration 1's outlier fraction; first named here. Also folded into padded-edge:
+a box that starts at a lone speck far above its frame (u395 100, 101).
+
+Defects:
+
+| kind | u395 | tog235 | lo9 | sh14 | cpc1 | total |
+|---|---|---|---|---|---|---|
+| floater | 0 | 0 | 0 | 0 | 4 (captions 21, 25, 27, 38: parchment texture, flatness 0.57-0.77) | 4 |
+| missed-gutter | 0 | 0 | 0 | 0 | 0 | 0 |
+| merged-title | 0 | 0 | 0 | 0 | 0 | 0 |
+| misattached | 1 (103: the two growing window frames merged into the apartment shot) | 0 | 1 (61: ash flecks weld the "Sigh" pause beat to the panel above) | 0 | 0 | 2 |
+| split-title | 0 | 1 (16/17) | 0 | 0 | 0 | 1 |
+| fade | 5 (unchanged mechanism; this reviewer calls them correct transitions) | 0 | 0 | 0 | 1 (23 bottom: cream ground fade) | 6 |
+| fade-clip | 2 (47/48 dissolve top; 92/93 cut through the sunset sky under "How did he pass?") | 1 (50/51 misty top) | 0 | 0 | 2 (21, 25) | 5 |
+| fragment | 0 | 0 | 0 | 0 | 0 | 0 |
+| bridged-sfx | 0 | 1 (72/73 KWOOSH, claim) | 0 | 0 | 0 | 1 |
+| false-gutter | 0 | 0 | 0 | 0 | 1 | 1 |
+| no-gap-merge | 0 | 0 | 1 (13; also 38, staggered frames, accepted by the labels) | 1 (60) | 0 | 2 |
+| pan-cut | 0 | 0 | 0 | 0 | 1 | 1 |
+| padded-edge | 2 (100, 101 start at a lone speck) | 0 | 0 | 0 | 0 | 2 |
+| text-clip | 1 | 1 | 2 | 1 | 0 | 5 |
+| total | 11 | 4 | 4 | 2 | 9 | 30 |
+
+66 -> 30. Fixed: all 12 tog235 floaters and the SLICE split (now grouped), u395 advisory card and title card (now
+their own boxes), the cemetery pause, the lo9 dog captions (each with its own dog), cpc1 title card (one box) and the
+title ornament weld. Not fixed by design: cpc1 parchment captions (not flat enough), and the u395 window frames, which
+are flat navy fills and so read as floaters; the it1 reviewer wanted them with the apartment shot, the it0 and it3
+reviewers as panels of their own.
+
+Illustrator verdict, iteration 3 (verbatim):
+
+> I count about 14 reader-visible defects in 422 boxes (my own count): 6 bad cuts or merges, 4 detached captions, and 4 text-clipping edges. That is roughly 97% of boxes a reader would accept. Most of the remaining scorer misses and extras are label strictness, not splitter errors.
+>
+> Four rules would remove most of what is left:
+> 1. **Pad box edges to a fully clean row (zero outliers).** Fixes the clipped text in u395 115, tog 17, lo9 11/12 and sh14 31.
+> 2. **Blank means matching the local page colour, not just uniform.** Fixes the cuts through art in u395 92/93 and, partly, tog 50/51.
+> 3. **Ignore small isolated components when finding gaps, then reattach them to the nearer box within a distance limit.** Fixes u395 100/101 and lo9 61, but must be checked against the debris in u395 box 10.
+> 4. **Attach small caption or bubble boxes to the nearer neighbour, with a text classifier** so that art slivers are left alone. Fixes the four cpc1 captions.
+>
+> A fifth, smaller fix: treat closed rectangular frames as panels whatever their height (u395 103).
+>
+> What cannot be recovered from pixels, with tests:
+> - cpc1 0/1: one painting whose sky equals the page colour.
+> - tog 72/73: an SFX dissolving through white into a reveal.
+> - Borderless empty "silence" beats (sh14 12 survives only because of its border).
+> - Staggered or diagonal panels (lo9 38, 13): beyond row-based splitting, but a 2D frame detector can handle them.
+>
+> These need per-panel source files, a script, or a creator override.
+>
+> So this approach can reach reader-grade on gutter-separated vertical-scroll material once the four rules are in. It cannot reach 100%: the continuous-painting cases need a manual merge/split tool in the creator flow.
+
+Next: text-clip. Pad each box edge outward into its gutter until a row with zero outlier pixels, capped at 16 rows
+so grain cannot walk an edge across a dark gutter. Five instances, one mechanism, and a change that cannot move a
+cut. The page-colour rule (the reviewer's rule 2, targeting fade-clip and false-gutter) is larger and would turn the
+scene-change gradients both reviewers want left outside boxes back into content, so it waits.
