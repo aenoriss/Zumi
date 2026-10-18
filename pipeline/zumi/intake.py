@@ -123,17 +123,37 @@ def page_gutters(
     for s, e in zip(starts, ends):
         if not blank[s] or e - s < min_gutter:
             continue
-        touches_page = False
         # page colour above and below separately: at a white-to-dark scene change a single window's mode is
         # the white half, which would make the first dark gutter "not page" (Sweet Home 14, y 20700-20965)
+        pages = []
         for lo_y, hi_y in ((s - window, e), (s, e + window)):
             lo, hi = np.searchsorted(ys, [lo_y, hi_y])
             k = np.bincount(keys[lo:hi]).argmax()
-            page = np.median(medians[ys[lo:hi][keys[lo:hi] == k]], axis=0)
-            touches_page |= bool((np.abs(medians[s:e] - page).max(axis=1) <= tolerance).any())
-        span = int((medians[s:e].max(axis=0) - medians[s:e].min(axis=0)).max())
-        if not touches_page and span <= min_span:
+            pages.append(np.median(medians[ys[lo:hi][keys[lo:hi] == k]], axis=0))
+
+        def page_or_fade(a: int, b: int) -> bool:
+            seg = medians[a:b]
+            touches = any((np.abs(seg - p).max(axis=1) <= tolerance).any() for p in pages)
+            return touches or int((seg.max(axis=0) - seg.min(axis=0)).max()) > min_span
+
+        if not page_or_fade(s, e):
             out[s:e] = False
+            continue
+        # a frame line and the flat sky or wall under it are blank rows too, and joined the page-coloured gutter,
+        # so boxes lost their border and up to 110 px of art (tuning-log, frame-eaten). Split the run where the
+        # colour jumps; flat off-page segments at either end go back to the content they touch.
+        jumps = np.flatnonzero(np.abs(np.diff(medians[s:e], axis=0)).max(axis=1) > tolerance) + 1 + s
+        segs = list(zip(np.concatenate([[s], jumps]), np.concatenate([jumps, [e]])))
+        if s > 0:
+            for a, b in segs:
+                if page_or_fade(a, b):
+                    break
+                out[a:b] = False
+        if e < len(blank):
+            for a, b in reversed(segs):
+                if page_or_fade(a, b):
+                    break
+                out[a:b] = False
     return out
 
 

@@ -540,3 +540,57 @@ or a bubble/caption detector.
 Next (iteration 6, the last allowed): frame-eaten (8, the largest class). Split each kept gutter run where the median
 colour jumps by more than the tolerance; from each end of the run, segments that are off the page colour and flat
 (span <= 48) go back to the adjacent content, stopping at the first page-coloured or gradient segment.
+
+## Iteration 6 (change: frame lines and flat end bands go back to the box they touch)
+
+Rules: iteration 5, plus inside `page_gutters`: each kept gutter run is split where the row median colour jumps by
+more than 20; from each end of the run (not at the strip's own ends), segments that neither touch the page colour nor
+span more than 48 return to the content they touch, stopping at the first page-coloured or gradient segment.
+
+| ep | panels | h min/med/max | gutter min/q1/med/q3/max | <300 | >5000 | recall | precision |
+|---|---|---|---|---|---|---|---|
+| u395 | 116 | 39/1256/2479 | 71/299/434/527/2722 | 5 | 0 | 1.000 | 0.991 |
+| tog235 | 82 | 164/1551/5529 | 78/340/436/725/1564 | 2 | 1 | 1.000 | 1.000 |
+| lo9 | 75 | 228/795/2369 | 41/147/214/295/1304 | 2 | 0 | 0.986 | 1.000 |
+| sh14 | 89 | 237/589/2940 | 54/205/309/381/838 | 4 | 0 | 1.000 | 1.000 |
+| cpc1 | 57 | 165/829/2345 | 70/355/399/498/1976 | 8 | 0 | 1.000 | 0.941 |
+
+No cut moved (scores identical to iteration 5). Edges that moved by more than 3 px: u395 0 bottom +192 (the advisory
+card's black field), 23 top -116, 43 -96, 82 -62, 95 -97 (frame line and flat sky back in), and 50 other u395 boxes
+by 12-36 px (their black frame lines and white frame borders, which had been read as gutter on the dark page; checked
+on crops of 7, 23, 109); cpc1 25 bottom +119, 27 +53 (floor bands); tog235, sh14 and cpc1 others by 3-11 px.
+
+Defects (the reviewer judged u395 99's top, which includes the sweat drops, right: the drops are emanata of 99):
+
+| kind | u395 | tog235 | lo9 | sh14 | cpc1 | total |
+|---|---|---|---|---|---|---|
+| floater | 0 | 0 | 0 | 0 | 2 (plates 26, 37) | 2 |
+| fade | 0 | 0 | 0 | 0 | 1 (23: ~500 px cream dissolve lost) | 1 |
+| fade-clip | 1 (47/48) | 0 | 0 | 0 | 0 | 1 |
+| frame-eaten | 2 (0: the card's black field above its text, at the strip's first row; 1: the frame line above the crowd sits across a white band from it) | 0 | 0 | 0 | 0 | 2 |
+| no-gap-merge | 0 | 0 | 1 (12) | 1 (60) | 0 | 2 |
+| pan-cut | 0 | 0 | 0 | 0 | 1 | 1 |
+| padded-edge | 0 | 0 | 0 | 0 | 0 | 0 |
+| total | 3 | 0 | 1 | 1 | 4 | 9 |
+
+Iteration 5 on the same books (99 judged right): 15. So 15 -> 9.
+
+Risks: u395 box 10 picks up a couple of rubble specks and leaves the rest of a deliberate debris trail outside every
+panel (speck drop); tog235 73 (5529 px) and sh14 60 (2940 px) are single boxes far taller than a screen, correct by
+the labels, unreadable as one panel.
+
+Illustrator verdict, iteration 6 (verbatim):
+
+> At the cut level the approach is close to reader-grade on this material. Measured against about 400 labelled cuts, there is 1 genuine miss (lo9 diagonal), 3 genuine extras (cpc1: 2 attachable captions and 1 broken sky pan), and 1 extra that is a label-position artefact (u395).
+>
+> The remaining failures are of two kinds:
+> - **Fixable by rule:** caption attachment, thin gutters under slanted edges, soft fades and speck trails at box edges (cpc1 23, u395 10). These are what currently stop the boxes from matching the artist's frame plus bleed.
+> - **Not fixable from rows, by construction:** artists overlap layers across gutters on purpose to link beats. The cases here are a sound effect over a gutter (tog235 73, 5529 px), a burst spanning two frames (sh14 60) and staggered insets (lo9 37).
+>   - Row segmentation will always return these as one oversized box. That matches the labels but is too tall to read as a single panel.
+>   - Getting them to reader-grade needs information beyond row profiles: a 2D panel-rectangle detector (enough for lo9 37), plus a text/SFX/bubble detector or layered source files (needed for tog235 73 and sh14 60).
+>
+> One representation gap remains. Transition gradients (u395 after 59, sh14 after 20, cpc1 after 2 and 20) carry meaning: day to night, past to present. The splitter correctly leaves them out of every panel, but then they belong to nothing. A reader will need them as explicit transition elements.
+
+Stop: six iterations (rule 3). Needs delivery or a detector (not stops): pan-cut (cpc1 0-2), no-gap-merge (lo9 12,
+sh14 60, tog235 73, lo9 37), caption plate vs small flat art panel (cpc1 26/37), shared bridging SFX. Product
+question: transition gradients and fades as explicit elements.
