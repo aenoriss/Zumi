@@ -76,7 +76,17 @@ def background_colour(arr: np.ndarray, margin: int = 8) -> tuple[int, int, int]:
     return int(r), int(g), int(b)
 
 
-def blank_rows(arr: np.ndarray, tolerance: int, max_outliers: float = 0.002, chunk: int = 4096) -> np.ndarray:
+def outlier_share(arr: np.ndarray, tolerance: int, chunk: int = 4096) -> np.ndarray:
+    """Per row, the share of pixels with any channel farther than `tolerance` from the row's median colour."""
+    out = np.empty(arr.shape[0], dtype=np.float64)
+    for y in range(0, arr.shape[0], chunk):
+        rows = arr[y : y + chunk].astype(np.int16)
+        median = np.median(rows, axis=1).astype(np.int16)  # (h, 3)
+        out[y : y + chunk] = (np.abs(rows - median[:, None, :]) > tolerance).any(axis=2).mean(axis=1)
+    return out
+
+
+def blank_rows(arr: np.ndarray, tolerance: int, max_outliers: float = 0.002) -> np.ndarray:
     """Boolean per row: True when the row is one flat colour up to noise.
 
     A pixel is an outlier when any channel is farther than `tolerance` from the row's median colour;
@@ -89,13 +99,7 @@ def blank_rows(arr: np.ndarray, tolerance: int, max_outliers: float = 0.002, chu
     The cost is that a flat block inside a panel (a black "everything went dark" beat) also reads as
     blank; min_gutter absorbs the short ones.
     """
-    out = np.empty(arr.shape[0], dtype=bool)
-    for y in range(0, arr.shape[0], chunk):
-        rows = arr[y : y + chunk].astype(np.int16)
-        median = np.median(rows, axis=1).astype(np.int16)  # (h, 3)
-        outlier = (np.abs(rows - median[:, None, :]) > tolerance).any(axis=2)  # (h, w)
-        out[y : y + chunk] = outlier.mean(axis=1) < max_outliers
-    return out
+    return outlier_share(arr, tolerance) < max_outliers
 
 
 def bridge_breaks(blank: np.ndarray, max_break: int) -> np.ndarray:
@@ -141,6 +145,25 @@ def find_slabs(blank: np.ndarray, min_gutter: int, max_break: int = 2) -> list[S
     if in_content:
         slabs.append(Slab(y=y, h=n - y, gutter_after=0))
     return slabs
+
+
+def drop_specks(slabs: list[Slab], share: np.ndarray, max_h: int = 300, max_ink: float = 0.015) -> list[Slab]:
+    """Fold speck slabs (under `max_h` px, mean outlier share under `max_ink`) back into the gutter.
+
+    A sweat drop, a fleck of ash or a star alone in a gutter is a slab of its own; attached to the nearer panel
+    it dragged that box's edge out to the speck, through 130-290 px of empty page (unOrdinary 395 boxes 100,
+    101), and a trail of ash flecks welded a pause beat to the panel above (Lore Olympus 9). Measured: specks
+    0.07-1.4 % ink; the faintest real slab, a 22-px credit line, 1.9 %. The marks stay in the strip, outside
+    any panel.
+    """
+    out: list[Slab] = []
+    for s in slabs:
+        if s.h < max_h and share[s.y : s.y + s.h].mean() < max_ink:
+            if out:
+                out[-1].gutter_after += s.h + s.gutter_after
+            continue
+        out.append(Slab(y=s.y, h=s.h, gutter_after=s.gutter_after))
+    return out
 
 
 def flatness(region: np.ndarray, top: int = 4) -> float:
@@ -218,8 +241,9 @@ def split_strip(
     image, seams = stitch(files)
     arr = np.asarray(image)
     bg = background_colour(arr)  # dominant margin colour, informational
-    blank = blank_rows(arr, tolerance)
-    slabs = attach_floaters(find_slabs(blank, min_gutter), arr, max_floater, min_flatness, gap_factor)
+    share = outlier_share(arr, tolerance)
+    slabs = drop_specks(find_slabs(share < 0.002, min_gutter), share)
+    slabs = attach_floaters(slabs, arr, max_floater, min_flatness, gap_factor)
     # leading blank rows are not a slab; record them as the first slab's offset only
     return Strip(image=image, background=bg, slabs=slabs, seams=seams)
 
@@ -237,9 +261,11 @@ def report(strip: Strip, out: Path, scale: float = 0.25) -> Path:
     for y in strip.seams:
         draw.line([(0, y * scale), (w, y * scale)], fill=(80, 140, 255), width=1)
     for i, s in enumerate(strip.slabs):
+        # outline drawn just outside the box: drawn on the edge, a 2-px line at 0.25 scale hid 8 strip rows
+        # of the box's own first and last lines (thin lettering looked clipped; tuning-log, iteration 4)
         top, bottom = s.y * scale, (s.y + s.h) * scale
-        draw.rectangle([(0, top), (w - 1, bottom)], outline=(230, 40, 40), width=2)
-        draw.text((6, top + 4), f"{i}", fill=(230, 40, 40))
+        draw.rectangle([(0, top - 2), (w - 1, bottom + 1)], outline=(230, 40, 40), width=2)
+        draw.text((6, top - 14), f"{i}", fill=(230, 40, 40))
     out.parent.mkdir(parents=True, exist_ok=True)
     im.save(out)
     return out

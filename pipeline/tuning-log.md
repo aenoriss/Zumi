@@ -397,3 +397,69 @@ Next: text-clip. Pad each box edge outward into its gutter until a row with zero
 so grain cannot walk an edge across a dark gutter. Five instances, one mechanism, and a change that cannot move a
 cut. The page-colour rule (the reviewer's rule 2, targeting fade-clip and false-gutter) is larger and would turn the
 scene-change gradients both reviewers want left outside boxes back into content, so it waits.
+
+## Iteration 4 (change: speck slabs fold back into the gutter)
+
+First attempt, reverted: padding box edges outward to a clean row, aimed at text-clip. It did not move the five
+clipped edges, because they were not clipped: the rows next to each edge have zero outliers (lo9 12: ink rows
+12048-12077, clean rows on both sides), and the panel PNG in the .zumi holds the whole line (checked lo9 p011/p012).
+The report drew its 2-px outline on the box edge, which at 0.25 scale covers 8 strip rows of the box's own first and
+last lines. **text-clip is a report artifact, not a defect**: removed from the counts (it3 recount 30 -> 25). The
+report now draws the outline just outside the box and the index above it (instrument fix, not the iteration's change).
+
+Change: `drop_specks`: a slab under 300 px whose mean per-row outlier share is under 1.5 % is a speck (sweat drop,
+ash fleck, star, debris) and its rows rejoin the gutter instead of a panel. Measured on raw slabs: specks 0.07-1.4 %,
+the faintest real slab (tog235's 22-px "SIU" credit line) 1.9 %.
+
+| ep | panels | h min/med/max | gutter min/q1/med/q3/max | <300 | >5000 | recall | precision |
+|---|---|---|---|---|---|---|---|
+| u395 | 117 | 39/1240/2479 | 53/299/438/540/2734 | 6 | 0 | 0.974 | 0.982 |
+| tog235 | 83 | 164/1544/5523 | 66/335/436/724/1567 | 2 | 1 | 1.000 | 0.987 |
+| lo9 | 75 | 228/795/2369 | 41/147/214/295/1304 | 2 | 0 | 0.973 | 1.000 |
+| sh14 | 89 | 234/587/2940 | 54/205/310/384/841 | 4 | 0 | 1.000 | 1.000 |
+| cpc1 | 59 | 165/818/2046 | 70/355/399/514/1976 | 10 | 0 | 1.000 | 0.906 |
+
+Iteration 3 on the same labels: u395 0.965/0.965, tog235 1/0.987, lo9 0.960/0.986, sh14 1/1, cpc1 1/0.906.
+Label changes from this review: ambiguous u395 176767, 177073 (growing frames into the apartment: the reviewer notes
+the labels treat the identical device at u395 44 as one panel), 195940 ("[end]" line), tog235 30731 and lo9 11730
+(title cards: the labels made opposite calls on the two), cpc1 883 (sound-on notice); added lo9 13890 (the diagonal
+two-shot and the next panel share box 12; only a ~20-row clean run separates them, the no-gap-merge already counted).
+
+Defects:
+
+| kind | u395 | tog235 | lo9 | sh14 | cpc1 | total |
+|---|---|---|---|---|---|---|
+| floater | 0 | 0 | 0 | 0 | 4 (parchment captions 22, 26, 28, 39) | 4 |
+| misattached | 0 (103 now ambiguous) | 0 | 0 (ash flecks gone; "Sigh" stands with its own beat) | 0 | 0 | 0 |
+| split-title | 0 | 0 (ambiguous) | 0 | 0 | 0 | 0 |
+| fade | 5 (two reviewers now call these correct transitions; kept for comparability) | 0 | 0 | 0 | 2 (floor bands lost at the bottom of 27 and 29) | 7 |
+| fade-clip | 2 (47/48, 92/93) | 1 (50/51) | 0 | 0 | 2 (22/23 sky, 26/27 grey wall) | 5 |
+| bridged-sfx | 0 | 1 (72/73, claim) | 0 | 0 | 0 | 1 |
+| false-gutter | 0 | 0 | 0 | 0 | 1 | 1 |
+| no-gap-merge | 0 | 0 | 1 (12) | 1 (60) | 0 | 2 |
+| pan-cut | 0 | 0 | 0 | 0 | 1 (moon cut out of the tilt-down) | 1 |
+| padded-edge | 1 (100: a speck at 1.7 % ink, just over the threshold) | 0 | 0 | 0 | 0 | 1 |
+| total | 8 | 2 | 1 | 1 | 9 | 22 |
+
+25 -> 22 (u395 101 edge, lo9 61 weld fixed; u395 103 reclassified ambiguous). Risk: specks now sit outside every
+panel image, so a reader that shows only panels loses them (debris flying out of u395 box 10, cpc1 stars); the
+threshold sits between 1.4 % and 1.9 %, a narrow margin.
+
+Illustrator verdict, iteration 4 (verbatim):
+
+> Cut placement on framed, gutter-separated material is close to reader-grade now. Most flagged errors fall into three rule-fixable classes:
+> 1. **Flat art read as gutter.** The blank-row test needs to match the page colour, use frame-line bounds and check for gradients.
+> 2. **Specks stretching box edges.**
+> 3. **Captions or bubbles straddling a frame**, which should attach to the panel they cross.
+>
+> Box edges need the same checks as cuts. Lost sky and floor bands at panel tops and bottoms are a separate symptom of the same bug, and the cut-row scorer does not catch them.
+>
+> Two limits remain beyond pixel rules:
+> - **Compound panels joined by SFX that crosses frames** (tog235 box 74), and diagonal or nearly touching frames (lo9 box 12). These need per-layer source files, or a bubble/SFX/frame detector.
+> - **Pacing calls**: title cards, cascade frames, frameless establishing shots. The labels themselves contradict each other here (u395 44 vs 103, tog235 16/17 vs lo9 11). Mark all of these `ambiguous` before tuning further, or the tuner will chase noise.
+
+Next: flat art read as gutter (fade-clip 5, false-gutter 1, cpc1 floor bands 2; the reviewer measured the gap rows:
+u395 92/93 median (231,208,198) on a #413F40 page, tog235 50/51 (226,239,242) on white, cpc1 22/23 sky (235,255,254)
+-> (237,233,232) on white). Rule: a blank run is a gutter only if at least one of its rows matches the local page
+colour (the most common blank-row colour within +-4000 rows). A scene-change gradient still passes, because it starts
+or ends on the page colour; a run of flat sky that never touches the page colour becomes content.
