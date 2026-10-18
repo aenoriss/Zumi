@@ -20,6 +20,12 @@ Goal: make `zumi intake` cut real webtoon strips correctly, by looking at the re
 
 Research-only material: never copy it anywhere, never feed it to a generative model.
 
+### Round 2 (2026-10-18): hard set plus regression set
+
+Round 2 tunes on the hard set in `pipeline/run_hardset.sh`: the 8 episodes that failed most on the unseen-episode retest (Housecat 169 and 09, unOrdinary prologue, True Beauty 7, ORV prologue, Tower of God S2 246, Tower of God S1 0 which crashes, Witch And Her Corgi 10) and 4 new episodes in the same styles (Housecat 01 and 02, unOrdinary 1, True Beauty 4). The five round-1 fixtures become the **regression set**: run `run_fixtures.sh` every iteration and score them with `zumi.score` against their labels; any recall or precision drop is a defect and must be fixed or the change reverted. Read the "Retest" section at the end of `pipeline/tuning-log.md` for the known failure kinds. Round 2 runs at most **3 iterations**.
+
+**Speed rules (the user found round 1's reviews far too slow):** the illustrator review is split across **parallel** reviewers, 3 or 4 episodes each, all launched in one message; each reviewer reports errors only, under 300 words, and is capped at 12 image reads (the image tool rate-limits zoom crops). Give each reviewer the per-episode stats and a list of suspect regions from a numeric pre-pass so it looks there first. Re-review only episodes whose output changed since the last review.
+
 ## One iteration
 
 1. **Run.** From `pipeline/`: for each episode, `uv run zumi intake <folder> --out .data/out/<slug>.zumi --report .data/out/<slug>-cuts.png`, then build contact sheets (tile the report into 2400 px columns, 13 per sheet) and a stats line: panel count, min/median/max panel height, gutter distribution, panels < 300 px, panels > 5000 px.
