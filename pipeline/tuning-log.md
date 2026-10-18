@@ -463,3 +463,80 @@ u395 92/93 median (231,208,198) on a #413F40 page, tog235 50/51 (226,239,242) on
 -> (237,233,232) on white). Rule: a blank run is a gutter only if at least one of its rows matches the local page
 colour (the most common blank-row colour within +-4000 rows). A scene-change gradient still passes, because it starts
 or ends on the page colour; a run of flat sky that never touches the page colour becomes content.
+
+## Iteration 5 (change: a blank run is a gutter only if it touches the local page colour or is a gradient)
+
+Rules: iteration 4, plus `page_gutters`: a blank run of >= 40 rows stays a gutter only if one of its rows is within
+20 of the local page colour (the most common 4-bit blank-row colour within 4000 rows above, or within 4000 rows below,
+taken separately) or its median colour travels more than 48 end to end (a fade or scene-change gradient). Otherwise it
+is flat art (sky, wall) and stays content. Two refinements were made before the review, both measured: without the
+gradient clause, u395's fades to black stopped being gutters and merged three pairs of panels (labels 59995, 64400,
+80362 missed); with a single +-4000 window, sh14's first dark gutter after the white-to-dark transition took the
+white half's colour as page and merged GRAB with CRASH (label 20838). Both fixed; the final run moves exactly four
+boxes against iteration 4, all intended.
+
+| ep | panels | h min/med/max | gutter min/q1/med/q3/max | <300 | >5000 | recall | precision |
+|---|---|---|---|---|---|---|---|
+| u395 | 116 | 39/1255/2479 | 71/301/439/541/2734 | 5 | 0 | 1.000 | 0.991 |
+| tog235 | 82 | 164/1549/5523 | 78/340/439/726/1567 | 2 | 1 | 1.000 | 1.000 |
+| lo9 | 75 | 228/795/2369 | 41/147/214/295/1304 | 2 | 0 | 0.986 | 1.000 |
+| sh14 | 89 | 234/587/2940 | 54/205/310/384/841 | 4 | 0 | 1.000 | 1.000 |
+| cpc1 | 57 | 165/829/2341 | 70/358/399/518/1976 | 8 | 0 | 1.000 | 0.941 |
+
+Scorer fix: a row listed as both a label and `ambiguous` no longer counts as a required cut (it did, so ambiguous
+labels still scored as misses). Iteration 4 on the same labels and scorer: u395 1/0.982, tog235 1/0.987, lo9
+0.986/1, sh14 1/1, cpc1 1/0.906. Label change: u395 168907 ambiguous (the sweat drop 150 px above box 99 is emanata
+belonging to 99, per the reviewer).
+
+Fixed by this change: u395 92/93 ("How did he pass?" now whole with its panel), tog235 50/51, cpc1 22/23 and 26/27
+(caption plates now inside their panels, sky and wall kept).
+
+Reclassifications from this review:
+- **New kind, frame-eaten:** a framed panel whose top (or bottom) band is a flat colour loses its frame line and that
+  band to the gutter: a frame line is one colour across the row, so it is blank, and the flat band next to it is blank,
+  and both join the page-coloured gutter run, which touches the page colour and is kept whole. u395 0 (advisory card's
+  black field), 1 (frame line), 23 (104 px), 43 (88), 82 (48), 95 (84); cpc1 25 (110 px grey floor band), 27 (50 px
+  floor). Present since iteration 1; the two cpc1 floor bands were counted as fade in iteration 4 and move here.
+- **fade (u395, 5) is no longer counted.** Four reviews in a row (it0 "right-but-fragile", it3, it4, it5) judge the
+  fades to black and the white-to-grey ramp as transitions owned by neither panel. Whether a reader shows gutter
+  pixels as an interstitial is a reader-design decision, recorded under needs delivery/product, not a cut error.
+- tog235 72/73 KWOOSH (bridged-sfx) is ambiguous in the labels and judged right twice; no longer counted.
+
+Defects:
+
+| kind | u395 | tog235 | lo9 | sh14 | cpc1 | total |
+|---|---|---|---|---|---|---|
+| floater | 0 | 0 | 0 | 0 | 2 (plates 26, 37: flatness 0.77, 0.68) | 2 |
+| fade | 0 | 0 | 0 | 0 | 1 (23: watercolour vignette under the procession) | 1 |
+| fade-clip | 1 (47/48 dissolve top) | 0 | 0 | 0 | 0 | 1 |
+| frame-eaten | 6 | 0 | 0 | 0 | 2 | 8 |
+| no-gap-merge | 0 | 0 | 1 (12) | 1 (60) | 0 | 2 |
+| pan-cut | 0 | 0 | 0 | 0 | 1 | 1 |
+| padded-edge | 1 (99) | 0 | 0 | 0 | 0 | 1 |
+| total | 8 | 0 | 1 | 1 | 6 | 16 |
+
+Iteration 4 on the same books (u395 fades out, frame-eaten back-filled: the boxes did not change there): 23.
+So 23 -> 16.
+
+Illustrator verdict, iteration 5 (verbatim):
+
+> On frame-and-gutter material (tog235, sh14, most of u395 and lo9) this approach is at or near reader grade for **where** the cuts go. It is not yet reader grade for **box edges**:
+> - Flat art bands and frame lines next to a gutter are being eaten: u395 boxes 0, 1, 23, 43, 82, 95; cpc1 boxes 23, 25, 27.
+> - That one bug is rule-fixable: split blank runs at median-colour jumps.
+>
+> Three cases cannot be recovered from rows of pixels alone:
+> 1. **Painted backgrounds vs fades:** a painted sky with sparse marks versus a transition fade with specks (cpc1 0–2 vs u395 35→36).
+> 2. **Tiny gaps vs close labels:** a 25 px beat gap versus 31–46 px label-to-art gaps (lo9 box 12 vs boxes 23, 39 and others).
+> 3. **Captions vs small panels:** a textured caption plate versus a small flat-colour art panel (cpc1 26/37 vs u395 60/61 and the 102 slivers).
+>
+> Each needs either a bubble/caption detector that reads text and tail direction, or per-panel files or a script. Expect roughly 1–3 beat errors per episode from these, plus fades that need a reader-side policy (keep as an interstitial or drop).
+
+Needs delivery (claims recorded across reviews, none falsified by a change so far): pan-cut (cpc1 0-2: a painted
+gradient sky is the same pixel class as a transition fade with specks, u395 35->36); lo9 12 (a 25-px beat gap vs
+31-46-px label-to-art gaps inside lo9 boxes; test: min_gutter 24 adds those as cuts); caption plate vs small flat art
+panel (cpc1 26/37 vs u395 60/61); sh14 60 (a burst balloon laid over the gutter). Each needs per-panel files, a script,
+or a bubble/caption detector.
+
+Next (iteration 6, the last allowed): frame-eaten (8, the largest class). Split each kept gutter run where the median
+colour jumps by more than the tolerance; from each end of the run, segments that are off the page colour and flat
+(span <= 48) go back to the adjacent content, stopping at the first page-coloured or gradient segment.

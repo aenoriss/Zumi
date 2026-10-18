@@ -52,6 +52,7 @@ def score(zumi: Path, labels: Path) -> str:
     # pacing calls the reviewers split on (spaced balloons, a CLICK crescendo): a cut there is neither required
     # nor counted as extra
     ambiguous = data.get("ambiguous", [])
+    truth = [t for t in truth if t not in ambiguous]
     cuts = [c for c in cuts_of(zumi) if not any(c[0] - c[1] // 2 - TOL <= a <= c[0] + c[1] // 2 + TOL for a in ambiguous)]
     pred = [c[0] for c in cuts]
     # a label matches a predicted gutter when it lies inside that blank run (±TOL): a gutter that grew

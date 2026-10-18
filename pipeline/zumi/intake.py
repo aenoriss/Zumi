@@ -9,7 +9,8 @@ Gutter scan (see docs/research/webtoon-panel-splitting-2026-10.md):
 2. a row is blank when < 0.2 % of its pixels are farther than `tolerance` from the row's median
    colour; the background colour is recorded for the reader but not used to decide cuts, since episodes change it mid-strip;
 3. a break of <= 2 non-blank rows between blank rows is grain and counts as blank;
-4. a run of >= `min_gutter` blank rows is a gutter; the panel boundary is the run's edges.
+4. a run of >= `min_gutter` blank rows is a gutter if one of its rows has the local page colour (flat sky
+   inside a panel is not); the panel boundary is the run's edges.
 Slice seams are invisible after stitching, so they never produce a cut. A bubble sitting in a gutter
 shortens the gutter but is not blank, so it comes out as its own small slab; `attach_floaters` joins
 such flat, short slabs to the nearer panel (until a bubble detector runs first).
@@ -76,13 +77,63 @@ def background_colour(arr: np.ndarray, margin: int = 8) -> tuple[int, int, int]:
     return int(r), int(g), int(b)
 
 
-def outlier_share(arr: np.ndarray, tolerance: int, chunk: int = 4096) -> np.ndarray:
-    """Per row, the share of pixels with any channel farther than `tolerance` from the row's median colour."""
-    out = np.empty(arr.shape[0], dtype=np.float64)
+def row_stats(arr: np.ndarray, tolerance: int, chunk: int = 4096) -> tuple[np.ndarray, np.ndarray]:
+    """Per row: the median colour (h, 3) and the share of pixels with any channel farther than `tolerance` from it."""
+    share = np.empty(arr.shape[0], dtype=np.float64)
+    medians = np.empty((arr.shape[0], 3), dtype=np.int16)
     for y in range(0, arr.shape[0], chunk):
         rows = arr[y : y + chunk].astype(np.int16)
         median = np.median(rows, axis=1).astype(np.int16)  # (h, 3)
-        out[y : y + chunk] = (np.abs(rows - median[:, None, :]) > tolerance).any(axis=2).mean(axis=1)
+        medians[y : y + chunk] = median
+        share[y : y + chunk] = (np.abs(rows - median[:, None, :]) > tolerance).any(axis=2).mean(axis=1)
+    return medians, share
+
+
+def outlier_share(arr: np.ndarray, tolerance: int) -> np.ndarray:
+    """Per row, the share of pixels with any channel farther than `tolerance` from the row's median colour."""
+    return row_stats(arr, tolerance)[1]
+
+
+def page_gutters(
+    blank: np.ndarray,
+    medians: np.ndarray,
+    min_gutter: int,
+    window: int = 4000,
+    tolerance: int = 20,
+    min_span: int = 48,
+) -> np.ndarray:
+    """Keep a blank run of >= `min_gutter` rows as gutter only if one of its rows has the local page colour,
+    or its colour travels more than `min_span` from end to end (a fade or scene-change gradient).
+
+    Flat art reads as blank too: a pink sunset sky under a bubble (unOrdinary 395, median (231,208,198) on a
+    #413F40 page), a pale sky (Tower of God 235, (226,239,242) on white), a grey wall (Cursed Princess Club 1).
+    Cutting there split a panel's top off and dropped it (tuning-log, fade-clip). Local page colour = the most
+    common blank-row colour (4 bits per channel) within +-`window` rows, since episodes change page colour
+    mid-strip. A scene-change gradient still counts: it starts or ends on the page colour.
+    """
+    out = blank.copy()
+    ys = np.flatnonzero(blank)
+    if len(ys) == 0:
+        return out
+    q = medians[ys] >> 4
+    keys = (q[:, 0].astype(np.int32) << 8) | (q[:, 1] << 4) | q[:, 2]
+    edges = np.flatnonzero(np.diff(blank.astype(np.int8))) + 1
+    starts = np.concatenate([[0], edges])
+    ends = np.concatenate([edges, [len(blank)]])
+    for s, e in zip(starts, ends):
+        if not blank[s] or e - s < min_gutter:
+            continue
+        touches_page = False
+        # page colour above and below separately: at a white-to-dark scene change a single window's mode is
+        # the white half, which would make the first dark gutter "not page" (Sweet Home 14, y 20700-20965)
+        for lo_y, hi_y in ((s - window, e), (s, e + window)):
+            lo, hi = np.searchsorted(ys, [lo_y, hi_y])
+            k = np.bincount(keys[lo:hi]).argmax()
+            page = np.median(medians[ys[lo:hi][keys[lo:hi] == k]], axis=0)
+            touches_page |= bool((np.abs(medians[s:e] - page).max(axis=1) <= tolerance).any())
+        span = int((medians[s:e].max(axis=0) - medians[s:e].min(axis=0)).max())
+        if not touches_page and span <= min_span:
+            out[s:e] = False
     return out
 
 
@@ -119,9 +170,16 @@ def bridge_breaks(blank: np.ndarray, max_break: int) -> np.ndarray:
     return out
 
 
-def find_slabs(blank: np.ndarray, min_gutter: int, max_break: int = 2) -> list[Slab]:
-    """Split rows into content slabs separated by blank runs of at least min_gutter rows."""
+def find_slabs(
+    blank: np.ndarray, min_gutter: int, max_break: int = 2, medians: np.ndarray | None = None
+) -> list[Slab]:
+    """Split rows into content slabs separated by blank runs of at least min_gutter rows.
+
+    With `medians` (per-row median colours), runs that never touch the local page colour are content.
+    """
     blank = bridge_breaks(blank, max_break)
+    if medians is not None:
+        blank = page_gutters(blank, medians, min_gutter)
     n = len(blank)
     # run-length encode
     edges = np.flatnonzero(np.diff(blank.astype(np.int8))) + 1
@@ -241,8 +299,8 @@ def split_strip(
     image, seams = stitch(files)
     arr = np.asarray(image)
     bg = background_colour(arr)  # dominant margin colour, informational
-    share = outlier_share(arr, tolerance)
-    slabs = drop_specks(find_slabs(share < 0.002, min_gutter), share)
+    medians, share = row_stats(arr, tolerance)
+    slabs = drop_specks(find_slabs(share < 0.002, min_gutter, medians=medians), share)
     slabs = attach_floaters(slabs, arr, max_floater, min_flatness, gap_factor)
     # leading blank rows are not a slab; record them as the first slab's offset only
     return Strip(image=image, background=bg, slabs=slabs, seams=seams)
