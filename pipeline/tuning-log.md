@@ -606,3 +606,33 @@ them in screen-height stops (packages/format README, Layout), so height alone is
 
 Still defects: diagonal or staggered frames with no overlapping element (lo9 12/13, lo9 37/38), which need a 2D panel
 detector or per-panel files. Recount under this rule: iteration 6 goes from 9 to 8 (sh14 60 no longer counted).
+
+## Retest 2026-10-18: final splitter (26d50a4) on the fixtures and 21 unseen episodes
+
+Fixtures reproduce iteration 6 exactly (recall/precision: u395 1.000/0.991, tog235 1/1, lo9 0.986/1, sh14 1/1,
+cpc1 1/0.941). Unseen episodes judged by Opus illustrator reviewers (errors only; house rules applied):
+
+| episode | boxes | errors |
+|---|---|---|
+| omniscient-reader 154 | 62 | 1 |
+| omniscient-reader 308 | 62 | 1 |
+| omniscient-reader prologue | 28 | 2 (box 1: two missed cuts around a 260 px-isolated caption; box 23: missed cut + 539 px flat grey padding) |
+| tower-of-god s2 246 | 109 | 2 (+1 uncertain: title "15" band) |
+| sweet-home prologue | 84 | 0 |
+| true-beauty 0 | 62 | 1 (staggered insets merged) |
+| true-beauty 7 | 85 | 3 (reaction bursts / SFX 41-52 px from their frame, alone) |
+| unordinary prologue | 32 | 3 (gutters of 30-36 px never cut) |
+| unordinary 201 | 66 | 0 |
+| cursed-princess-club 11 | 53 | 0 |
+| lore-olympus 1 | 60 | 0 |
+| witch-and-her-corgi 1 / 10 / 290 | 9 / 12 / 11 | 0 / 1 (+1 borderline end card) / 0 |
+| housecat-philosophy 0 / 09 / 169 | 1 / 2 / 2 | 2 / 6 / ~14 missed cuts (page-style grid, gutters 12-32 px) |
+| tower-of-god s1 0 | not run | crash: last slice 800 px wide, others 700 |
+
+Total: 740 boxes, 36 errors; without the Housecat grids, 735 boxes and 14 errors (1.9 %).
+
+New failure kinds on unseen material: narrow gutters under min_gutter 40 (Housecat, unOrdinary prologue);
+frame fading to white just before a gutter merges across it (tog s2 71, unordinary prologue 22); flat non-white page
+background read as content (tog s2 75, orv prologue 23); lone text 40-62 px from its frame stays alone (true-beauty 7,
+orv 308 50; deliberate lone beats sit >= ~130 px from both neighbours, a testable gap rule). Tooling bugs: mixed slice
+widths abort intake; the sheets stats line crashes on an episode with no gutters.
