@@ -8,7 +8,8 @@ Gutter scan (see docs/research/webtoon-panel-splitting-2026-10.md):
 1. background colour = most frequent colour in the strip's left and right margins;
 2. a row is blank when < 0.2 % of its pixels are farther than `tolerance` from the row's median
    colour; the background colour is recorded for the reader but not used to decide cuts, since episodes change it mid-strip;
-3. a run of >= `min_gutter` blank rows is a gutter; the panel boundary is the run's edges.
+3. a break of <= 2 non-blank rows between blank rows is grain and counts as blank;
+4. a run of >= `min_gutter` blank rows is a gutter; the panel boundary is the run's edges.
 Slice seams are invisible after stitching, so they never produce a cut. A bubble sitting in a gutter
 shortens the gutter but is not blank, so until the bubble detector runs first (next step) it comes out
 as its own small slab; `min_panel` merges such slivers into the panel above.
@@ -97,8 +98,26 @@ def blank_rows(arr: np.ndarray, tolerance: int, max_outliers: float = 0.002, chu
     return out
 
 
-def find_slabs(blank: np.ndarray, min_gutter: int, min_panel: int) -> list[Slab]:
+def bridge_breaks(blank: np.ndarray, max_break: int) -> np.ndarray:
+    """Treat runs of <= `max_break` non-blank rows with blank rows on both sides as blank.
+
+    JPEG grain leaves isolated rows in a flat background with two or three pixels just over tolerance
+    (Sweet Home 14, y 25180: 2 of 700 pixels more than 20 off). Each one split a 280-px pause into pieces
+    under min_gutter, so the box above ran 228 px into plain background (tuning-log, padded-edge).
+    """
+    out = blank.copy()
+    edges = np.flatnonzero(np.diff(blank.astype(np.int8))) + 1
+    starts = np.concatenate([[0], edges])
+    ends = np.concatenate([edges, [len(blank)]])
+    for s, e in zip(starts, ends):
+        if not blank[s] and e - s <= max_break and s > 0 and e < len(blank):
+            out[s:e] = True
+    return out
+
+
+def find_slabs(blank: np.ndarray, min_gutter: int, min_panel: int, max_break: int = 2) -> list[Slab]:
     """Split rows into content slabs separated by blank runs of at least min_gutter rows."""
+    blank = bridge_breaks(blank, max_break)
     n = len(blank)
     # run-length encode
     edges = np.flatnonzero(np.diff(blank.astype(np.int8))) + 1

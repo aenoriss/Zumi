@@ -2,7 +2,8 @@
 
     uv run python -m zumi.score .data/out/<slug>.zumi .data/labels/<slug>.json [--write FLOATERS]
 
-Labels are `{"cuts": [y, ...]}`: strip rows at gutter centres a reader agrees with. A predicted cut
+Labels are `{"cuts": [y, ...], "ambiguous": [y, ...]}`: strip rows at gutter centres a reader agrees with, and
+rows where a cut is a pacing choice either way (optional). A predicted cut
 (the blank run between two consecutive panels) matches a label lying inside it, ±20 px.
 `--write a,b,c` builds the label file from the run instead: every gutter centre except, for each
 listed slab index (a floater: text-only slab), the smaller of its two gaps, which is the one the
@@ -46,8 +47,12 @@ def write_labels(zumi: Path, labels: Path, floaters: set[int]) -> None:
 
 
 def score(zumi: Path, labels: Path) -> str:
-    truth = json.loads(labels.read_text())["cuts"]
-    cuts = cuts_of(zumi)
+    data = json.loads(labels.read_text())
+    truth = data["cuts"]
+    # pacing calls the reviewers split on (spaced balloons, a CLICK crescendo): a cut there is neither required
+    # nor counted as extra
+    ambiguous = data.get("ambiguous", [])
+    cuts = [c for c in cuts_of(zumi) if not any(c[0] - c[1] // 2 - TOL <= a <= c[0] + c[1] // 2 + TOL for a in ambiguous)]
     pred = [c[0] for c in cuts]
     # a label matches a predicted gutter when it lies inside that blank run (±TOL): a gutter that grew
     # by a faded panel edge moves its centre by more than TOL without being a different cut

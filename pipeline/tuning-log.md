@@ -237,3 +237,79 @@ otherwise it stays alone. Targets floater (32), misattached (8), merged-title (3
 welded across 2734 px): 44 of 64. The reviewer's simulation (no cap) says a pure height threshold costs 21 missed
 label cuts at 450 px; the cap and a sweep of `max_floater` against the corrected labels decide the value. padded-edge
 (5) follows in iteration 3.
+
+## Iteration 2 (change: bridge grain breaks of <= 2 non-blank rows inside blank runs)
+
+Rules: iteration 1, plus a run of <= 2 non-blank rows with blank rows on both sides counts as blank before gutters
+are found (`bridge_breaks`). The value 2 is the grain measured under sh14 box 27 (isolated failing rows such as
+25180, 2 of 700 pixels more than 20 off). Why padded-edge before floaters: the planned floater attachment was tried
+first in a scratch sweep, and without this it regresses: grain and speck slabs of 1-9 px stop merging upward and
+become boxes of their own (u395 extras 9 -> 16-23, cpc1 13 -> 19-23 against the corrected labels).
+
+| ep | panels | h min/med/max | gutter min/q1/med/q3/max | <300 | >5000 | recall | precision |
+|---|---|---|---|---|---|---|---|
+| u395 | 122 | 140/1240/4292 | 50/227/369/530/2527 | 8 | 0 | 0.974 | 0.926 |
+| tog235 | 95 | 161/1390/5523 | 45/307/414/655/1567 | 7 | 1 | 0.987 | 0.809 |
+| lo9 | 80 | 130/774/2369 | 40/113/195/280/1304 | 6 | 0 | 0.919 | 0.861 |
+| sh14 | 89 | 234/587/2940 | 54/205/310/384/841 | 4 | 0 | 1.000 | 1.000 |
+| cpc1 | 61 | 121/812/2937 | 44/301/388/422/825 | 11 | 0 | 0.979 | 0.783 |
+
+Box edges that moved more than 10 px against iteration 1 (the labels cannot see edges, so these were read from crops):
+sh14 27 -228 px, 32 -91, 38 -172, 43 -250, 49 -56, 36 -24 (bottoms now sit on the plate or panel edge, background
+trimmed; checked on crops), sh14 26 top +34, 41 top +11; cpc1 24 bottom -234 (the parade's pale ground fade is now
+partly dropped as gutter: the fade belongs to the panel, a fade defect); lo9 62 bottom +375 (the drifting petals
+below "Gods, he's stupid..." joined that panel instead of standing alone; label 67808 wanted them with the drift
+below: misattached); u395 50 top +20.
+
+Illustrator review (Opus 5.5, fresh context): sh14 now has 0 missed and 0 extra and the reviewer judged its edges
+right; the dark-page gutters with grain hold. Its findings that change the books:
+- **New kind, fade-clip:** where art fades into the page at a panel's top, the fade's last rows read blank and the
+  cut lands inside the fade, so the box loses its soft edge (u395 50, tog235 56, 66, 70, cpc1 21, 26). It was there
+  in iteration 1 too, unnamed; counted from now on, and back-filled into the iteration-1 comparison below.
+- **Labels:** u395 73|74 is a hard cut from a grayscale flashback to the colour present, so the label now has the cut
+  (118239; the it1 reviewer called it fragile, both agree it is right). Pacing calls where the two reviewers and the
+  labels disagree are now `ambiguous` in the label files and the scorer ignores cuts there: u395 78613 (TAK chain),
+  tog235 11632 (isolated thought caption), 37402 (inner-voice bubbles 23/24), lo9 80650, 81006 (CLICK crescendo),
+  cpc1 22919, 23623 (voices in the dark).
+- **Claim (recorded):** tog235 82/83 is one continuous camera move broken by a 78-px white band; both slabs are large,
+  so no small-slab rule touches it (I had it as bridged-sfx KWOOSH; kept there).
+
+Rescored (corrected labels, ambiguous excluded): u395 0.974/0.942, tog235 0.987/0.826, lo9 0.919/0.883,
+sh14 1.000/1.000, cpc1 0.979/0.810; iteration 1 identical except lo9 0.932/0.885.
+
+Defects:
+
+| kind | u395 | tog235 | lo9 | sh14 | cpc1 | total |
+|---|---|---|---|---|---|---|
+| floater | 8 | 12 | 3 | 0 | 9 | 32 |
+| missed-gutter | 1 | 0 | 0 | 0 | 0 | 1 |
+| merged-title | 2 | 1 | 0 | 0 | 0 | 3 |
+| misattached | 0 | 0 | 6 (dog captions, petals 62) | 0 | 3 | 9 |
+| split-title | 0 | 1 | 0 | 0 | 1 | 2 |
+| fade | 5 | 0 | 0 | 0 | 1 (24 parade fade) | 6 |
+| fade-clip | 1 | 3 | 0 | 0 | 2 | 6 |
+| fragment | 0 | 0 | 1 (64 speck box) | 0 | 0 | 1 |
+| bridged-sfx | 0 | 2 | 0 | 0 | 0 | 2 |
+| false-gutter | 0 | 0 | 0 | 0 | 1 | 1 |
+| no-gap-merge | 0 | 0 | 1 | 1 | 0 | 2 |
+| pan-cut | 0 | 0 | 0 | 0 | 1 | 1 |
+| padded-edge | 0 | 0 | 0 | 0 | 0 | 0 |
+| total | 17 | 19 | 11 | 1 | 18 | 66 |
+
+Iteration 1 with fade-clip back-filled: 70. So 70 -> 66: padded-edge 5 -> 0, one new fade (cpc1 24).
+
+Illustrator verdict, iteration 2 (verbatim):
+
+> - **Clean material:** the row-gutter approach is already reader-grade on framed panels with clear gutters, which is most of every episode and all of sh14.
+> - **Next fix:** with the gap-aware sliver merge plus nearer-gap attachment of small slabs, I'd expect this set to drop to roughly 5–10 misses and 25–30 extras. That is an estimate from the simulation above, not a measurement.
+> - **What stays wrong:** most of the remaining errors are the claims above, where the pixels do not carry the artist's intent: sky gradients vs scene fades, letter-spaced sound effects, equal-gap bubbles, continuous camera moves.
+> - **Reaching reader-grade:** on free-floating, bleed-heavy material (tog235, cpc1, the dark parts of lo9), it needs a bubble, text and frame detector run before the cut, or per-panel source files. Pixels alone cannot carry it there.
+> - **Edges:** box edges are almost always right where panels have frames. Where art fades into the page they are systematically wrong, because the cut lands inside the fade (u395 50, tog235 56/66/70, cpc1 21/26).
+
+Next: replace the sliver rule with floater attachment that uses a second signal, flatness. A slab is a floater when
+it is under 700 px and its four most frequent colours (5-bit quantised) cover >= 85 % of its pixels: bubbles,
+captions, lettering and specks are a fill, an outline and text; art is not (measured on it2 slabs: known floaters
+0.73-0.99, mostly >= 0.93; sh14 red plates 0.23-0.41; lo9 tiny reaction panels 0.53-0.67). Consecutive floaters closer
+than the cap group first (title cards, speck trails), then the group joins the nearer non-floater neighbour if that gap
+is under 0.75 x the strip's median gutter, else stands alone. Scratch sweep on it2's slabs: 10 missed / 27 extra
+against 11 / 51 now. Height alone (the reviewer's simulation and mine) could not separate floaters from short panels.
