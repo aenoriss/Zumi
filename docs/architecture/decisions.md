@@ -148,3 +148,5 @@ Interactive elements and AI suggestions; translation tracks; audience-triggerabl
 4. `pipeline/`: Muse Image A/B, SAM 3.1 cut-outs, depth, inpainting, voices, ambience, animation tracks, Blender scenes, packer, uploader. Produces the real demo episodes.
 5. Immersive frames (panorama, 3D scene) in Unity once the pipeline emits them.
 6. Trailer, `apps/landing` coming-soon page, store submission.
+
+Amendment 2026-10-18: the pipeline comes first and is built step by step (each step approved before the next; see `docs/pipeline/`). Its output is checked in a **local web demo** before anything is tried in XR: a developer-only browser viewer under `apps/preview` that opens a `.zumi` file and shows panels, layers with parallax, bubbles with voice, ambience and music cues. Iterating in a browser tab takes seconds; a Quest build takes minutes. The viewer is a tool, not product UI, and does not revive the descoped web platform. The Unity reader follows once a pipeline-made episode plays correctly in the viewer.
