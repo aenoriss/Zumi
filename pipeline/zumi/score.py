@@ -3,7 +3,7 @@
     uv run python -m zumi.score .data/out/<slug>.zumi .data/labels/<slug>.json [--write FLOATERS]
 
 Labels are `{"cuts": [y, ...]}`: strip rows at gutter centres a reader agrees with. A predicted cut
-(centre of the blank run between two consecutive panels) matches a label when within ±20 px.
+(the blank run between two consecutive panels) matches a label lying inside it, ±20 px.
 `--write a,b,c` builds the label file from the run instead: every gutter centre except, for each
 listed slab index (a floater: text-only slab), the smaller of its two gaps, which is the one the
 floater should merge across.
@@ -47,9 +47,14 @@ def write_labels(zumi: Path, labels: Path, floaters: set[int]) -> None:
 
 def score(zumi: Path, labels: Path) -> str:
     truth = json.loads(labels.read_text())["cuts"]
-    pred = [c[0] for c in cuts_of(zumi)]
-    hit = [t for t in truth if any(abs(t - p) <= TOL for p in pred)]
-    ok = [p for p in pred if any(abs(t - p) <= TOL for t in truth)]
+    cuts = cuts_of(zumi)
+    pred = [c[0] for c in cuts]
+    # a label matches a predicted gutter when it lies inside that blank run (±TOL): a gutter that grew
+    # by a faded panel edge moves its centre by more than TOL without being a different cut
+    run = {c: (c - g // 2 - TOL, c + (g - g // 2) + TOL) for c, g, _ in cuts}
+    near = lambda t, p: run[p][0] <= t <= run[p][1]
+    hit = [t for t in truth if any(near(t, p) for p in pred)]
+    ok = [p for p in pred if any(near(t, p) for t in truth)]
     missed = [t for t in truth if t not in hit]
     extra = [p for p in pred if p not in ok]
     rec = len(hit) / len(truth) if truth else 1.0

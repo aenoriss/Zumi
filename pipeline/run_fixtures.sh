@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 # tune-intake fixture run: intake + sheets + stats for the five fixture episodes.
-# Usage (from pipeline/): sh run_fixtures.sh [extra intake flags]
+# Usage (from pipeline/): [OUT=.data/out/itN] sh run_fixtures.sh [extra intake flags]
 set -e
 W=.data/webtoons
-O=.data/out
+O=${OUT:-.data/out}
 mkdir -p "$O"
 run() {
   slug=$1; folder=$2; shift 2
