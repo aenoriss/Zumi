@@ -37,6 +37,16 @@ for (const file of targets) {
     if (p.musicCue && p.musicCue.track !== "none" && !trackIds.has(p.musicCue.track)) errors.push(`panel ${p.id}: musicCue names unknown track ${p.musicCue.track}`);
     for (const i of p.interactions ?? []) if (!layerIds.has(i.target)) errors.push(`panel ${p.id} interaction ${i.id}: unknown target ${i.target}`);
   }
+  const layout = m.episode?.layout;
+  if (layout?.mode === "scroll") {
+    let cursor = 0;
+    for (const p of m.panels ?? []) {
+      if (!p.strip) { errors.push(`panel ${p.id}: scroll layout needs strip placement`); continue; }
+      if (p.strip.y < cursor) errors.push(`panel ${p.id}: strip.y ${p.strip.y} overlaps the previous panel (ends at ${cursor})`);
+      cursor = p.strip.y + p.strip.h + (p.strip.gutterAfter ?? 0);
+    }
+    if (cursor > layout.height) errors.push(`panels run to ${cursor} px but layout.height is ${layout.height}`);
+  }
   const rel = path.relative(process.cwd(), file);
   if (errors.length) {
     failed++;

@@ -16,6 +16,7 @@
     "title": "The Door",
     "summary": "Two panels used to validate the schema and exercise the Unity reader.",
     "thumbnail": "thumbnail.png",
+    "layout": { "mode": "carousel" },
     "music": [
       { "id": "alley", "file": "episode/music/alley.ogg", "loop": true, "gain": 0.5, "mood": "sparse piano, rain" },
       { "id": "city", "file": "episode/music/city.ogg", "loop": true, "gain": 0.6, "mood": "neon synth swell" }

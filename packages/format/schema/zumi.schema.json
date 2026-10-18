@@ -47,7 +47,8 @@
           "description": "Instrumental tracks available to this episode. The first one starts with panel 0 unless panel 0 names a cue. Panels switch tracks with musicCue.",
           "items": { "$ref": "#/$defs/musicTrack" }
         },
-        "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, sum of panel durations; informational" }
+        "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, sum of panel durations; informational" },
+        "layout": { "$ref": "#/$defs/layout" }
       }
     },
     "cast": {
@@ -80,6 +81,21 @@
     }
   },
   "$defs": {
+    "layout": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "description": "How panels are presented. Absent means carousel.",
+      "properties": {
+        "mode": { "type": "string", "enum": ["scroll", "carousel"], "description": "scroll: one tall strip reassembled from the panels in order, stepped beat by beat; carousel: one card per panel" },
+        "width": { "type": "integer", "minimum": 1, "description": "Strip width in source pixels (WEBTOON 800, Naver 700). Required for scroll" },
+        "height": { "type": "integer", "minimum": 1, "description": "Total strip height in source pixels, including gutters" },
+        "background": { "$ref": "#/$defs/hexColor", "description": "Gutter and margin colour measured from the strip edges" }
+      },
+      "allOf": [
+        { "if": { "properties": { "mode": { "const": "scroll" } } }, "then": { "required": ["width", "height"] } }
+      ]
+    },
     "episodeImagePath": { "type": "string", "pattern": "^(cover\\.(png|jpg)|thumbnail\\.(png|jpg)|refs/[^/]+\\.(png|jpg|jpeg|webp))$", "description": "Episode-level image: cover.png, thumbnail.png, or refs/<name>" },
     "panelImagePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(layers/[a-z0-9_-]+\\.png|panorama\\.(jpg|jpeg|png)|depth/[a-z0-9_-]+\\.png)$", "description": "Inside the panel's own folder: layers/<layerId>.png, panorama.jpg, depth/<layerId>.png" },
     "panelAudioPath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(voice/[a-z0-9_-]+\\.(ogg|mp3|wav)|ambience\\.(ogg|mp3|wav))$", "description": "Inside the panel's own folder: voice/<bubbleId>.ogg or ambience.ogg" },
@@ -147,6 +163,17 @@
           "description": "Pixel size of the regenerated panel image; layer PNGs share it"
         },
         "depthScale": { "type": "number", "minimum": 0, "default": 0.6, "description": "Metres of parallax spread between depth 0 and 1 at the default reading distance" },
+        "strip": {
+          "type": "object",
+          "required": ["y", "h"],
+          "additionalProperties": false,
+          "description": "Where this panel sits on the original strip, in source pixels (episode.layout.width wide). Present for scroll layouts; the reader places the panel at y and leaves gutterAfter blank rows below it",
+          "properties": {
+            "y": { "type": "integer", "minimum": 0 },
+            "h": { "type": "integer", "minimum": 1 },
+            "gutterAfter": { "type": "integer", "minimum": 0, "default": 0 }
+          }
+        },
         "durationOverride": { "type": "number", "minimum": 0, "description": "Seconds; when absent the reader computes voices + 1.5 s per bubble, min 3 s, min 20 s for immersive modes, never below the longest animation" },
         "mood": { "type": "string", "description": "Free text from the understanding pass; drives ambience and music prompts" },
         "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" } },

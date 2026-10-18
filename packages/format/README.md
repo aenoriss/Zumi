@@ -30,6 +30,10 @@ Music
 - A panel's `musicCue` switches tracks when that panel appears: `crossfade` (equal-power overlap, default 2.5 s), `fadeOutIn` (a silence gap), or `cut` for hard scene breaks; `track: "none"` fades out. The reader prefetches the cued track with the panel.
 - The reader ducks music under voice lines (about -6 dB while a bubble plays) and keeps ambience under both.
 
+Layout
+- `episode.layout.mode` is `scroll` or `carousel` (absent = carousel). Webtoon-born episodes default to `scroll`: the reader reassembles the original strip from the panels in order, using each panel's `strip` placement (`y`, `h`, `gutterAfter` in source pixels, `layout.width` wide) so the artist's gutters and scene gaps survive. Reading is stepped: the view glides to the next panel's centre on each beat; a panel taller than the view scrolls through in screen-height stops. Pacing, voting and room sync stay per panel index exactly as in carousel mode.
+- `carousel` shows one card per panel; used for per-panel delivery and immersive frames.
+
 Rules
 - Streaming: readers fetch `manifest.json` first, then assets per panel, prefetching one panel ahead.
 - Text is data: bubbles are never baked into images. Animations and interactions are data from a fixed vocabulary, never code.

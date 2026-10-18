@@ -1,0 +1,21 @@
+{
+  "formatVersion": "1.0.0",
+  "generator": "hand-built fixture",
+  "createdAt": "2026-10-18T00:00:00Z",
+  "series": { "id": "scroll-sample", "title": "Scroll Sample", "creator": "Zumi team", "language": "en" },
+  "episode": {
+    "id": "scroll-ep1",
+    "index": 1,
+    "title": "Three beats",
+    "layout": { "mode": "scroll", "width": 800, "height": 4000, "background": "#FFFFFF" }
+  },
+  "cast": [],
+  "panels": [
+    { "id": "p0", "index": 0, "renderMode": "panel", "size": { "w": 800, "h": 1000 }, "strip": { "y": 100, "h": 1000, "gutterAfter": 200 },
+      "layers": [ { "id": "base", "name": "base", "image": "panels/p0/layers/base.png", "depth": 0, "band": "background" } ] },
+    { "id": "p1", "index": 1, "renderMode": "panel", "size": { "w": 800, "h": 1500 }, "strip": { "y": 1300, "h": 1500, "gutterAfter": 800 },
+      "layers": [ { "id": "base", "name": "base", "image": "panels/p1/layers/base.png", "depth": 0, "band": "background" } ] },
+    { "id": "p2", "index": 2, "renderMode": "panel", "size": { "w": 800, "h": 300 }, "strip": { "y": 3600, "h": 300, "gutterAfter": 100 },
+      "layers": [ { "id": "base", "name": "base", "image": "panels/p2/layers/base.png", "depth": 0, "band": "background" } ] }
+  ]
+}

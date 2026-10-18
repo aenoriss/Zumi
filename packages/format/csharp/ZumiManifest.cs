@@ -48,6 +48,31 @@ namespace Zumi.Format
         public string thumbnail;
         public List<MusicTrack> music = new();
         public float durationHint;
+        /// <summary>Null means carousel.</summary>
+        public Layout layout;
+    }
+
+    public enum LayoutMode { scroll, carousel }
+
+    [Serializable]
+    public sealed class Layout
+    {
+        public LayoutMode mode = LayoutMode.carousel;
+        /// <summary>Strip width in source pixels (WEBTOON 800, Naver 700).</summary>
+        public int width;
+        /// <summary>Total strip height in source pixels, gutters included.</summary>
+        public int height;
+        /// <summary>Gutter and margin colour measured from the strip edges.</summary>
+        public string background;
+    }
+
+    /// <summary>Panel position on the original strip, in source pixels. Present for scroll layouts.</summary>
+    [Serializable]
+    public sealed class StripPlacement
+    {
+        public int y;
+        public int h;
+        public int gutterAfter;
     }
 
     [Serializable]
@@ -116,6 +141,7 @@ namespace Zumi.Format
         public RenderMode renderMode = RenderMode.panel;
         public Size size;
         public float depthScale = 0.6f;
+        public StripPlacement strip;
         public float? durationOverride;
         public string mood;
         public List<Layer> layers = new();
