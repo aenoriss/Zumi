@@ -140,3 +140,100 @@ The review does not change which class comes first: missed-gutter in sh14 (66) i
 measured sh14 gutter rows at (44,34,31) with per-channel std about 2 and called them flat, not noisy. Both hold:
 measured over 60 dark gutters, per-row std is 3.7 while max-min is 26.7, because ~10 pixels per 700-px row sit
 more than 10 away from the median and ~0.05 more than 20. Low variance, heavy tail: max-min sees only the tail.
+
+## Iteration 1 (change: median-colour blank-row test, tolerance 20)
+
+Rules: a row is blank when < 0.2 % of its pixels are farther than 20 (any channel) from the row's median colour;
+gutter = run >= 40 blank rows; slabs < 120 px merge upward. Tolerance 20 is the knee measured on sh14's dark section
+(share of rows passing: 0.1 % at 6, 0.8 % at 10, 26 % at 15, 32 % at 20, 32 % at 30). The interrupted run had also
+bundled a floater-attachment rewrite of `find_slabs` into the same uncommitted diff; it was backed out so this
+iteration changes one thing.
+
+| ep | panels | h min/med/max | gutter min/q1/med/q3/max | <300 | >5000 | recall | precision |
+|---|---|---|---|---|---|---|---|
+| u395 | 122 | 140/1240/4292 | 50/221/369/530/2527 | 8 | 0 | 0.974 | 0.926 |
+| tog235 | 95 | 161/1390/5523 | 45/307/414/655/1567 | 7 | 1 | 0.987 | 0.809 |
+| lo9 | 81 | 130/767/2369 | 40/109/193/276/1304 | 7 | 0 | 0.932 | 0.863 |
+| sh14 | 89 | 234/595/2940 | 54/192/295/377/834 | 3 | 0 | 1.000* | 1.000* |
+| cpc1 | 61 | 121/812/2937 | 44/301/388/422/825 | 11 | 0 | 0.979 | 0.783 |
+
+(*sh14 dark labels seeded from this run; it0 on the same labels: recall 0.250.) Iteration 0 on the corrected labels:
+u395 0.974/0.949, tog235 0.987/0.844, lo9 0.932/0.896, cpc1 1.000/0.774.
+
+Defects:
+
+| kind | u395 | tog235 | lo9 | sh14 | cpc1 | total |
+|---|---|---|---|---|---|---|
+| floater | 8 (7, 40, 44, 46, 49, 54, 92, 96) | 12 (3, 6, 8, 15, 29, 35, 42, 56, 58, 63, 66, 70) | 3 (46, 64, 74) | 0 | 9 | 32 |
+| missed-gutter | 1 (106: cemetery + 2734 px pause + chip) | 0 | 0 | 0 | 0 | 1 |
+| merged-title | 2 (0, 4) | 1 (92 afterword) | 0 | 0 | 0 | 3 |
+| misattached | 0 | 0 | 5 (dog captions) | 0 | 3 (9 rustle, 15 pant, 18: title ornament welded across 1948 px of gradient) | 8 |
+| split-title | 0 | 1 (19/20) | 0 | 0 | 1 | 2 |
+| fade | 5 | 0 | 0 | 0 | 0 | 5 |
+| fragment | 0 | 0 | 2 (63, 65 petals) | 0 | 0 | 2 |
+| bridged-sfx | 0 | 2 (82/83 KWOOSH, 85/86 SLICE) | 0 | 0 | 0 | 2 |
+| false-gutter | 0 | 0 | 0 | 0 | 1 (21/22 pale sky) | 1 |
+| no-gap-merge | 0 | 0 | 1 (13) | 1 (60: "OF MARIA!!" burst over the gutter) | 0 | 2 |
+| pan-cut | 0 | 0 | 0 | 0 | 1 | 1 |
+| padded-edge | 0 | 0 | 0 | 5 (27, and boxes ending at 29286, 34640, 39344, 44779: 56-250 px of background) | 0 | 5 |
+| total | 16 | 16 | 11 | 6 | 15 | 64 |
+
+124 -> 64. What changed and why:
+- sh14: the dark section went from one 67 066-px box to 66 more boxes; both reviewers judged them right except 60.
+- New splits elsewhere came from the same mechanism, more rows now pass as blank: a bubble now separates from pale
+  art it used to touch (u395 49|50 and 96|97, tog235 3|4, 56|57, 66|67, lo9 64|65, 74|75, 77|78), while others that were boxed alone in it0 now count as one; floater total 31 -> 32), and
+  u395 73|74 (grey flashback dissolving into the dark page) is now cut, fixing that no-gap-merge.
+- cpc1: the black-to-white gradient (old box 19, boxed alone as a fade) now passes as blank end to end (rows
+  25700-27560: per-row max deviation 0-5), so it became one 1900-px gutter; the 117-px title ornament below it is then
+  a sliver and the sliver rule welds it onto the scream panel across that whole gutter (misattached, box 18 = 2937 px).
+  The fade and fragment 26 (pale tail rejoined its parade panel) are fixed.
+- padded-edge (new, found by the user, confirmed by a reviewer): the background below sh14 27 passes the test except
+  isolated rows such as 25180, where 2 of 700 pixels (0.29 % > 0.2 %) are more than 20 off; each such row splits the
+  blank run into pieces under 40. Treating non-blank runs of <= 2 rows between blank rows as blank moves 6 sh14 box
+  edges by 24-250 px and 3 edges elsewhere (measured, scratch experiment), so it is cheap and well-targeted.
+
+Risks: the cut inside a dissolve (u395 73|74) lands where the fade's tail crosses the tolerance, which is arbitrary;
+tog235 84 (5523 px) is one beat welded by a vertical "FWAAAA" on purpose and is far taller than a screen; gutter
+gradients (sh14 21|22, u395 47) are dropped as gutter although both reviewers call them transition content, a product
+question (keep gutter pixels) rather than a cut defect.
+
+Illustrator verdict, iteration 1 (verbatim):
+
+> **Gutters are found accurately, but the splitter does not reach reader-grade on these episodes; a proximity merge plus a cap gets most of the way.** It found every real gutter except one, and that miss (cpc1 18) is the sliver rule. Its failures come from deciding what the content between gutters *is*:
+>
+> 1. **The always-merge-up sliver rule is the biggest single bug.** It welds titles, captions and transition chips to the wrong panel, across gutters of up to 3000 px.
+>    - Fix: merge into the *nearer* neighbour, and never across a gutter longer than about 2× the median.
+>    - This alone fixes u395 0, 4, 106; tog 92; cpc1 18; and most of the lo9 dog captions.
+> 2. **Orphan text or SFX boxes, 44 in all.** Merging every box under a height threshold into its nearest neighbour (a simulation on these manifests) shows height alone cannot separate these from real short panels:
+>
+>    | Threshold | Extra cuts | Missed label cuts |
+>    |---|---|---|
+>    | none (current output) | 44 | 1 |
+>    | 450 px | 10 | 21 |
+>    | 650 px | 7 | 42 |
+>
+>    lo9 alone goes from 0 misses to 7 at 450 px and to 15 at 650 px.
+>    - **Claim:** the remaining step needs a classifier that tells text-only or SFX-only slabs apart from art. A bubble/SFX detector is the natural one, and it is already the planned next step.
+> 3. **Cases with no pixel answer:**
+>    - near-tie shared SFX (u395 46, 74 vs 54 px);
+>    - semantic attachment (lo9 "Russell", 70 vs 77 px, decided only by the name-precedes-dog pattern);
+>    - balloons or SFX laid across the gutter (sh14 60; tog "SLICE" is splittable only by luck);
+>    - dissolves with no boundary row (u395 73);
+>    - continuous-sky pans (cpc1 0–2);
+>    - pacing of spaced balloons (tog 22–24, cpc1 15–17, lo9 77–79).
+>
+>    These need a script or per-panel source files, a bubble detector that produces layers, and a product decision on what counts as a beat.
+> 4. **Gutters carry meaning.** Gradients, time-skip runs and black fades should be kept as transition pixels, not flattened to one background colour. Front and back matter should be tagged rather than segmented.
+>
+> Fixing points 1 and 2 would probably bring these five episodes to "clean, with a handful of judgement calls". That is reasoned from the simulation and the crops, not a measured result. The cases in point 3 are where a human, or the artist's own per-panel files, still has to decide.
+
+Needs delivery (recorded, not a stop: other kinds remain): pan-cut (cpc1 0-2), semantic caption attachment (lo9
+"Russell"), shared bridging SFX (u395 46). Needs a detector (a redesign, not a stop): no-gap-merge (lo9 13, sh14 60),
+text-only vs art classification for floaters.
+
+Next: replace the sliver rule with nearer-neighbour attachment under a gap cap. A slab shorter than `max_floater`
+joins whichever full-height neighbour is closer, only if that gap is under a cap tied to the strip's median gutter;
+otherwise it stays alone. Targets floater (32), misattached (8), merged-title (3), missed-gutter u395 106 (the chip
+welded across 2734 px): 44 of 64. The reviewer's simulation (no cap) says a pure height threshold costs 21 missed
+label cuts at 450 px; the cap and a sweep of `max_floater` against the corrected labels decide the value. padded-edge
+(5) follows in iteration 3.

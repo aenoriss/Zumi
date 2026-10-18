@@ -6,8 +6,8 @@ Two inputs:
 
 Gutter scan (see docs/research/webtoon-panel-splitting-2026-10.md):
 1. background colour = most frequent colour in the strip's left and right margins;
-2. a row is blank when it is one flat colour (max - min <= `tolerance` per channel); the background
-   colour is recorded for the reader but not used to decide cuts, since episodes change it mid-strip;
+2. a row is blank when < 0.2 % of its pixels are farther than `tolerance` from the row's median
+   colour; the background colour is recorded for the reader but not used to decide cuts, since episodes change it mid-strip;
 3. a run of >= `min_gutter` blank rows is a gutter; the panel boundary is the run's edges.
 Slice seams are invisible after stitching, so they never produce a cut. A bubble sitting in a gutter
 shortens the gutter but is not blank, so until the bubble detector runs first (next step) it comes out
@@ -75,17 +75,26 @@ def background_colour(arr: np.ndarray, margin: int = 8) -> tuple[int, int, int]:
     return int(r), int(g), int(b)
 
 
-def blank_rows(arr: np.ndarray, tolerance: int) -> np.ndarray:
-    """Boolean per row: True when the whole row is one flat colour (max - min <= tolerance per channel).
+def blank_rows(arr: np.ndarray, tolerance: int, max_outliers: float = 0.002, chunk: int = 4096) -> np.ndarray:
+    """Boolean per row: True when the row is one flat colour up to noise.
 
-    Not "equals the global background": unOrdinary 395 switches from white margins to dark grey
-    halfway through, and a single background colour left one half uncut. The cost is that a solid
-    flat block inside a panel (a black "everything went dark" beat) also reads as blank; min_gutter
-    and min_panel absorb the short ones, and the bubble/panel detectors are the real fix later.
+    A pixel is an outlier when any channel is farther than `tolerance` from the row's median colour;
+    the row is blank when fewer than `max_outliers` of its pixels are outliers. Row median, not the
+    global background: unOrdinary 395 switches from white margins to dark grey halfway through.
+    Median plus outlier fraction, not max - min: Sweet Home 14's dark brown gutters carry JPEG grain
+    with a per-row spread of 21-29, so "every pixel within 6" never fired and the dark half came out
+    as one 67 000-px panel (tuning-log iteration 0). 20 is the knee of that grain: the share of dark
+    rows passing goes 0.8 % at 10, 26 % at 15, 32 % at 20, 32 % at 30.
+    The cost is that a flat block inside a panel (a black "everything went dark" beat) also reads as
+    blank; min_gutter and min_panel absorb the short ones.
     """
-    rows = arr.astype(np.int16)
-    spread = rows.max(axis=1) - rows.min(axis=1)  # (h, 3)
-    return spread.max(axis=1) <= tolerance
+    out = np.empty(arr.shape[0], dtype=bool)
+    for y in range(0, arr.shape[0], chunk):
+        rows = arr[y : y + chunk].astype(np.int16)
+        median = np.median(rows, axis=1).astype(np.int16)  # (h, 3)
+        outlier = (np.abs(rows - median[:, None, :]) > tolerance).any(axis=2)  # (h, w)
+        out[y : y + chunk] = outlier.mean(axis=1) < max_outliers
+    return out
 
 
 def find_slabs(blank: np.ndarray, min_gutter: int, min_panel: int) -> list[Slab]:
@@ -132,7 +141,7 @@ def find_slabs(blank: np.ndarray, min_gutter: int, min_panel: int) -> list[Slab]
 
 
 def split_strip(
-    files: list[Path], *, tolerance: int = 6, min_gutter: int = 40, min_panel: int = 120
+    files: list[Path], *, tolerance: int = 20, min_gutter: int = 40, min_panel: int = 120
 ) -> Strip:
     image, seams = stitch(files)
     arr = np.asarray(image)

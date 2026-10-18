@@ -28,7 +28,7 @@ def intake_cmd(
     mode: str = typer.Option("auto", help="auto | strip | panels. auto: >1 file with equal widths and no 'p' prefix = strip"),
     series_id: str = typer.Option(None, "--series"),
     episode_index: int = typer.Option(1, "--index"),
-    tolerance: int = typer.Option(6, help="Max per-channel distance from background for a blank row"),
+    tolerance: int = typer.Option(20, help="Per-channel distance from the row's median colour that makes a pixel an outlier; a row is blank with < 0.2 % outliers"),
     min_gutter: int = typer.Option(40, help="Blank rows needed to count as a gutter"),
     min_panel: int = typer.Option(120, help="Slabs shorter than this merge into the panel above"),
 ):
