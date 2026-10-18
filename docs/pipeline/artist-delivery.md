@@ -24,7 +24,8 @@ ep01/
   script.md
 ```
 
-- PNG (or JPG at quality 90 or better), sRGB, at least **1600 px on the long side**. Bigger is fine.
+- WEBTOON size: **800 px wide**, PNG (or JPG at quality 90 or better), sRGB. Height is free; a panel can be as tall as it needs to be (WEBTOON slices at 1280 px, we do not).
+- If your working canvas is larger (Clip Studio webtoon templates are often 1600 px wide, i.e. 2x), send that instead of downscaling; we never need less than 800.
 - Any aspect ratio. Tall, wide and square panels all work. Keep each panel a single scene; if two moments share a drawing, make two files.
 - **No lettering, no text inside bubbles.** Bubble outlines are allowed if they help you place dialog, but we erase them; the script is the source of truth.
 - Numbering is reading order. `p01` is the first panel the reader sees.
@@ -32,14 +33,14 @@ ep01/
 
 **Alternative: a vertical strip, WEBTOON Canvas style.** Only if drawing per panel breaks your flow.
 
-- 800 px wide (1600 is fine, we downscale), one tall PNG/JPG or slices up to 1280 px tall named in order (`ep01-01.png`, `ep01-02.png`, ...).
+- 800 px wide (or your 1600 px working canvas), one tall PNG/JPG or WEBTOON slices up to 1280 px tall named in order (`ep01-01.png`, `ep01-02.png`, ...). Exactly what you would upload to Canvas.
 - **Blank gutters of at least 150 px** between panels, the same flat colour as the margins. Nothing crosses a gutter: no bubble, no character, no gradient. A gutter is how the pipeline knows where a panel ends.
 - Two panels side by side only if a vertical blank of at least 60 px separates them.
 - Panels without a gutter between them (bleeds, overlaps) will be treated as one panel. If that is the intent, fine; if not, add the gutter.
 
 **Scanned paper sketches**
 
-- 300 dpi or at least 2000 px wide, one page per file.
+- 300 dpi, one page per file; each panel must come out at least 800 px wide once cropped.
 - Adjust levels so the paper is near white and the pencil clearly darker. No spiral-binding shadow, no fingers.
 - Either cut the panels yourself (preferred) or draw the gutters as described above.
 
@@ -77,11 +78,11 @@ A folder `series/` with:
 
 - **Cast list**: `cast.md`, one line per character: name, one or two sentences on who they are, and a voice note ("teenage girl, soft, slightly nervous"; "old man, gravelly, warm"). Names must match the script exactly.
 - **Style**: 3 to 6 reference images of the look the finished art should have (your own finished work, or any images you are allowed to share with us), plus one paragraph describing it (line weight, colour palette, shading, mood). A style preset name is enough if you prefer one of ours.
-- **Cover**: one image, portrait 3:4, at least 1200 × 1600 px.
+- **Cover**: one image, portrait 3:4, 1200 × 1600 px (the Zumi reader shows covers as cards; WEBTOON's square 436 × 436 thumbnail is too small for the headset).
 
 ## Checklist before sending
 
-- [ ] Every panel file is at least 1600 px on the long side.
+- [ ] Every panel file is 800 px wide (or your 1600 px working size).
 - [ ] No text drawn in the art (except sfx marked in the script).
 - [ ] Every speaker name in the script is in `cast.md`.
 - [ ] Panel numbers in the script match the files.
@@ -90,6 +91,6 @@ A folder `series/` with:
 ## Why these rules
 
 - Text as data: the reader shows bubbles as live text with voice, so lettering in the art would have to be erased and would leave scars.
-- 1600 px: the regeneration and cut-out steps work at 1024 to 2048 px; smaller inputs come back blurry.
+- 800 px: it is the WEBTOON standard, so your normal workflow needs no change. The sketch only guides composition; the regeneration step produces the final art at 1024 to 2048 px on its own, and the pipeline upsamples the sketch before any step that needs more pixels.
 - Gutters: the strip splitter looks for rows of flat background colour. Anything crossing them merges two panels.
 - Per-panel files: they skip splitting entirely, and splitting is the least reliable step on rough sketches.
