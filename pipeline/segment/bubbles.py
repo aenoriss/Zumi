@@ -49,6 +49,7 @@ KIND_RANK = {"bubble": 2, "caption": 2, "sfx": 1}  # same shape found as two kin
 MAX_SFX_SHARE = 0.15
 BIG_SFX_SHARE, MAX_BIG_FILL = 0.04, 0.30
 MAX_SFX_FILL, MIN_SOLID_SHARE = 0.6, 0.03
+MAX_ANY_FILL = 0.68  # letters filled at most 0.66 of their box at any size; a head (ToG 223 p11) filled 0.80
 STRIP_W, STRIP_H = 0.9, 0.05  # box width and height as shares of the tile width
 MAX_INSIDE = 0.6  # letters mostly inside a bubble or caption are its dialogue, not a sound effect
 
@@ -66,6 +67,7 @@ PASSES = [
     Pass("caption box", 0.5, "caption"),
     Pass("caption box", 0.5, "caption", exemplars="card"),
     Pass("letters", 0.25, "sfx", exemplars="sfx"),
+    Pass("letters", 0.25, "sfx", exemplars="sfx_outline"),  # white letters with a dark outline over busy art
     Pass("speech bubble", 0.4, "bubble", exemplars="burst"),
 ]
 
@@ -132,7 +134,7 @@ def lettering(m: np.ndarray) -> bool:
         return fill <= MAX_BIG_FILL
     if bw >= STRIP_W * m.shape[1] and bh <= STRIP_H * m.shape[1]:
         return False
-    return not (fill > MAX_SFX_FILL and share > MIN_SOLID_SHARE)
+    return fill <= MAX_ANY_FILL and not (fill > MAX_SFX_FILL and share > MIN_SOLID_SHARE)
 
 
 def run_pass(proc: Sam3Processor, tile: Image.Image, ps: Pass, examples: list[Image.Image], cache: dict) -> list[tuple[np.ndarray, float]]:
