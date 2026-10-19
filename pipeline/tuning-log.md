@@ -636,3 +636,78 @@ frame fading to white just before a gutter merges across it (tog s2 71, unordina
 background read as content (tog s2 75, orv prologue 23); lone text 40-62 px from its frame stays alone (true-beauty 7,
 orv 308 50; deliberate lone beats sit >= ~130 px from both neighbours, a testable gap rule). Tooling bugs: mixed slice
 widths abort intake; the sheets stats line crashes on an episode with no gutters.
+
+## Round 2, iteration 0 (hard set baseline; splitter 26d50a4 plus two tooling fixes)
+
+Hard set (`run_hardset.sh`): hc169, hc09 = Housecat Philosophy 169, 09; uprol = unOrdinary prologue; tb7 = True
+Beauty 7; orv0 = Omniscient Reader prologue; tog246 = Tower of God S2 246; tog0 = Tower of God S1 0; wc10 = Witch
+and Her Corgi 10; never seen before: hc01, hc02 (Housecat 01, 02), u1 (unOrdinary 1), tb4 (True Beauty 4).
+Regression set = the five round-1 fixtures (`run_fixtures.sh`), scored against their labels every iteration.
+
+Tooling fixes, not counted as a change (the splitter's cuts are unchanged; regression scores reproduce exactly):
+`stitch` scales a slice of another width to the width covering most rows (tog0: seven 700-px slices and a final
+800-px one, which aborted intake); `sheets.stats` prints "no gutters" for a one-box episode instead of crashing.
+
+Labels for the 12 episodes written to `.data/labels/<slug>.json`. Seeded from this run's cuts (the round-1 lesson:
+seeded labels are circular), then corrected by hand from crops of every uncut blank run of >= 8 rows and every box
+under 300 or over 2500 px, then corrected again from the four reviewers: hc169 +7275 (was ambiguous); tb7 -3527,
+-82460 (floaters that belong above), -71988 (the lone HUFF joins the HUFF panel below); tb4 +39950 (95-row black
+gutter between two framed panels); tog246 -10280, -48094 (off-panel lines that open the panel below); u1 -457 (the
+lecture bubble leads into the classroom shot); tog0 -6415 +6805 (the black credit card belongs to the title card),
+-2672 ("REVENGE?" is panel 4's caption, like 1-3), 3343 ambiguous; wc10 -1436 ("CORGIS SHED A LOT." heads box 2).
+Reviewers were given sheets, stats, labels and a numeric pre-pass (uncut blank runs, short and tall boxes), never
+my defect list; four in parallel, 3 or 4 episodes each, capped at 12 image reads (they used 5-12; 70-125 s each).
+
+| ep | boxes | h min/med/max | gutter min/med/max | recall | precision |
+|---|---|---|---|---|---|
+| hc169 | 2 | 865/3805/6745 | 49 | 0.062 | 1.000 |
+| hc09 | 2 | 480/1921/3363 | 183 | 0.143 | 1.000 |
+| hc01 | 2 | 1310/2113/2917 | 49 | 0.125 | 1.000 |
+| hc02 | 1 | 4007 | none | 0.000 | - |
+| uprol | 32 | 21/299/3442 | 43/222/1694 | 0.886 | 1.000 |
+| u1 | 39 | 24/451/1580 | 42/153/1218 | 0.949 | 0.974 |
+| tog0 | 15 | 28/307/744 | 118/195/1048 | 1.000 | 0.923 |
+| wc10 | 12 | 33/432/805 | 146/245/325 | 1.000 | 0.909 |
+| tb7 | 85 | 52/621/1571 | 41/344/801 | 1.000 | 0.940 |
+| tb4 | 74 | 168/516/1319 | 42/539/1150 | 0.986 | 0.986 |
+| orv0 | 28 | 58/1155/8754 | 62/483/1410 | 0.900 | 1.000 |
+| tog246 | 109 | 206/847/2183 | 173/394/1502 | 0.991 | 0.981 |
+
+New kind: **dropped-card**, a flat colour card whose sparse lettering stays under the 0.2 % outlier share, so the
+whole card reads as gutter and lies outside every box (tog0 black "story by" card at 6380-6670; tog246 black "15"
+band under the title, 8700-8860). Missed-gutter now includes **narrow-gutter** cases (a clean run of 11-36 rows,
+under min_gutter 40) and **flat-panel-floaters** (uprol 11: two thin flat sky frames read as floaters and grouped).
+
+Defects (merged: mine and the reviewers'; the reviewers found the tb7 2/49/84, tog246 6/37/44, tog0 7 floaters and
+the tb4 black gutter that I missed):
+
+| kind | hc169 | hc09 | hc01 | hc02 | uprol | u1 | tog0 | wc10 | tb7 | tb4 | orv0 | tog246 | total |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| missed-gutter | 15 | 6 | 7 | 7 | 4 | 2 | 0 | 0 | 0 | 1 | 3 | 1 | 46 |
+| floater | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 7 | 1 | 0 | 3 | 14 |
+| dropped-card | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 2 |
+| total | 15 | 6 | 7 | 7 | 4 | 3 | 2 | 1 | 7 | 2 | 3 | 5 | 62 |
+
+Missed-gutter detail: Housecat grids (35 of 46, gutters 11-31 rows); uprol 16277/17490/21862 (24-36 rows), u1
+1672/25552 (12 and 30 rows); uprol 8926 (flat sky frames); orv0 2561/3050 (a caption 265/275 rows from both
+neighbours, attached because both gaps are under the floater cap of 362) and 51065 (539-row white run inside box 23);
+tog246 91616 (a panel fading to white just before the gutter); tb4 39950 (black gutter on a black page).
+Needs meaning, not pixels (counted, flagged): tb7 31 "OR THIS..." and 49 (direction set by punctuation and story),
+tog246 44 (equidistant bubble, 356/345 rows), u1 box 34 "...run..." (30 rows from each neighbour; not counted, the
+cut that matters, 25552, is counted). Not counted: tog246 75's time-skip line attaches up by the house rule.
+
+Risks: the floater cap is 0.75 x the episode's median gutter, so any change that adds narrow gutters lowers the cap
+everywhere in that episode.
+
+Illustrator verdicts (merged; quoted where they agree):
+> Group A (Housecat): "none of these errors needs semantic understanding. The main defect is a fixed minimum gutter
+> height somewhere between 35 and 49 rows. It is too large for 800-px-wide page strips, where gutters are about 15 rows."
+> Group B (unOrdinary, ToG 0, Corgi): "the gap-based approach works on bordered, well-spaced panels. Its errors fall into
+> two groups. The first is real gutters narrower than 40 rows ... a cutter that sees frame borders can probably fix
+> these. The second is captions on white whose owner is set by rhythm or meaning rather than distance."
+> Group C (True Beauty): "the panel cuts themselves are nearly reader-grade on this clean, white-gutter material. 7 of
+> the 9 errors are floaters ... The remaining 2 (tb7 boxes 31 and 49) need the meaning of the text, which pixels don't carry."
+> Group D (ORV, ToG 246): "Nothing here suggests the row-cut approach has hit a ceiling, apart from equidistant floaters."
+
+Next: narrow gutters (46 missed-gutters, 35 of them Housecat). A fixed lower min_gutter would cut between a
+panel and the burst 9-30 rows under it (True Beauty has 14 such runs), so the narrow cut needs a panel edge.

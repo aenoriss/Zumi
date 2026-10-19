@@ -53,12 +53,20 @@ class Strip:
 
 
 def stitch(files: list[Path]) -> tuple[Image.Image, list[int]]:
-    """Concatenate slices vertically. Widths must match (WEBTOON 800 or Naver 700)."""
+    """Concatenate slices vertically (WEBTOON 800 or Naver 700 wide).
+
+    A slice of another width is scaled to the width covering most rows: Tower of God S1 ep 0 is seven 700-px
+    slices and a final 800-px one, which used to abort intake.
+    """
     images = [Image.open(f).convert("RGB") for f in files]
-    widths = {im.width for im in images}
-    if len(widths) != 1:
-        raise ValueError(f"slices have different widths: {sorted(widths)}")
-    width = widths.pop()
+    rows: dict[int, int] = {}
+    for im in images:
+        rows[im.width] = rows.get(im.width, 0) + im.height
+    width = max(rows, key=rows.get)
+    images = [
+        im if im.width == width else im.resize((width, round(im.height * width / im.width)), Image.LANCZOS)
+        for im in images
+    ]
     total = sum(im.height for im in images)
     strip = Image.new("RGB", (width, total))
     seams, y = [], 0

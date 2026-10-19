@@ -46,9 +46,13 @@ def stats(zumi: Path) -> str:
     hs = [p["strip"]["h"] for p in m["panels"]]
     gs = [p["strip"]["gutterAfter"] for p in m["panels"]][:-1]
     q = lambda xs, f: int(statistics.quantiles(xs, n=4)[f]) if len(xs) > 1 else (xs[0] if xs else 0)
+    gutters = (
+        f"gutter min/q1/med/q3/max {min(gs)}/{q(gs, 0)}/{int(statistics.median(gs))}/{q(gs, 2)}/{max(gs)}"
+        if gs
+        else "no gutters"
+    )
     return (
-        f"panels {len(hs)}  h min/med/max {min(hs)}/{int(statistics.median(hs))}/{max(hs)}  "
-        f"gutter min/q1/med/q3/max {min(gs)}/{q(gs, 0)}/{int(statistics.median(gs))}/{q(gs, 2)}/{max(gs)}  "
+        f"panels {len(hs)}  h min/med/max {min(hs)}/{int(statistics.median(hs))}/{max(hs)}  {gutters}  "
         f"<300px {sum(h < 300 for h in hs)}  >5000px {sum(h > 5000 for h in hs)}"
     )
 
