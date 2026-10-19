@@ -41,3 +41,5 @@ apps/xr/.vs/
 
 # Research-only test data (scraped webtoons, never redistributed)
 pipeline/.data/
+# Model weights (downloaded, never committed)
+pipeline/.models/

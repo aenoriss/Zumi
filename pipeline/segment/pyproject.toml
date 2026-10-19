@@ -1,0 +1,33 @@
+[project]
+name = "zumi-segment"
+version = "0.1.0"
+description = "Zumi pipeline, GPU segmentation stage: bubble and lettering masks with SAM 3.1"
+# Meta's sam3 package needs numpy < 2, which has no Python 3.14 build; the main pipeline stays on 3.14.
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.10.0",
+    "torchvision",
+    "sam3",
+    "numpy<2",
+    "pillow>=11.0",
+    "safetensors>=0.4",
+    "einops",
+    "setuptools<81",  # sam3 imports pkg_resources, dropped in setuptools 81
+    "triton-windows>=3.6,<3.7; sys_platform == 'win32'",  # sam3 imports triton; no official Windows build
+    "pycocotools",  # imported by sam3's image processor
+    "psutil",  # imported by sam3 at package import
+    "scipy",  # hole filling in masks
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+sam3 = { git = "https://github.com/facebookresearch/sam3", rev = "7f473cfd983d5eb43040ff608f66bff0d7bdcb53" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
