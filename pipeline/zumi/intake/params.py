@@ -33,3 +33,6 @@ class Params:
     min_tight_flatness: float = 0.7
     max_tight: int = 300
     max_attach: int = 100  # px at 800 wide: text farther than this from the art is its own beat (user, 2026-10-18)
+    min_aspect: float = 0.25  # an art beat shorter than this x the width merges with a neighbour (user, 2026-10-19)
+    merge_gap: float = 2.0  # ... never across a gap over this x the median gutter (a scene change)
+    max_merge_gap: int = 150  # ... nor over this many px at 800 wide (Sweet Home's intertitle plates sit 197+ px apart)

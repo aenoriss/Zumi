@@ -845,3 +845,15 @@ SHY BOY" (113 px) were joined to the frame above; the user judged both separate 
 make over-tall panels. 17 new cuts across the hard and regression sets, all text-only boxes with 103-264 px of clear
 space on each side (checked by eye: captions, comment cards, the ToG S1 "...AND PRIDE?" question captions, a
 thanks-for-reading card); labels updated to the new rule. No other cut moved; recall unchanged everywhere.
+
+## Change 2026-10-19 (user decision): no very short art panels
+
+An art beat shorter than 0.25 x the strip width merges with the neighbour across the smaller gap, never across
+a gap over 2 x the median gutter or 150 px at 800 wide. Trigger: Pepper&Carrot 39, two 250-px letterbox panels
+on a 1200-px page ("we cannot afford very short panels"). Text-only beats are exempt (True Beauty 7 "WAIT...").
+Three iterations: (1) no px cap: 12 webtoon merges, 2 wrong (Sweet Home's textured red intertitles read as art;
+neither fine nor coarse flatness separates them from thin sky strips: 0.84-0.85 vs 0.88-0.93); (2) 100 px cap:
+intertitles kept (197-626 px from neighbours) but unOrdinary 395's sky-strip pair (137 px) lost; (3) 150 px cap:
+7 webtoon merges, all right (lead-in captions with their panel: Cursed Princess Club 1, ORV 154 and 308, ToG S1 0;
+thin sky strips: unOrdinary 395, prologue x2). Pepper&Carrot 39: 36 -> 31 beats, shortest 361 px. Labels for the
+intended merges updated (u395 -102626, uprol -8926 -19992).

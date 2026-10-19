@@ -25,7 +25,35 @@ class Slab:
 
 
 def beats(cuts: np.ndarray, share: np.ndarray, pixels: np.ndarray, p: Params) -> list[Slab]:
-    return attach_floaters(drop_specks(between(cuts, len(share)), share, p), pixels, p)
+    slabs = attach_floaters(drop_specks(between(cuts, len(share)), share, p), pixels, p)
+    return merge_short(slabs, pixels, p)
+
+
+def merge_short(slabs: list[Slab], pixels: np.ndarray, p: Params) -> list[Slab]:
+    """Merge art beats shorter than `min_aspect` x the width into the neighbour across the smaller gap.
+
+    A letterbox panel alone makes a sliver of a view (Pepper&Carrot 39: two 250-px panels on a 1200-px page).
+    Text-only beats are left alone: a caption with space around it is a deliberate pause (True Beauty 7
+    "WAIT..."). Never across a gap over `merge_gap` x the median gutter, which is a scene change.
+    """
+    if len(slabs) < 2:
+        return slabs
+    out = list(slabs)
+    w = pixels.shape[1]
+    cap = min(p.merge_gap * float(np.median([s.gutter_after for s in out[:-1]])), p.max_merge_gap * w / 800)
+    is_text = lambda s: s.h < p.min_panel or flatness(pixels[s.y : s.end]) >= p.min_flatness
+    while True:
+        short = [i for i, s in enumerate(out) if s.h < p.min_aspect * w and not is_text(s)]
+        options = []
+        for i in short:
+            if i > 0 and out[i - 1].gutter_after <= cap:
+                options.append((out[i - 1].gutter_after, out[i].h, i - 1))  # merge i into i-1
+            if i + 1 < len(out) and out[i].gutter_after <= cap:
+                options.append((out[i].gutter_after, out[i].h, i))  # merge i+1 into i
+        if not options:
+            return out
+        _, _, k = min(options)  # tightest gap first; ties go to the shorter beat
+        out[k : k + 2] = [out[k].through(out[k + 1])]
 
 
 def between(cuts: np.ndarray, n: int) -> list[Slab]:
