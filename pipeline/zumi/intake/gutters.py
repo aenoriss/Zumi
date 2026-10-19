@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from .. import WORKERS
 from .params import Params
 
-WORKERS = min(8, os.cpu_count() or 1)
 CHUNK = 256  # rows per worker task; numpy's partition and comparisons release the GIL
 
 

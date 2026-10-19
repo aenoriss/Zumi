@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .. import WORKERS
 from .beats import Slab
-from .gutters import WORKERS
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -73,10 +73,11 @@ class Strip:
         return Image.fromarray(self.pixels[slab.y : slab.end])
 
 
-def report(strip: Strip, out: Path, scale: float = 0.25) -> Path:
-    """The strip at `scale` with each beat outlined in red (just outside the box, so it hides no lettering)."""
-    w, h = int(strip.width * scale), int(strip.height * scale)
-    im = Image.fromarray(strip.pixels).resize((w, h), Image.BILINEAR)
+def report(strip: Strip, out: Path, factor: int = 4) -> Path:
+    """The strip shrunk `factor` times (box filter) with each beat outlined in red, just outside the box so it
+    hides no lettering. For eyeballing only."""
+    im = Image.fromarray(strip.pixels).reduce(factor)
+    w, scale = im.width, 1 / factor
     draw = ImageDraw.Draw(im)
     for y in strip.seams:
         draw.line([(0, y * scale), (w, y * scale)], fill=(80, 140, 255), width=1)
@@ -85,5 +86,5 @@ def report(strip: Strip, out: Path, scale: float = 0.25) -> Path:
         draw.rectangle([(0, top - 2), (w - 1, bottom + 1)], outline=(230, 40, 40), width=2)
         draw.text((6, top - 14), f"{i}", fill=(230, 40, 40))
     out.parent.mkdir(parents=True, exist_ok=True)
-    im.save(out)
+    im.save(out, compress_level=1)
     return out
