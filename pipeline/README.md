@@ -13,8 +13,8 @@ Stages
 
 | # | Stage | State |
 |---|---|---|
-| 1 | intake: stitch, gutter scan, pack | done, scored by eye on the research set |
-| 2 | bubbles: detect before the scan, attach to panels | next |
+| 1 | intake: stitch, gutter scan, pack | done; tuning stopped 2026-10-18 (two rounds, see `tuning-log.md`): about 2 % reader-visible errors on unseen episodes, remaining caption-ownership cases left to stage 2 |
+| 2 | bubbles and text: find, read and assign to panels (first half of Understand) | proposed, not approved |
 | 3 | understand | |
 | 4 | regenerate | |
 | 5 | layers (SAM 3.1, LaMa, depth) | |

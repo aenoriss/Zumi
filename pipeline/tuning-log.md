@@ -830,3 +830,9 @@ orv0's standalone caption at 265/275 rows is the mirror case), dropped-card (a c
 gutter on a black stretch of a white page), tog246 91616 (a panel fading to white just before the gutter), uprol
 8926 (two thin flat sky frames read as one floater unit), orv0 51065 (539 white rows inside box 23, not page-coloured
 by the local mode), hc169 1993 (flat line-art panel rejoining across an 11-row gap just under the 11.25 cap).
+
+## Closed 2026-10-18
+
+Tuning stopped by the user after round 2 (hard set 62 -> 21 defects, regression set unchanged or better). Open items
+are recorded above under "needs delivery or a detector": caption ownership at equal spacing, dropped title cards,
+diagonal/staggered frames. They move to the bubble/text stage, not to more splitter tuning.
