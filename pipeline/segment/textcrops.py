@@ -90,9 +90,26 @@ def _burst_core(ink: np.ndarray, m: np.ndarray, blobs: np.ndarray, ids: np.ndarr
 
 def clean_crop(pixels: np.ndarray, mask: np.ndarray) -> Image.Image | None:
     """Black-on-white image of the lettering inside `mask`, or None if there is none."""
+    text, _ = lettering(pixels, mask)
+    if text is None:
+        return None
+    out = Image.fromarray(np.where(text, 0, 255).astype(np.uint8))
+    out = out.resize((out.width * SCALE, out.height * SCALE), Image.LANCZOS)
+    framed = Image.new("L", (out.width + 2 * PAD, out.height + 2 * PAD), 255)
+    framed.paste(out, (PAD, PAD))
+    return framed
+
+
+def letter_count(pixels: np.ndarray, mask: np.ndarray) -> int:
+    """How many lettering blobs (glyphs, or glyph parts) the mask holds; 0 for a shape with no text."""
+    return lettering(pixels, mask)[1]
+
+
+def lettering(pixels: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray | None, int]:
+    """The lettering inside `mask` as a tight boolean image, and its blob count; (None, 0) if there is none."""
     ys, xs = np.nonzero(mask)
     if not len(ys):
-        return None
+        return None, 0
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
     region = pixels[y0:y1, x0:x1].astype(np.int16)
     m = mask[y0:y1, x0:x1]
@@ -106,7 +123,7 @@ def clean_crop(pixels: np.ndarray, mask: np.ndarray) -> Image.Image | None:
 
     blobs, n = label(ink)
     if n == 0:
-        return None
+        return None, 0
     ids = np.arange(1, n + 1)
     sizes = np.bincount(blobs.ravel(), minlength=n + 1)[1:]
     boundary = np.pad(m, 1) & ~binary_erosion(np.pad(m, 1), iterations=2)  # padded: the crop edge is boundary too
@@ -125,18 +142,12 @@ def clean_crop(pixels: np.ndarray, mask: np.ndarray) -> Image.Image | None:
     frame |= (held >= 3) & (held >= 0.5 * (n - 1))
     ok = (sizes >= MIN_BLOB) & ~touching & ~frame
     if not ok.any():
-        return None
+        return None, 0
     kept = _burst_core(ink, m, blobs, ids[ok], boxes)
     sel = np.isin(ids, kept)
     keep = _drop_strays(ids[sel], boxes[sel], sizes[sel])
     if not len(keep):
-        return None
+        return None, 0
     text = np.isin(blobs, keep)
-
     ty, tx = np.nonzero(text)
-    text = text[ty.min() : ty.max() + 1, tx.min() : tx.max() + 1]
-    out = Image.fromarray(np.where(text, 0, 255).astype(np.uint8))
-    out = out.resize((out.width * SCALE, out.height * SCALE), Image.LANCZOS)
-    framed = Image.new("L", (out.width + 2 * PAD, out.height + 2 * PAD), 255)
-    framed.paste(out, (PAD, PAD))
-    return framed
+    return text[ty.min() : ty.max() + 1, tx.min() : tx.max() + 1], len(keep)

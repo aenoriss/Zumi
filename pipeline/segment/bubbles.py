@@ -42,7 +42,7 @@ from scipy.ndimage import binary_dilation, binary_fill_holes, label
 
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
-from textcrops import clean_crop
+from textcrops import clean_crop, letter_count
 
 ROOT = Path(__file__).resolve().parent.parent
 CKPT = ROOT / ".models/sam3/official/sam3.1_multiplex.pt"
@@ -51,7 +51,19 @@ CANVAS, TILE = 1008, 756  # composite side, tile side inside it; the margin hold
 KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255), "sfx": (255, 0, 220)}
 KIND_RANK = {"bubble": 2, "caption": 2, "sfx": 1}  # same shape found as two kinds: the container wins
 DIALOGUE = ("bubble", "caption")
-MAX_INSIDE = 0.6  # a mask mostly inside a container is that container's text
+MAX_INSIDE = 0.6  # a bubble mostly inside a caption card is the card's text block
+MAX_SFX_INSIDE = 0.9  # letters almost wholly inside a bubble are its dialogue; letters crossing its edge are their
+#                       own element (True Beauty 5 p71 "DAMN IT!" over the burst)
+
+# Dialogue masks must hold dialogue (measured on 85 hits from 8 panels, labelled by eye): blood drops and specks
+# held 0-2 lettering blobs at 0.1-0.8 % of the tile; real bubbles 2-70 blobs; a bubble holding only "!" is large.
+MIN_LETTERS, MIN_FEW_LETTER_SHARE = 3, 0.01  # 3+ blobs, or 1+ blob in a mask over 1 % of the tile
+# A caption is a flat card: share of its pixels within 30 of its median colour was 0.71-0.93 for real cards and
+# 0.09-0.28 for whole panels the card pass returned (Pepper&Carrot 39 rows 8 and 14, Tower of God 223 p4).
+MIN_CAPTION_UNIFORMITY = 0.5
+# Weak hits must be flat shapes: the black "!" splat (ToG 228 p89, score 0.30) had uniformity 0.89-0.91; the
+# face the burst pass picked at 0.31-0.32 (True Beauty 5 p57) 0.19-0.57. Spiky bursts are not flat but score 0.8+.
+WEAK_SCORE, WEAK_MIN_UNIFORMITY = 0.4, 0.8
 
 # Lettering shape of a sound-effect mask (same 368 hits): letters are strokes with gaps.
 MAX_SFX_SHARE = 0.15  # never more than this share of the tile
@@ -74,9 +86,9 @@ PASSES = [
     Pass("speech bubble", 0.30, "bubble"),
     Pass("caption box", 0.5, "caption"),
     Pass("caption box", 0.5, "caption", exemplars="card"),
-    Pass("speech bubble", 0.4, "bubble", exemplars="burst"),
-    Pass("letters", 0.5, "sfx", exemplars="sfx", min_stability=0.75),
-    Pass("letters", 0.5, "sfx", exemplars="sfx_outline", min_stability=0.75),  # white letters, dark outline
+    Pass("speech bubble", 0.3, "bubble", exemplars="burst"),  # the black "!" splat in ToG 228 p89 scored 0.30
+    Pass("letters", 0.5, "sfx", exemplars="sfx", min_stability=0.7),  # "DAMN IT!" 0.74; crowd blotches <= 0.58
+    Pass("letters", 0.5, "sfx", exemplars="sfx_outline", min_stability=0.7),  # white letters, dark outline
 ]
 
 
@@ -185,8 +197,23 @@ def run_pass(proc: Sam3Processor, tile: Image.Image, ps: Pass, examples: list[Im
         m = binary_fill_holes(m)
         if ps.kind == "sfx" and not lettering(m):
             continue
+        if ps.kind in DIALOGUE and not dialogue_like(np.asarray(tile), m, ps.kind, float(s)):
+            continue
         out.append((m, float(s)))
     return out
+
+
+def dialogue_like(pixels: np.ndarray, m: np.ndarray, kind: str, score: float) -> bool:
+    """Does this bubble or caption mask hold text, and is it a flat shape where it has to be (captions, weak hits)?"""
+    if not m.any():
+        return False
+    if kind == "caption" or score < WEAK_SCORE:
+        vals = pixels[m].astype(np.int16)
+        uniformity = (np.abs(vals - np.median(vals, axis=0)).max(axis=1) <= 30).mean()
+        if uniformity < (WEAK_MIN_UNIFORMITY if score < WEAK_SCORE else MIN_CAPTION_UNIFORMITY):
+            return False
+    n = letter_count(pixels, m)
+    return n >= MIN_LETTERS or (n >= 1 and m.mean() >= MIN_FEW_LETTER_SHARE)
 
 
 def add(found: list[Found], new: Found) -> None:
@@ -207,11 +234,14 @@ def add(found: list[Found], new: Found) -> None:
 def drop_inner_text(found: list[Found]) -> list[Found]:
     """Drop masks lying mostly inside a container: a bubble inside a caption card is the card's text block,
     letters inside a bubble or caption are its dialogue."""
-    def inside(f: Found, kinds: tuple[str, ...]) -> bool:
+    def inside(f: Found, kinds: tuple[str, ...], share: float) -> bool:
         cs = [g.mask for g in found if g.kind in kinds and g is not f]
-        return bool(cs) and np.logical_and(f.mask, np.logical_or.reduce(cs)).sum() > MAX_INSIDE * f.mask.sum()
+        return bool(cs) and np.logical_and(f.mask, np.logical_or.reduce(cs)).sum() > share * f.mask.sum()
 
-    return [f for f in found if not (f.kind == "bubble" and inside(f, ("caption",)) or f.kind == "sfx" and inside(f, DIALOGUE))]
+    return [
+        f for f in found
+        if not (f.kind == "bubble" and inside(f, ("caption",), MAX_INSIDE) or f.kind == "sfx" and inside(f, DIALOGUE, MAX_SFX_INSIDE))
+    ]
 
 
 def group_letters(found: list[Found], reach: int) -> list[Found]:
