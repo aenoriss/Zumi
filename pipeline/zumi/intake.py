@@ -326,6 +326,10 @@ def attach_floaters(
     min_flatness: float,
     gap_factor: float,
     min_panel: int = 120,
+    tight: float = 0.25,
+    min_tight_flatness: float = 0.7,
+    max_tight: int = 300,
+    min_gutter: int = 40,
 ) -> list[Slab]:
     """Join floaters (slabs under `max_floater` px that are at least `min_flatness` flat) to the panel they belong to.
 
@@ -338,11 +342,20 @@ def attach_floaters(
     """
     if len(slabs) < 2:
         return slabs
-    cap = gap_factor * float(np.median([s.gutter_after for s in slabs[:-1]]))
+    median = float(np.median([s.gutter_after for s in slabs[:-1]]))
+    cap = gap_factor * median
     units: list[tuple[Slab, bool]] = []
-    for s in slabs:
+    for k, s in enumerate(slabs):
         # under min_panel nothing is a panel, flat or not (a credit line on grainy dark brown is not flat)
         floater = s.h < min_panel or (s.h < max_floater and flatness(arr[s.y : s.y + s.h]) >= min_flatness)
+        # a fairly flat short slab far closer to a neighbour than the episode's gutters is text bound to it:
+        # reaction bursts with dense spiky rims (flatness 0.77-0.79) sat 41-52 px under their panel on 340-540-px
+        # gutters (True Beauty 7 41/44, 4 47; tuning-log, round 2). Not across a narrow gutter, which was cut
+        # because a panel edge sits on it, and not for shaded art (Lore Olympus 9's reaction panels, 0.53-0.67) or
+        # anything `max_tight` rows or taller (Lore Olympus 9's 662-row "HA HA" panel is 0.74 flat, 41 px from the next)
+        near = [g for g in (slabs[k - 1].gutter_after if k else None, s.gutter_after if k + 1 < len(slabs) else None) if g is not None]
+        if not floater and s.h < max_tight and any(min_gutter <= g < tight * median for g in near):
+            floater = flatness(arr[s.y : s.y + s.h]) >= min_tight_flatness
         prev = units[-1] if units else None
         if floater and prev and prev[1] and prev[0].gutter_after < cap:
             units[-1] = (Slab(y=prev[0].y, h=s.y + s.h - prev[0].y, gutter_after=s.gutter_after), True)
@@ -384,7 +397,7 @@ def split_strip(
     bg = background_colour(arr)  # dominant margin colour, informational
     medians, share = row_stats(arr, tolerance)
     slabs = drop_specks(find_slabs(share < 0.002, min_gutter, medians=medians, arr=arr), share)
-    slabs = attach_floaters(slabs, arr, max_floater, min_flatness, gap_factor)
+    slabs = attach_floaters(slabs, arr, max_floater, min_flatness, gap_factor, min_gutter=min_gutter)
     # leading blank rows are not a slab; record them as the first slab's offset only
     return Strip(image=image, background=bg, slabs=slabs, seams=seams)
 

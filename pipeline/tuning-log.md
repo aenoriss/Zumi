@@ -761,3 +761,38 @@ Illustrator verdict, iteration 1 (both reviewers agree):
 
 Next: floaters (14, now the largest kind): attach by the episode's own gap distribution instead of a flatness test
 plus a fixed cap.
+
+## Round 2, iteration 2 (change: tight-gap floaters)
+
+Rule added in `attach_floaters`: a slab under 300 rows that is at least 0.7 flat and sits 40 rows or more but under
+0.25 x the episode's median gutter from a neighbour counts as a floater (then joins the nearer panel under the cap as
+before). Bursts with dense spiky rims measure 0.77-0.79 flat, under the old 0.85 floater threshold, and sat 41-52 px
+under their panel on 324-528 px median gutters. Measured on the way and rejected: the same test for any slab under 700
+rows (glued Lore Olympus 9's 662-row "HA HA" panel, 0.74 flat, to the next panel across 41 px: lo9 -2 recall; tb7, tb4
+-1 each); across narrow gutters too (undid iteration 1 in u1 and uprol: they are under 0.25 x median); and a second
+clause joining a floater to the side at most 0.5 x as far as the other, strip ends counting as infinitely far (fixed
+u1 457 and tog246 48094 but merged 6 real cuts in Housecat and orv0 and u395 699 on the regression set).
+
+Changed boxes: tb7 40051 and 41698 (bursts 52 and 41 rows under their panels joined them), cpc1 37494 (a 165-row
+narration plate 70 rows above its panel joined it; a round-1 floater). Every other box on all 17 episodes identical.
+One reviewer, 3 image reads: "All three joins are right ... none of the three joins put text with the wrong panel."
+
+Regression set: u395 1.000/0.991, tog235 1/1, lo9 0.986/1, sh14 1/1 unchanged; cpc1 1.000/0.941 -> 1.000/0.960.
+
+| kind | hc169 | hc09 | hc01 | hc02 | uprol | u1 | tog0 | wc10 | tb7 | tb4 | orv0 | tog246 | total |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| missed-gutter | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 3 | 1 | 7 |
+| floater | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 5 | 1 | 0 | 3 | 12 |
+| dropped-card | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 2 |
+| fragment | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| total | 1 | 1 | 0 | 0 | 1 | 1 | 2 | 1 | 5 | 2 | 3 | 5 | 22 |
+
+24 -> 22 (plus one regression-set floater fixed). tb4 47 stays: its burst is 422 rows and 0.69 flat.
+
+Remaining floaters are of the kind the round-2 reviewers flagged as spacing-blind: owner set by rhythm or meaning
+(tb7 2 at 274/523 rows should join up, while orv0's caption at 265/275 should stand alone; tb7 31, 49 and tog246 44
+need the text). Needs a text reader, not a gap rule; recorded under "needs delivery or a detector".
+
+Next: dropped-card (2): a flat off-page band with lettering, lying between two page-coloured stretches of one gutter
+run, is kept as gutter today (tog0 black "story by" card, 6383-6669, 19 ink rows of 290; tog246 black "15" band,
+8703-8928 between two grey gradients, 23 ink rows).
