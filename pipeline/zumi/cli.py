@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -50,19 +51,20 @@ def intake_cmd(
     layout: Layout | None = None
 
     if mode == "strip":
-        strip = intake.split_strip(
-            files,
+        params = replace(
+            intake.Params(),
             tolerance=tolerance,
             min_gutter=min_gutter,
             max_floater=max_floater,
             min_flatness=min_flatness,
             gap_factor=gap_factor,
         )
+        strip = intake.split_strip(files, params)
         bg = "#{:02X}{:02X}{:02X}".format(*strip.background)
-        layout = Layout(mode="scroll", width=strip.image.width, height=strip.image.height, background=bg)
-        for i, (slab, im) in enumerate(zip(strip.slabs, intake.crop_slabs(strip))):
+        layout = Layout(mode="scroll", width=strip.width, height=strip.height, background=bg)
+        for i, slab in enumerate(strip.slabs):
             pid = f"p{i:03d}"
-            images[pid] = im
+            images[pid] = im = strip.crop(slab)
             panels.append(
                 Panel(
                     id=pid,
@@ -72,7 +74,7 @@ def intake_cmd(
                     layers=[Layer(id="base", name="source", image=f"panels/{pid}/layers/base.png", depth=0.0, band="background")],
                 )
             )
-        typer.echo(f"strip {strip.image.width}x{strip.image.height}, background {bg}, {len(files)} slices -> {len(panels)} panels")
+        typer.echo(f"strip {strip.width}x{strip.height}, background {bg}, {len(files)} slices -> {len(panels)} panels")
         if report:
             intake.report(strip, report)
             typer.echo(f"report {report}")
