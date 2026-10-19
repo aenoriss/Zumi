@@ -36,3 +36,13 @@ class Params:
     min_aspect: float = 0.25  # an art beat shorter than this x the width merges with a neighbour (user, 2026-10-19)
     merge_gap: float = 2.0  # ... never across a gap over this x the median gutter (a scene change)
     max_merge_gap: int = 150  # ... nor over this many px at 800 wide (Sweet Home's intertitle plates sit 197+ px apart)
+
+    # bubbles that cross a gutter with a page-coloured fill (no outline: the gutter rows read blank)
+    bay_band: float = 0.3  # rows searched into a panel from its edge, as a share of the width
+    bay_min_w: float = 0.12  # a bay's chord along the panel edge, as a share of the width ...
+    bay_max_w: float = 0.98  # Tower of God 223 f31: one bubble spans 0.94 of the width
+    bay_end_share: float = 0.4  # a bay's ends reach at most this share of its deepest point (dome shape)
+    bay_min_depth: float = 0.06  # ... and how far it reaches into the art
+    bay_art_reach: float = 0.03  # a column where page colour reaches less than this into the panel is its edge
+    bay_min_art: float = 0.5  # most of the rest of the edge must be art: a hard panel edge, not a fade
+    bay_max_span: float = 1.0  # bay to bay across the gutter(s), as a share of the width

@@ -857,3 +857,16 @@ intertitles kept (197-626 px from neighbours) but unOrdinary 395's sky-strip pai
 7 webtoon merges, all right (lead-in captions with their panel: Cursed Princess Club 1, ORV 154 and 308, ToG S1 0;
 thin sky strips: unOrdinary 395, prologue x2). Pepper&Carrot 39: 36 -> 31 beats, shortest 361 px. Labels for the
 intended merges updated (u395 -102626, uprol -8926 -19992).
+
+## Change 2026-10-19 (user): bubbles that cross a gutter with a page-coloured fill link the panels
+
+Tower of God 223 frames 31-33: a white, outline-free bubble overlaps the bottom of one panel and the top of the
+next, its text in between; the rows through it are pure white (0 pixels off), so the gutter scan cut twice.
+`link_bays`: a panel whose bottom edge has a page-coloured bay (per-column depth of page colour into the art:
+a run closed by art on both sides, dome-shaped, chord 0.12-0.98 of the width, at least 0.06 deep) and a next
+art panel with a top bay at overlapping x, within one width, with any text slabs between inside that x range,
+are one frame. Iterations: (1) edge-row runs found nothing (the dome's chord is 99.7 % of the last row);
+(2) per-column depth, max chord 0.9: still nothing (this bubble spans 0.94); (3) chord up to 0.98 plus a dome
+check. Audit on 34 episodes (3 extra Tower of God S3 episodes downloaded for it): 1 merge, the target; 4
+one-sided bays, all correctly left alone (diagonal edge, crowd silhouette, bubbles hanging below their own
+panel); 22 text frames sandwiched between art, none a crossing bubble. Evidence is one positive example.

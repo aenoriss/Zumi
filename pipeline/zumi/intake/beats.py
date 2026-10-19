@@ -26,7 +26,87 @@ class Slab:
 
 def beats(cuts: np.ndarray, share: np.ndarray, pixels: np.ndarray, p: Params) -> list[Slab]:
     slabs = attach_floaters(drop_specks(between(cuts, len(share)), share, p), pixels, p)
-    return merge_short(slabs, pixels, p)
+    return merge_short(link_bays(slabs, pixels, p), pixels, p)
+
+
+def _bays(pixels: np.ndarray, s: Slab, page: np.ndarray, facing: str, p: Params) -> list[tuple[int, int]]:
+    """Page-coloured bays cut into a panel's edge: (x0, x1) of each bay's chord along that edge.
+
+    A bubble whose fill is the page colour and that overlaps a panel's edge shows only as this: a run of page
+    pixels along the panel's last (or first) row, closed by art on both sides, reaching into the art.
+    """
+    w = pixels.shape[1]
+    depth = min(s.h, max(1, int(p.bay_band * w)))
+    band = pixels[s.end - depth : s.end][::-1] if facing == "bottom" else pixels[s.y : s.y + depth]  # edge row first
+    is_page = (np.abs(band.astype(np.int16) - page) <= p.colour_match).all(axis=2)
+    reach = np.where(is_page.all(axis=0), depth, np.argmin(is_page, axis=0))  # page rows from the edge, per column
+    open_col = reach > p.bay_art_reach * w  # not the panel's edge here: page colour reaches into the art
+    d = np.diff(np.concatenate(([0], open_col.astype(np.int8), [0])))
+    runs = list(zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)))
+    def dome(r: np.ndarray) -> bool:
+        """Highest near the middle, low at both ends: a bubble's curve, not a fade or a flat strip."""
+        k = max(1, len(r) // 10)
+        top = int(np.argmax(r))
+        return len(r) // 4 <= top <= 3 * len(r) // 4 and max(r[:k].mean(), r[-k:].mean()) <= p.bay_end_share * r.max()
+
+    bays = [
+        (int(a), int(b)) for a, b in runs
+        if a > 0 and b < w  # closed by art on both sides; runs reaching the strip border are side margins
+        and p.bay_min_w * w <= b - a <= p.bay_max_w * w and reach[a:b].max() >= p.bay_min_depth * w
+        and dome(reach[a:b])
+    ]
+    if not bays:
+        return []
+    inside = np.zeros(w, bool)
+    for a, b in bays:
+        inside[a:b] = True
+    return bays if (~open_col[~inside]).mean() >= p.bay_min_art else []  # the rest of the edge is a hard art edge
+
+
+def _is_text(pixels: np.ndarray, s: Slab, p: Params) -> bool:
+    return s.h < p.min_panel or (s.h < p.max_floater and flatness(pixels[s.y : s.end]) >= p.min_flatness)
+
+
+def _ink_x(pixels: np.ndarray, s: Slab, page: np.ndarray, p: Params) -> tuple[int, int]:
+    cols = np.flatnonzero((np.abs(pixels[s.y : s.end].astype(np.int16) - page) > p.colour_match).any(axis=2).any(axis=0))
+    return (int(cols[0]), int(cols[-1]) + 1) if len(cols) else (0, pixels.shape[1])
+
+
+def link_bays(slabs: list[Slab], pixels: np.ndarray, p: Params) -> list[Slab]:
+    """Merge panels joined by a bubble whose fill is the page colour (Tower of God 223 frames 31-33).
+
+    Panel A has a bay in its bottom edge and the next art panel B a bay in its top edge, at overlapping x, within
+    `bay_max_span`; the text slabs between them, if any, sit inside that x range. That is one bubble across the
+    gutter, so A, the text and B are one frame (user rule 2026-10-18: art overlapping a gutter links the beats).
+    """
+    w = pixels.shape[1]
+    out = list(slabs)
+    i = 0
+    while i < len(out) - 1:
+        a = out[i]
+        if _is_text(pixels, a, p):
+            i += 1
+            continue
+        page_below = np.median(pixels[a.end : a.end + max(1, a.gutter_after)].reshape(-1, 3), axis=0)
+        down = _bays(pixels, a, page_below, "bottom", p)
+        j, linked = i + 1, False
+        while down and j < len(out) and out[j].y - a.end <= p.bay_max_span * w:
+            b = out[j]
+            if _is_text(pixels, b, p):
+                x0, x1 = _ink_x(pixels, b, page_below, p)
+                if not any(x0 < bx1 and bx0 < x1 for bx0, bx1 in down):
+                    break
+                j += 1
+                continue
+            page_above = np.median(pixels[out[j - 1].end : b.y].reshape(-1, 3), axis=0)
+            up = _bays(pixels, b, page_above, "top", p)
+            linked = any(ax0 < bx1 and bx0 < ax1 for ax0, ax1 in down for bx0, bx1 in up)
+            break
+        if linked:
+            out[i : j + 1] = [a.through(out[j])]
+        else:
+            i += 1
+    return out
 
 
 def merge_short(slabs: list[Slab], pixels: np.ndarray, p: Params) -> list[Slab]:
