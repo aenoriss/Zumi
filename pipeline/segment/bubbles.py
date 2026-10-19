@@ -37,6 +37,7 @@ from scipy.ndimage import binary_fill_holes
 
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+from textcrops import clean_crop
 
 ROOT = Path(__file__).resolve().parent.parent
 CKPT = ROOT / ".models/sam3/official/sam3.1_multiplex.pt"
@@ -217,6 +218,11 @@ def main() -> None:
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):  # mixed precision, as in Meta's examples
             found = segment(proc, img, bank, a.zumi.stem, i)
         overlay(img, found).save(a.out / f"{a.zumi.stem}-p{i:03d}.png")
+        pixels = np.asarray(img)
+        for k, f in enumerate(sorted(found, key=lambda f: np.nonzero(f.mask)[0].min())):  # top to bottom
+            if (crop := clean_crop(pixels, f.mask)) is not None:
+                (a.out / "text").mkdir(exist_ok=True)
+                crop.save(a.out / "text" / f"{a.zumi.stem}-p{i:03d}-{k:02d}-{f.kind}.png")
         kinds = {k: sum(f.kind == k for f in found) for k in KIND_COLOUR}
         print(f"panel {i:3d} {img.width}x{img.height}: {kinds}, {time.perf_counter() - t:.2f}s")
     print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
