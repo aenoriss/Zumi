@@ -272,6 +272,26 @@ def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, pan
     return group_letters(drop_inner_text(found), reach=max(8, w // 40))
 
 
+def save_masks(path: Path, found: list[Found]) -> None:
+    """Masks in top-to-bottom order, bit-packed, with their kinds and scores, for the Understand step."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    found = sorted(found, key=lambda f: (np.nonzero(f.mask)[0].min(), np.nonzero(f.mask)[1].min()))
+    shape = found[0].mask.shape if found else (0, 0)
+    np.savez_compressed(
+        path,
+        masks=np.packbits(np.stack([f.mask for f in found]), axis=-1) if found else np.zeros((0, 0, 0), np.uint8),
+        shape=np.array(shape),
+        kinds=np.array([f.kind for f in found]),
+        scores=np.array([f.score for f in found]),
+    )
+
+
+def load_masks(path: Path) -> list[Found]:
+    d = np.load(path)
+    h, w = d["shape"]
+    return [Found(np.unpackbits(m, axis=-1, count=w).astype(bool)[:h], float(s), str(k)) for m, k, s in zip(d["masks"], d["kinds"], d["scores"])]
+
+
 def overlay(img: Image.Image, found: list[Found]) -> Image.Image:
     base = np.asarray(img.convert("RGB")).astype(np.float32)
     for f in found:
@@ -308,6 +328,7 @@ def main() -> None:
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):  # mixed precision, as in Meta's examples
             found = segment(proc, img, bank, a.zumi.stem, i)
         overlay(img, found).save(a.out / f"{a.zumi.stem}-p{i:03d}.png")
+        save_masks(a.out / "masks" / f"{a.zumi.stem}-p{i:03d}.npz", found)
         pixels = np.asarray(img)
         dialogue = [f for f in found if f.kind in DIALOGUE]  # text crops are for reading dialogue
         for k, f in enumerate(sorted(dialogue, key=lambda f: np.nonzero(f.mask)[0].min())):  # top to bottom

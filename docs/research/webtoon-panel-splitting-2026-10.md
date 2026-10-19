@@ -128,6 +128,12 @@ Measured on Cursed Princess Club ep. 1: 58 slices, all 800 px wide, 1005–1280 
 
 Let's Play (Mongie) was planned but is no longer served by WEBTOON (connect error on its title page); True Beauty took its slot.
 
+Exception (user decision, 2026-10-19): 10 panels from this set (True Beauty 5 p1, 17, 31, 57, 71; Tower of God
+228 p10, 43, 89, 104; Tower of God 223 p4) were sent to OpenRouter (Muse Spark 1.3, Llama 4 Maverick, Gemini 3.8
+Flash) to test the Understand step, strictly for internal research. The outputs stay local under
+`pipeline/.data/out/understand/` and are never published or shipped. Pepper&Carrot is excluded from every model
+call because its author prohibits AI processing.
+
 ## Recommendation
 
 ### A. Splitter
