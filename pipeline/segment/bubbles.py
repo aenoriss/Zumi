@@ -1,6 +1,9 @@
-"""Lettering masks with SAM 3.1 (stage 2b, local GPU test): bubbles, captions and sound effects.
+"""Dialogue masks with SAM 3.1 (stage 2b, local GPU test): speech bubbles and caption boxes.
 
     uv run python bubbles.py <episode.zumi> <out dir> [--panels 3,7,12]
+
+Only dialogue is masked: the reader redraws bubbles and captions as live text, so they are erased and the art
+behind them inpainted. Sound effects drawn on the art stay part of the art (decided 2026-10-19).
 
 SAM 3 resizes every input to a 1008 x 1008 square, so a tall panel is cut into square tiles (side = panel
 width, 25 % overlap). Each tile gets:
@@ -9,13 +12,12 @@ width, 25 % overlap). Each tile gets:
   margin, each marked as a positive box, so SAM 3 finds everything that looks like them. Examples come from a
   hand-picked bank (`.data/exemplars/bank.json`), never from the panel being segmented.
 
-Masks are sorted into kinds (bubble, caption, sfx); an sfx's letters are grouped into one word. Masks of the
-same kind that overlap by more than half are one object seen twice (overlapping tiles); different kinds merge
-only when near-identical, so a sound effect crossing a caption box stays a separate mask (Tower of God 223 p4).
+Masks of the same kind that overlap by more than half are one object seen twice (overlapping tiles); a bubble
+and a caption merge only when near-identical, so overlapping dialogue elements stay separate masks. A "bubble"
+lying inside a caption card is that card's text block and is dropped.
 
 Measured: "speech bubble" finds round bubbles at 0.95+ and black bursts at 0.35; "caption box" finds light
-captions (0.78) but not black cards (0.14-0.24); "text", "lettering", "onomatopoeia" find nothing; card
-exemplars find a missed black card at 0.98; sfx exemplars plus "letters" mask each letter (0.30-0.91).
+captions (0.78) but not black cards (0.14-0.24); card exemplars find a missed black card at 0.98.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_dilation, binary_fill_holes, label
+from scipy.ndimage import binary_fill_holes
 
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
@@ -40,18 +42,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CKPT = ROOT / ".models/sam3/official/sam3.1_multiplex.pt"
 BANK = ROOT / ".data/exemplars/bank.json"
 CANVAS, TILE = 1008, 756  # composite side, tile side inside it; the margin holds up to 7 examples
-KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255), "sfx": (255, 0, 220)}
-KIND_RANK = {"bubble": 2, "caption": 2, "sfx": 1}  # same shape found as two kinds: the container wins
-# Is an sfx mask lettering or a piece of art? Measured on 155 sfx-pass hits from 12 panels (Tower of God 223,
-# True Beauty 5, Pepper&Carrot 39), each labelled by eye: words over 4 % of the tile filled 0.15-0.29 of their
-# box and never covered more than 13 %; art blobs that size filled 0.23-0.60 (16 of 23 above 0.30) and went up to
-# 25 %. Under 4 %, solid bits fill > 0.6 above 3 % of the tile, and panel-edge strips are full-width slivers.
-MAX_SFX_SHARE = 0.15
-BIG_SFX_SHARE, MAX_BIG_FILL = 0.04, 0.30
-MAX_SFX_FILL, MIN_SOLID_SHARE = 0.6, 0.03
-MAX_ANY_FILL = 0.68  # letters filled at most 0.66 of their box at any size; a head (ToG 223 p11) filled 0.80
-STRIP_W, STRIP_H = 0.9, 0.05  # box width and height as shares of the tile width
-MAX_INSIDE = 0.6  # letters mostly inside a bubble or caption are its dialogue, not a sound effect
+KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255)}
+MAX_INSIDE = 0.6  # a bubble mostly inside a caption card is the card's text block
 
 
 @dataclass(frozen=True)
@@ -66,8 +58,6 @@ PASSES = [
     Pass("speech bubble", 0.30, "bubble"),
     Pass("caption box", 0.5, "caption"),
     Pass("caption box", 0.5, "caption", exemplars="card"),
-    Pass("letters", 0.25, "sfx", exemplars="sfx"),
-    Pass("letters", 0.25, "sfx", exemplars="sfx_outline"),  # white letters with a dark outline over busy art
     Pass("speech bubble", 0.4, "bubble", exemplars="burst"),
 ]
 
@@ -122,28 +112,13 @@ def composite(tile: Image.Image, examples: list[Image.Image]) -> tuple[Image.Ima
     return canvas, boxes
 
 
-def lettering(m: np.ndarray) -> bool:
-    """Could this sfx mask be letters rather than a piece of art?"""
-    share = m.mean()
-    if share == 0 or share > MAX_SFX_SHARE:
-        return False
-    ys, xs = np.nonzero(m)
-    bh, bw = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
-    fill = m.sum() / (bh * bw)
-    if share > BIG_SFX_SHARE:
-        return fill <= MAX_BIG_FILL
-    if bw >= STRIP_W * m.shape[1] and bh <= STRIP_H * m.shape[1]:
-        return False
-    return fill <= MAX_ANY_FILL and not (fill > MAX_SFX_FILL and share > MIN_SOLID_SHARE)
-
-
 def run_pass(proc: Sam3Processor, tile: Image.Image, ps: Pass, examples: list[Image.Image], cache: dict) -> list[tuple[np.ndarray, float]]:
     """(tile-size mask, score) for one pass on one tile."""
     if ps.exemplars is None:
         if "plain" not in cache:
-            cache["plain"] = proc.set_image(tile)
+            cache["plain"] = proc.set_image(tile)  # one backbone pass shared by the text passes
         state = proc.set_text_prompt(ps.prompt, cache["plain"])
-        masks = state["masks"][:, 0].cpu().numpy()
+        masks, scores, crop = state["masks"][:, 0].cpu().numpy(), state["scores"].float().cpu().numpy(), None
     else:
         if not examples:
             return []
@@ -155,30 +130,17 @@ def run_pass(proc: Sam3Processor, tile: Image.Image, ps: Pass, examples: list[Im
         b = torch.tensor(boxes, device=proc.device, dtype=torch.float32).view(-1, 1, 4)
         state["geometric_prompt"].append_boxes(b, torch.ones((len(boxes), 1), device=proc.device, dtype=torch.bool))
         state = proc._forward_grounding(state)
-        out = []
-        for m, s in zip(state["masks"][:, 0].cpu().numpy(), state["scores"].float().cpu().numpy()):
-            if s < ps.min_score or m[:TILE, :TILE].sum() <= 0.9 * m.sum():  # drop the examples themselves
+        masks, scores, crop = state["masks"][:, 0].cpu().numpy(), state["scores"].float().cpu().numpy(), TILE
+    out = []
+    for m, s in zip(masks, scores):
+        if s < ps.min_score:
+            continue
+        if crop:
+            if m[:crop, :crop].sum() <= 0.9 * m.sum():  # an example in the margin, not the tile
                 continue
-            m = np.asarray(Image.fromarray(m[:TILE, :TILE]).resize(tile.size, Image.NEAREST))
-            if ps.kind == "sfx" and not lettering(m):
-                continue
-            out.append((binary_fill_holes(m), float(s)))
-        return out
-    return [(binary_fill_holes(m), float(s)) for m, s in zip(masks, state["scores"].float().cpu().numpy()) if s >= ps.min_score]
-
-
-def group_letters(found: list[Found], reach: int) -> list[Found]:
-    """Letters of one sound effect become one mask: sfx masks within `reach` px of each other join."""
-    sfx = [f for f in found if f.kind == "sfx"]
-    if len(sfx) < 2:
-        return found
-    union = np.logical_or.reduce([f.mask for f in sfx])
-    words, n = label(binary_dilation(union, iterations=reach))
-    grouped = []
-    for k in range(1, n + 1):
-        members = [f for f in sfx if (words[f.mask] == k).any()]
-        grouped.append(Found(np.logical_or.reduce([f.mask for f in members]), max(f.score for f in members), "sfx"))
-    return [f for f in found if f.kind != "sfx"] + grouped
+            m = np.asarray(Image.fromarray(m[:crop, :crop]).resize(tile.size, Image.NEAREST))
+        out.append((binary_fill_holes(m), float(s)))
+    return out
 
 
 def add(found: list[Found], new: Found) -> None:
@@ -190,20 +152,18 @@ def add(found: list[Found], new: Found) -> None:
         same_object = f.kind == new.kind and inter / min(a, b) > 0.5
         same_shape = inter / (a + b - inter) > 0.7
         if same_object or same_shape:
-            kind = max((f, new), key=lambda x: (KIND_RANK[x.kind], x.score)).kind
+            kind = f.kind if f.score >= new.score else new.kind
             found[i] = Found(np.logical_or(f.mask, new.mask), max(f.score, new.score), kind)
             return
     found.append(new)
 
 
-def drop_dialogue_letters(found: list[Found]) -> list[Found]:
-    """Remove masks that lie mostly inside a container: letters inside a bubble or caption are its dialogue, and
-    a "bubble" found inside a caption card is that card's text block (Tower of God 223 p2)."""
-    def inside(f: Found, kinds: set[str]) -> bool:
-        cs = [g.mask for g in found if g.kind in kinds and g is not f]
-        return bool(cs) and np.logical_and(f.mask, np.logical_or.reduce(cs)).sum() > MAX_INSIDE * f.mask.sum()
-
-    return [f for f in found if not (f.kind == "sfx" and inside(f, {"bubble", "caption"}) or f.kind == "bubble" and inside(f, {"caption"}))]
+def drop_card_text(found: list[Found]) -> list[Found]:
+    cards = [f.mask for f in found if f.kind == "caption"]
+    if not cards:
+        return found
+    inside = np.logical_or.reduce(cards)
+    return [f for f in found if f.kind != "bubble" or np.logical_and(f.mask, inside).sum() <= MAX_INSIDE * f.mask.sum()]
 
 
 def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, panel: int) -> list[Found]:
@@ -218,7 +178,7 @@ def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, pan
                 full = np.zeros((h, w), bool)
                 full[top : top + m.shape[0]] = m
                 add(found, Found(full, s, ps.kind))
-    return group_letters(drop_dialogue_letters(found), reach=max(8, w // 40))
+    return drop_card_text(found)
 
 
 def overlay(img: Image.Image, found: list[Found]) -> Image.Image:
