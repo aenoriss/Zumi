@@ -40,12 +40,16 @@ ROOT = Path(__file__).resolve().parent.parent
 CKPT = ROOT / ".models/sam3/official/sam3.1_multiplex.pt"
 BANK = ROOT / ".data/exemplars/bank.json"
 CANVAS, TILE = 1008, 756  # composite side, tile side inside it; the margin holds up to 7 examples
-KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255), "sfx": (40, 200, 90)}
+KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255), "sfx": (255, 0, 220)}
 KIND_RANK = {"bubble": 2, "caption": 2, "sfx": 1}  # same shape found as two kinds: the container wins
-MAX_SFX_SHARE = 0.25  # an sfx mask over a quarter of the tile is the whole art, not lettering
-# Letters are strokes with gaps: on 7 tiles, letters and words filled 0.16-0.53 of their box; the art the
-# sfx pass wrongly picked (people, heads) filled 0.68-0.85 at 5-21 % of the tile. Tiny solid letters pass.
+# Is an sfx mask lettering or a piece of art? Measured on 155 sfx-pass hits from 12 panels (Tower of God 223,
+# True Beauty 5, Pepper&Carrot 39), each labelled by eye: words over 4 % of the tile filled 0.15-0.29 of their
+# box and never covered more than 13 %; art blobs that size filled 0.23-0.60 (16 of 23 above 0.30) and went up to
+# 25 %. Under 4 %, solid bits fill > 0.6 above 3 % of the tile, and panel-edge strips are full-width slivers.
+MAX_SFX_SHARE = 0.15
+BIG_SFX_SHARE, MAX_BIG_FILL = 0.04, 0.30
 MAX_SFX_FILL, MIN_SOLID_SHARE = 0.6, 0.03
+STRIP_W, STRIP_H = 0.9, 0.05  # box width and height as shares of the tile width
 MAX_INSIDE = 0.6  # letters mostly inside a bubble or caption are its dialogue, not a sound effect
 
 
@@ -61,7 +65,7 @@ PASSES = [
     Pass("speech bubble", 0.30, "bubble"),
     Pass("caption box", 0.5, "caption"),
     Pass("caption box", 0.5, "caption", exemplars="card"),
-    Pass("letters", 0.3, "sfx", exemplars="sfx"),
+    Pass("letters", 0.25, "sfx", exemplars="sfx"),
     Pass("speech bubble", 0.4, "bubble", exemplars="burst"),
 ]
 
@@ -122,7 +126,12 @@ def lettering(m: np.ndarray) -> bool:
     if share == 0 or share > MAX_SFX_SHARE:
         return False
     ys, xs = np.nonzero(m)
-    fill = m.sum() / ((ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1))
+    bh, bw = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
+    fill = m.sum() / (bh * bw)
+    if share > BIG_SFX_SHARE:
+        return fill <= MAX_BIG_FILL
+    if bw >= STRIP_W * m.shape[1] and bh <= STRIP_H * m.shape[1]:
+        return False
     return not (fill > MAX_SFX_FILL and share > MIN_SOLID_SHARE)
 
 
@@ -186,12 +195,13 @@ def add(found: list[Found], new: Found) -> None:
 
 
 def drop_dialogue_letters(found: list[Found]) -> list[Found]:
-    """Remove sfx masks that lie mostly inside a bubble or caption: those letters are its dialogue."""
-    containers = [f.mask for f in found if f.kind != "sfx"]
-    if not containers:
-        return found
-    inside = np.logical_or.reduce(containers)
-    return [f for f in found if f.kind != "sfx" or np.logical_and(f.mask, inside).sum() <= MAX_INSIDE * f.mask.sum()]
+    """Remove masks that lie mostly inside a container: letters inside a bubble or caption are its dialogue, and
+    a "bubble" found inside a caption card is that card's text block (Tower of God 223 p2)."""
+    def inside(f: Found, kinds: set[str]) -> bool:
+        cs = [g.mask for g in found if g.kind in kinds and g is not f]
+        return bool(cs) and np.logical_and(f.mask, np.logical_or.reduce(cs)).sum() > MAX_INSIDE * f.mask.sum()
+
+    return [f for f in found if not (f.kind == "sfx" and inside(f, {"bubble", "caption"}) or f.kind == "bubble" and inside(f, {"caption"}))]
 
 
 def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, panel: int) -> list[Found]:
