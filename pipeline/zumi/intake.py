@@ -356,6 +356,7 @@ def attach_floaters(
     max_tight: int = 300,
     max_sliver: int = 8,
     min_gutter: int = 40,
+    max_attach: int = 100,
 ) -> list[Slab]:
     """Join floaters (slabs under `max_floater` px that are at least `min_flatness` flat) to the panel they belong to.
 
@@ -373,6 +374,10 @@ def attach_floaters(
     if len(slabs) < 2:
         return slabs
     cap = gap_factor * median
+    # Joining a panel needs a tighter gap than grouping floaters: a caption with this much clean space between it
+    # and the art is its own beat (user, 2026-10-18: True Beauty 7 "WAIT..." at 193 px, "...AND THE SHY BOY" at
+    # 113 px). Reaction bursts that belong to a frame sit 41-62 px from it. In px at 800 wide, scaled to the strip.
+    attach_cap = min(cap, max_attach * arr.shape[1] / 800)
     units: list[tuple[Slab, bool]] = []
     for k, s in enumerate(slabs):
         # under min_panel nothing is a panel, flat or not (a credit line on grainy dark brown is not flat)
@@ -402,7 +407,7 @@ def attach_floaters(
             continue
         gap_up = units[i - 1][0].gutter_after if i > 0 and not units[i - 1][1] else None
         gap_down = u.gutter_after if i + 1 < len(units) and not units[i + 1][1] else None
-        options = [(g, side) for g, side in ((gap_up, "up"), (gap_down, "down")) if g is not None and g < cap]
+        options = [(g, side) for g, side in ((gap_up, "up"), (gap_down, "down")) if g is not None and g < attach_cap]
         if not options:
             out.append(u)
         elif min(options)[1] == "up":

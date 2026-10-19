@@ -836,3 +836,12 @@ by the local mode), hc169 1993 (flat line-art panel rejoining across an 11-row g
 Tuning stopped by the user after round 2 (hard set 62 -> 21 defects, regression set unchanged or better). Open items
 are recorded above under "needs delivery or a detector": caption ownership at equal spacing, dropped title cards,
 diagonal/staggered frames. They move to the bubble/text stage, not to more splitter tuning.
+
+## Change 2026-10-18 (user decision, after closing): captions with clear space are their own beat
+
+A floating text box joins a panel only when the clean gap is under 100 px (scaled to strip width); grouping
+floaters still uses 0.75 x median gutter. Trigger: True Beauty 7 "WAIT..." (193 px under its frame) and "...AND THE
+SHY BOY" (113 px) were joined to the frame above; the user judged both separate beats, and joining everything would
+make over-tall panels. 17 new cuts across the hard and regression sets, all text-only boxes with 103-264 px of clear
+space on each side (checked by eye: captions, comment cards, the ToG S1 "...AND PRIDE?" question captions, a
+thanks-for-reading card); labels updated to the new rule. No other cut moved; recall unchanged everywhere.
