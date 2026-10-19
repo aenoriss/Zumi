@@ -711,3 +711,53 @@ Illustrator verdicts (merged; quoted where they agree):
 
 Next: narrow gutters (46 missed-gutters, 35 of them Housecat). A fixed lower min_gutter would cut between a
 panel and the burst 9-30 rows under it (True Beauty has 14 such runs), so the narrow cut needs a panel edge.
+
+## Round 2, iteration 1 (change: narrow gutters against a panel edge)
+
+Rule added in `page_gutters`: a page-coloured blank run of 8 to 39 rows is a gutter when, within 3 rows above or
+below it, one row holds an unbroken stretch of off-page pixels across >= 0.4 of the width (`panel_edge`: a frame line
+or a straight panel edge; bubbles, captions and SFX measure mostly under 0.2). Exception: when only one side has the
+edge and the other side is a block under 400 rows followed by a gutter of >= 40, that block is a lone burst or bubble
+under its panel and the run is not cut. Measured first without the exception: tb7 +4, tb4 +3, sh14 +1 and lo9 +1
+extra cuts (bursts 9-30 rows under a frame); two other attempts were rejected on the way (a floater cap computed from
+wide gutters only, which let Housecat's flat line-art panels group as floaters across 15-row gutters; a "framed slab is
+never a floater" test, which also caught True Beauty's bordered caption boxes: tb7 +11 extras).
+
+| ep | boxes | gutter min/q1/med/q3/max | recall | precision |
+|---|---|---|---|---|
+| hc169 | 16 | 13/14/16/23/49 | 0.938 | 1.000 |
+| hc09 | 9 | 12/15/15/71/183 | 1.000 | 0.875 |
+| hc01 | 10 | 11/12/14/25/49 | 1.000 | 1.000 |
+| hc02 | 8 | 14/14/15/16/17 | 1.000 | 1.000 |
+| uprol | 35 | 24/118/179/489/1694 | 0.971 | 1.000 |
+| u1 | 41 | 12/86/147/222/1218 | 1.000 | 0.975 |
+| tog0, wc10, tb7, tb4, orv0, tog246 | unchanged | | as iteration 0 | |
+
+Regression set: every box identical to iteration 0 (u395 1.000/0.991, tog235 1/1, lo9 0.986/1, sh14 1/1, cpc1 1/0.941).
+Re-reviewed the six changed episodes (two reviewers, 4 and 9 image reads): all nine changed unOrdinary boxes and the
+Housecat grids judged right except the two below.
+
+| kind | hc169 | hc09 | hc01 | hc02 | uprol | u1 | tog0 | wc10 | tb7 | tb4 | orv0 | tog246 | total |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| missed-gutter | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 3 | 1 | 7 |
+| floater | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 7 | 1 | 0 | 3 | 14 |
+| dropped-card | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 2 |
+| fragment | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| total | 1 | 1 | 0 | 0 | 1 | 1 | 2 | 1 | 7 | 2 | 3 | 5 | 24 |
+
+62 -> 24. hc169 1993 (11-row gutter, frame lines on both sides) stays merged: the 300-row panel below it is flat
+line art, so it is a floater, and the 11-row gap is just under the floater cap of 0.75 x 15 = 11.25, so it rejoins the
+panel above. hc09 box 6 is new: a 4-row rule line under a frame, now cut off as its own box (fragment).
+
+Risks: Housecat panels are flat enough (0.88-0.96) to count as floaters, so on a grid episode the only thing keeping
+them apart is that the cap (0.75 x median gutter) sits just under the gutters themselves; hc169 1993 is the first
+case where it did not. The lone-block exception is a height guess (400): a real panel under 400 rows with a frame on
+one side only and a full gutter below would be merged into its neighbour.
+
+Illustrator verdict, iteration 1 (both reviewers agree):
+> "on these clean page-style grids the splitter matches the artist's intent almost everywhere. Both misses are
+> threshold problems, not misread storytelling" (Housecat); "Splitter and labels agree everywhere except these two
+> boxes ... Both errors are rule-level fixes, not a different reading of the art" (unOrdinary).
+
+Next: floaters (14, now the largest kind): attach by the episode's own gap distribution instead of a flatness test
+plus a fixed cap.

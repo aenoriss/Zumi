@@ -102,6 +102,21 @@ def outlier_share(arr: np.ndarray, tolerance: int) -> np.ndarray:
     return row_stats(arr, tolerance)[1]
 
 
+def panel_edge(arr: np.ndarray, rows: range, page: np.ndarray, tolerance: int) -> float:
+    """Longest unbroken stretch of off-page pixels in any of `rows`, as a share of the strip width.
+
+    A panel's top or bottom edge, bordered or not, is one long stretch (Housecat frames 0.44-0.89 of the width);
+    a bubble, a caption line or a sound effect is short (mostly under 0.2 on the round-2 hard set).
+    """
+    best = 0
+    for y in rows:
+        off = (np.abs(arr[y].astype(np.int16) - page) > tolerance).any(axis=1).astype(np.int8)
+        edges = np.flatnonzero(np.diff(np.concatenate([[0], off, [0]])))
+        if len(edges):
+            best = max(best, int((edges[1::2] - edges[::2]).max()))
+    return best / arr.shape[1]
+
+
 def page_gutters(
     blank: np.ndarray,
     medians: np.ndarray,
@@ -109,6 +124,10 @@ def page_gutters(
     window: int = 4000,
     tolerance: int = 20,
     min_span: int = 48,
+    arr: np.ndarray | None = None,
+    min_narrow: int = 8,
+    min_edge: float = 0.4,
+    lone_h: int = 400,
 ) -> np.ndarray:
     """Keep a blank run of >= `min_gutter` rows as gutter only if one of its rows has the local page colour,
     or its colour travels more than `min_span` from end to end (a fade or scene-change gradient).
@@ -118,6 +137,10 @@ def page_gutters(
     Cutting there split a panel's top off and dropped it (tuning-log, fade-clip). Local page colour = the most
     common blank-row colour (4 bits per channel) within +-`window` rows, since episodes change page colour
     mid-strip. A scene-change gradient still counts: it starts or ends on the page colour.
+
+    With `arr`, a page-coloured run of `min_narrow` to `min_gutter` rows is a gutter too when the rows just
+    above or below it hold a panel edge (`panel_edge` >= `min_edge`), unless the edgeless side is a lone block
+    under `lone_h` rows followed by a full gutter; other short runs become content.
     """
     out = blank.copy()
     ys = np.flatnonzero(blank)
@@ -128,8 +151,12 @@ def page_gutters(
     edges = np.flatnonzero(np.diff(blank.astype(np.int8))) + 1
     starts = np.concatenate([[0], edges])
     ends = np.concatenate([edges, [len(blank)]])
+    sep = [(s, e) for s, e in zip(starts, ends) if blank[s] and e - s >= min_narrow]
+    sep_s = np.array([a for a, _ in sep], dtype=np.int64)
+    sep_e = np.array([b for _, b in sep], dtype=np.int64)
     for s, e in zip(starts, ends):
-        if not blank[s] or e - s < min_gutter:
+        narrow = arr is not None and min_narrow <= e - s < min_gutter
+        if not blank[s] or (e - s < min_gutter and not narrow):
             continue
         # page colour above and below separately: at a white-to-dark scene change a single window's mode is
         # the white half, which would make the first dark gutter "not page" (Sweet Home 14, y 20700-20965)
@@ -144,6 +171,26 @@ def page_gutters(
             touches = any((np.abs(seg - p).max(axis=1) <= tolerance).any() for p in pages)
             return touches or int((seg.max(axis=0) - seg.min(axis=0)).max()) > min_span
 
+        if narrow:
+            # a gutter under min_gutter counts only on page colour against a panel edge: Housecat Philosophy's
+            # grids (11-31 px) and unOrdinary's prologue (24-36 px) were never cut (tuning-log, round 2).
+            # A lone burst or bubble 9-30 px under a frame has the edge on one side too; when the block on the
+            # edgeless side is under `lone_h` rows and a full gutter follows it, it is that panel's text, not a
+            # panel (True Beauty 7 41288, Sweet Home 14 "PHEW...")
+            page = np.median(medians[s:e], axis=0)
+            on_page = any(np.abs(page - p).max() <= tolerance for p in pages)
+            edge_up = panel_edge(arr, range(max(0, s - 3), s), page, tolerance) >= min_edge
+            edge_down = panel_edge(arr, range(e, min(len(blank), e + 3)), page, tolerance) >= min_edge
+            lone = False
+            if edge_up != edge_down:
+                i = int(np.searchsorted(sep_s, s))  # this run is sep[i]
+                j = i + 1 if edge_up else i - 1
+                if 0 <= j < len(sep_s):
+                    block = sep_s[j] - e if edge_up else s - sep_e[j]
+                    lone = block < lone_h and sep_e[j] - sep_s[j] >= min_gutter
+            if not (on_page and (edge_up or edge_down)) or lone:
+                out[s:e] = False
+            continue
         if not page_or_fade(s, e):
             out[s:e] = False
             continue
@@ -199,15 +246,23 @@ def bridge_breaks(blank: np.ndarray, max_break: int) -> np.ndarray:
 
 
 def find_slabs(
-    blank: np.ndarray, min_gutter: int, max_break: int = 2, medians: np.ndarray | None = None
+    blank: np.ndarray,
+    min_gutter: int,
+    max_break: int = 2,
+    medians: np.ndarray | None = None,
+    arr: np.ndarray | None = None,
+    min_narrow: int = 8,
 ) -> list[Slab]:
     """Split rows into content slabs separated by blank runs of at least min_gutter rows.
 
     With `medians` (per-row median colours), runs that never touch the local page colour are content.
+    With `arr` too, page-coloured runs of `min_narrow` rows or more against a panel edge also cut.
     """
     blank = bridge_breaks(blank, max_break)
     if medians is not None:
-        blank = page_gutters(blank, medians, min_gutter)
+        blank = page_gutters(blank, medians, min_gutter, arr=arr, min_narrow=min_narrow)
+    if medians is None or arr is None:
+        min_narrow = min_gutter
     n = len(blank)
     # run-length encode
     edges = np.flatnonzero(np.diff(blank.astype(np.int8))) + 1
@@ -216,7 +271,7 @@ def find_slabs(
     runs = [(int(s), int(e), bool(blank[s])) for s, e in zip(starts, ends)]
 
     # mark short blank runs as content so they do not cut
-    cut = [is_blank and (e - s) >= min_gutter for s, e, is_blank in runs]
+    cut = [is_blank and (e - s) >= min_narrow for s, e, is_blank in runs]
 
     slabs: list[Slab] = []
     y, in_content = None, False
@@ -328,7 +383,7 @@ def split_strip(
     arr = np.asarray(image)
     bg = background_colour(arr)  # dominant margin colour, informational
     medians, share = row_stats(arr, tolerance)
-    slabs = drop_specks(find_slabs(share < 0.002, min_gutter, medians=medians), share)
+    slabs = drop_specks(find_slabs(share < 0.002, min_gutter, medians=medians, arr=arr), share)
     slabs = attach_floaters(slabs, arr, max_floater, min_flatness, gap_factor)
     # leading blank rows are not a slab; record them as the first slab's offset only
     return Strip(image=image, background=bg, slabs=slabs, seams=seams)
