@@ -796,3 +796,37 @@ need the text). Needs a text reader, not a gap rule; recorded under "needs deliv
 Next: dropped-card (2): a flat off-page band with lettering, lying between two page-coloured stretches of one gutter
 run, is kept as gutter today (tog0 black "story by" card, 6383-6669, 19 ink rows of 290; tog246 black "15" band,
 8703-8928 between two grey gradients, 23 ink rows).
+
+## Round 2, iteration 3 (change: slivers under 8 rows join the nearer neighbour)
+
+Tried first and reverted: speck slabs must sit on the local page colour (to keep lettering on flat black cards).
+It did stop dropping tog0's "story by" card and tog246's "15", but they came out as boxes of their own (tog0: the card
+belongs with the title card; tog246: a 23-row "15" sliver, since the black band around it is part of a fade
+segment), and on the regression set u395 lost a cut (64400 -> 64084: a speck on the dark page near a page-colour
+change was kept) and cpc1's opening stars joined two boxes. Net 0 on the hard set, a recall drop on u395: reverted.
+dropped-card needs the band and its lettering kept together as one card, i.e. a card detector, not a speck tweak.
+
+Kept: `join_slivers`, run at the start of `attach_floaters`: a slab under 8 rows joins the nearer neighbour whatever
+the gap (no beat is that thin). Only hc09 changed: its 4-row rule line (3063) joined the panel above it (16 rows up,
+90 down); checked on a crop, the beat boundaries are unchanged. Every other box on all 17 episodes identical;
+regression scores unchanged (u395 1.000/0.991, tog235 1/1, lo9 0.986/1, sh14 1/1, cpc1 1.000/0.960).
+
+| kind | hc169 | hc09 | hc01 | hc02 | uprol | u1 | tog0 | wc10 | tb7 | tb4 | orv0 | tog246 | total |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| missed-gutter | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 3 | 1 | 7 |
+| floater | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 5 | 1 | 0 | 3 | 12 |
+| dropped-card | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 | 2 |
+| fragment | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| total | 1 | 0 | 0 | 0 | 1 | 1 | 2 | 1 | 5 | 2 | 3 | 5 | 21 |
+
+22 -> 21. Stop: round 2's three-iteration limit.
+
+Round 2 summary: 62 -> 21 defects on the hard set (401 -> 439 boxes). Regression set never dropped; cpc1
+precision rose 0.941 -> 0.960.
+
+Needs delivery or a detector (not fixable by a gap rule, per the reviewers and the rejected attempts above):
+floaters whose owner is set by meaning or rhythm (tb7 2, 31, 49, 75, 84; tog246 6, 37, 44; tog0 5; wc10 1; u1 0;
+orv0's standalone caption at 265/275 rows is the mirror case), dropped-card (a card detector), tb4 39950 (a black
+gutter on a black stretch of a white page), tog246 91616 (a panel fading to white just before the gutter), uprol
+8926 (two thin flat sky frames read as one floater unit), orv0 51065 (539 white rows inside box 23, not page-coloured
+by the local mode), hc169 1993 (flat line-art panel rejoining across an 11-row gap just under the 11.25 cap).

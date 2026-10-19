@@ -319,6 +319,31 @@ def flatness(region: np.ndarray, top: int = 4) -> float:
     return float(counts[:top].sum() / counts.sum())
 
 
+def join_slivers(slabs: list[Slab], max_sliver: int) -> list[Slab]:
+    """Join each slab under `max_sliver` rows to the nearer neighbour, however far: no beat is that thin.
+
+    A 4-row rule line under a frame (Housecat Philosophy 09, y 3063) came out as a box of its own once narrow
+    gutters cut on both sides of it, since the floater cap (0.75 x a 15-row median gutter) is under both gaps.
+    """
+    out = [Slab(y=s.y, h=s.h, gutter_after=s.gutter_after) for s in slabs]
+    i = 0
+    while i < len(out) and len(out) > 1:
+        s = out[i]
+        if s.h >= max_sliver:
+            i += 1
+            continue
+        up = out[i - 1].gutter_after if i > 0 else None
+        down = s.gutter_after if i + 1 < len(out) else None
+        if down is None or (up is not None and up <= down):
+            p = out[i - 1]
+            out[i - 1] = Slab(y=p.y, h=s.y + s.h - p.y, gutter_after=s.gutter_after)
+        else:
+            n = out[i + 1]
+            out[i + 1] = Slab(y=s.y, h=n.y + n.h - s.y, gutter_after=n.gutter_after)
+        del out[i]
+    return out
+
+
 def attach_floaters(
     slabs: list[Slab],
     arr: np.ndarray,
@@ -329,6 +354,7 @@ def attach_floaters(
     tight: float = 0.25,
     min_tight_flatness: float = 0.7,
     max_tight: int = 300,
+    max_sliver: int = 8,
     min_gutter: int = 40,
 ) -> list[Slab]:
     """Join floaters (slabs under `max_floater` px that are at least `min_flatness` flat) to the panel they belong to.
@@ -343,6 +369,9 @@ def attach_floaters(
     if len(slabs) < 2:
         return slabs
     median = float(np.median([s.gutter_after for s in slabs[:-1]]))
+    slabs = join_slivers(slabs, max_sliver)
+    if len(slabs) < 2:
+        return slabs
     cap = gap_factor * median
     units: list[tuple[Slab, bool]] = []
     for k, s in enumerate(slabs):
