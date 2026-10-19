@@ -73,11 +73,11 @@ class Strip:
         return Image.fromarray(self.pixels[slab.y : slab.end])
 
 
-def report(strip: Strip, out: Path, factor: int = 4) -> Path:
-    """The strip shrunk `factor` times (box filter) with each beat outlined in red, just outside the box so it
-    hides no lettering. For eyeballing only."""
-    im = Image.fromarray(strip.pixels).reduce(factor)
-    w, scale = im.width, 1 / factor
+def report(strip: Strip, out: Path, scale: float = 0.25) -> Path:
+    """The strip at `scale` (bilinear) with each beat outlined in red, just outside the box so it hides no
+    lettering. Saved at a fast PNG level: lossless, so the pixels are the same, only the file is larger."""
+    w, h = int(strip.width * scale), int(strip.height * scale)
+    im = Image.fromarray(strip.pixels).resize((w, h), Image.BILINEAR)
     draw = ImageDraw.Draw(im)
     for y in strip.seams:
         draw.line([(0, y * scale), (w, y * scale)], fill=(80, 140, 255), width=1)
