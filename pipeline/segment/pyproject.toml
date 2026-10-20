@@ -19,6 +19,17 @@ dependencies = [
     "scipy",  # hole filling in masks
 ]
 
+[dependency-groups]
+# Magiv3 (Florence-2, trust_remote_code): its config records transformers 4.45.2; newer versions break that code
+magi = [
+    "transformers==4.45.2",
+    "timm",
+    "pytorch-metric-learning",
+    "shapely",
+    "networkx",
+    "matplotlib",
+]
+
 [tool.uv]
 package = false
 
