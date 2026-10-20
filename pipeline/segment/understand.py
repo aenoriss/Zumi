@@ -198,9 +198,19 @@ def crops_sheet(img: Image.Image, masks: list[np.ndarray], width: int = 1024) ->
 
 
 def parse(text: str) -> dict:
+    """JSON from a model reply; a stray closing bracket (Muse Spark wrote "}}]" once) is dropped and retried."""
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M)
     a, b = text.find("{"), text.rfind("}")
-    return json.loads(text[a : b + 1])
+    text = text[a : b + 1]
+    for _ in range(5):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            if e.pos < len(text) and text[e.pos] in "}]":
+                text = text[: e.pos] + text[e.pos + 1 :]
+                continue
+            raise
+    return json.loads(text)
 
 
 def hints_text(masks: list[np.ndarray], kinds: list[str], tails: list, w: int, h: int) -> str:
