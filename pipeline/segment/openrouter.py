@@ -45,13 +45,13 @@ def _request(path: str, body: dict | None = None) -> dict:
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"},
     )
-    for attempt in range(3):
+    for attempt in range(6):
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code in (429, 502, 503) and attempt < 2:
-                time.sleep(5 * (attempt + 1))
+            if e.code in (429, 502, 503) and attempt < 5:  # upstream rate limits clear within a minute or two
+                time.sleep(10 * 2**attempt)
                 continue
             raise RuntimeError(f"OpenRouter {e.code}: {e.read().decode()[:300]}") from None
     raise RuntimeError("unreachable")
