@@ -14,7 +14,10 @@ width, 25 % overlap). Each tile gets:
 - text passes at full resolution: "speech bubble" (round and shaped bubbles), "caption box";
 - exemplar passes (SAM 3 concept mode): the tile shrunk to 756 px with example crops from other panels in a
   margin, each marked as a positive box, so SAM 3 finds everything that looks like them. Examples come from a
-  hand-picked bank (`.data/exemplars/bank.json`), never from the panel being segmented.
+  hand-picked bank (`.data/exemplars/bank.json`), never from the panel being segmented. The two dialogue groups
+  share one canvas; each sound-effect group has its own (LAYOUT). All of a panel's images are encoded in batches
+  and each text prompt is encoded once: 7.34 -> 6.08 s per panel on 12 test panels, same masks (52 of 53 at
+  IoU >= 0.8, 1 at 0.5-0.8).
 
 Masks of the same kind that overlap by more than half are one object seen twice (overlapping tiles); different
 kinds merge only when near-identical, so a sound effect crossing a caption box stays a separate mask (Tower of
@@ -42,12 +45,18 @@ from scipy.ndimage import binary_dilation, binary_fill_holes, label
 
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+from masks import Found, load_masks  # noqa: F401 (re-exported: other modules import them from here)
 from textcrops import clean_crop, letter_count
 
 ROOT = Path(__file__).resolve().parent.parent
 CKPT = ROOT / ".models/sam3/official/sam3.1_multiplex.pt"
 BANK = ROOT / ".data/exemplars/bank.json"
-CANVAS, TILE = 1008, 756  # composite side, tile side inside it; the margin holds up to 7 examples
+CANVAS, TILE = 1008, 756  # composite side, tile side inside it
+# Exemplar canvases: (groups sharing one canvas, margin cell side, examples per group). A 252 px cell gives 7
+# margin cells, a 126 px cell 28. Dialogue examples keep their hits at 126 px; sound-effect examples lost hits
+# on busy art when shrunk to 126 px (Tower of God 223 p79: GMHHH and AKREEE missed), so they keep full cells.
+LAYOUT = [(("card", "burst"), 126, 7), (("sfx",), 252, 7), (("sfx_outline",), 252, 7)]
+BATCH = 4  # images per image-encoder call
 KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255), "sfx": (255, 0, 220)}
 KIND_RANK = {"bubble": 2, "caption": 2, "sfx": 1}  # same shape found as two kinds: the container wins
 DIALOGUE = ("bubble", "caption")
@@ -92,11 +101,20 @@ PASSES = [
 ]
 
 
-@dataclass
-class Found:
-    mask: np.ndarray  # full panel size, bool
-    score: float
-    kind: str
+def window(*fs: Found, pad: int = 0) -> tuple[slice, slice] | None:
+    """The overlap of the masks' boxes (grown by pad), or None when the boxes do not touch."""
+    y0 = max(f.bbox()[0] for f in fs) - pad
+    y1 = min(f.bbox()[1] for f in fs) + pad
+    x0 = max(f.bbox()[2] for f in fs) - pad
+    x1 = min(f.bbox()[3] for f in fs) + pad
+    if y0 >= y1 or x0 >= x1:
+        return None
+    return slice(max(0, y0), y1), slice(max(0, x0), x1)
+
+
+def area(f: Found) -> int:
+    y0, y1, x0, x1 = f.bbox()
+    return int(f.mask[y0:y1, x0:x1].sum())
 
 
 def tiles(h: int, w: int, overlap: float = 0.25) -> list[int]:
@@ -126,20 +144,59 @@ class Bank:
         return [c for ep, p, c in self.crops.get(group, []) if (ep, p) != (episode, panel)][:n]
 
 
-def composite(tile: Image.Image, examples: list[Image.Image]) -> tuple[Image.Image, list[list[float]]]:
-    """Tile at TILE px top-left, examples centred in the margin cells; boxes as normalised cx, cy, w, h."""
+def margin_cells(cell: int) -> list[tuple[int, int]]:
+    """Top-left corners of the cell x cell squares in the canvas margin (right strip, then bottom strip)."""
+    right = [(x, y) for y in range(0, CANVAS - cell + 1, cell) for x in range(TILE, CANVAS - cell + 1, cell)]
+    bottom = [(x, y) for y in range(TILE, CANVAS - cell + 1, cell) for x in range(0, TILE - cell + 1, cell)]
+    return right + bottom
+
+
+def composite(tile: Image.Image, groups: dict[str, list[Image.Image]], cell: int) -> tuple[Image.Image, dict[str, list[list[float]]]]:
+    """Tile at TILE px top-left; the groups' examples share the margin in cell x cell squares.
+    Returns the canvas and, per group, its example boxes as normalised cx, cy, w, h."""
     canvas = Image.new("RGB", (CANVAS, CANVAS), (255, 255, 255))
     canvas.paste(tile.resize((TILE, TILE)), (0, 0))
-    m = CANVAS - TILE
-    cells = [(TILE, y) for y in range(0, CANVAS, m)] + [(x, TILE) for x in range(0, TILE, m)]
-    boxes = []
-    for (cx, cy), crop in zip(cells, examples):
-        crop = crop.copy()
-        crop.thumbnail((m - 8, m - 8))
-        ox, oy = cx + (m - crop.width) // 2, cy + (m - crop.height) // 2
-        canvas.paste(crop, (ox, oy))
-        boxes.append([(ox + crop.width / 2) / CANVAS, (oy + crop.height / 2) / CANVAS, crop.width / CANVAS, crop.height / CANVAS])
+    cells = iter(margin_cells(cell))
+    boxes: dict[str, list[list[float]]] = {}
+    for group, examples in groups.items():
+        for crop, (cx, cy) in zip(examples, cells):
+            crop = crop.copy()
+            crop.thumbnail((cell - 6, cell - 6))
+            ox, oy = cx + (cell - crop.width) // 2, cy + (cell - crop.height) // 2
+            canvas.paste(crop, (ox, oy))
+            boxes.setdefault(group, []).append(
+                [(ox + crop.width / 2) / CANVAS, (oy + crop.height / 2) / CANVAS, crop.width / CANVAS, crop.height / CANVAS])
     return canvas, boxes
+
+
+def _slice(x, i: int, n: int):
+    """Image i of a batched backbone output (tensors with the batch on dim 0)."""
+    if torch.is_tensor(x):
+        return x[i : i + 1] if x.dim() and x.shape[0] == n else x
+    if isinstance(x, dict):
+        return {k: _slice(v, i, n) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_slice(v, i, n) for v in x)
+    return x
+
+
+def encode(proc: Sam3Processor, images: list[Image.Image]) -> list[dict]:
+    """One state per image; the image encoder runs on batches of BATCH images instead of one call each."""
+    states = []
+    for s in range(0, len(images), BATCH):
+        chunk = images[s : s + BATCH]
+        out = proc.set_image_batch(chunk)["backbone_out"]
+        for i, im in enumerate(chunk):
+            states.append({"original_height": im.height, "original_width": im.width, "backbone_out": _slice(out, i, len(chunk))})
+    return states
+
+
+def text(proc: Sam3Processor, prompt: str) -> dict:
+    """Text encoder output for a prompt, computed once per run."""
+    cache = proc.__dict__.setdefault("_text_cache", {})
+    if prompt not in cache:
+        cache[prompt] = proc.model.backbone.forward_text([prompt], device=proc.device)
+    return cache[prompt]
 
 
 def lettering(m: np.ndarray) -> bool:
@@ -162,25 +219,21 @@ def stability(prob: np.ndarray) -> float:
     return float((prob > 0.7).sum() / max(1, (prob > 0.3).sum()))
 
 
-def run_pass(proc: Sam3Processor, tile: Image.Image, ps: Pass, examples: list[Image.Image], cache: dict) -> list[tuple[np.ndarray, float]]:
-    """(tile-size mask, score) for one pass on one tile."""
+def run_pass(proc: Sam3Processor, state: dict, tile: Image.Image, ps: Pass, boxes: list[list[float]] | None) -> list[tuple[np.ndarray, float]]:
+    """(tile-size mask, score) for one pass on one tile. `state` holds the encoded tile (text passes) or the
+    encoded canvas (exemplar passes, with this group's example boxes)."""
+    state["backbone_out"].update(text(proc, ps.prompt))
+    state["geometric_prompt"] = proc.model._get_dummy_prompt()
     if ps.exemplars is None:
-        if "plain" not in cache:
-            cache["plain"] = proc.set_image(tile)  # one backbone pass shared by the text passes
-        state = proc.set_text_prompt(ps.prompt, cache["plain"])
         crop = None
     else:
-        if not examples:
+        if not boxes:
             return []
-        canvas, boxes = composite(tile, examples)
-        state = proc.set_image(canvas)
-        state["backbone_out"].update(proc.model.backbone.forward_text([ps.prompt], device=proc.device))
-        state["geometric_prompt"] = proc.model._get_dummy_prompt()
         # all example boxes in one call: add_geometric_prompt reruns the detection head once per box
         b = torch.tensor(boxes, device=proc.device, dtype=torch.float32).view(-1, 1, 4)
         state["geometric_prompt"].append_boxes(b, torch.ones((len(boxes), 1), device=proc.device, dtype=torch.bool))
-        state = proc._forward_grounding(state)
         crop = TILE
+    state = proc._forward_grounding(state)
     probs = state["masks_logits"][:, 0].float().cpu().numpy()  # sigmoid probabilities
     out = []
     for p, s in zip(probs, state["scores"].float().cpu().numpy()):
@@ -217,11 +270,15 @@ def dialogue_like(pixels: np.ndarray, m: np.ndarray, kind: str, score: float) ->
 
 
 def add(found: list[Found], new: Found) -> None:
+    b = area(new)
     for i, f in enumerate(found):
-        inter = np.logical_and(f.mask, new.mask).sum()
+        win = window(f, new)
+        if win is None:
+            continue
+        inter = np.logical_and(f.mask[win], new.mask[win]).sum()
         if not inter:
             continue
-        a, b = f.mask.sum(), new.mask.sum()
+        a = area(f)
         same_object = f.kind == new.kind and inter / min(a, b) > 0.5
         same_shape = inter / (a + b - inter) > 0.7
         if same_object or same_shape:
@@ -235,8 +292,12 @@ def drop_inner_text(found: list[Found]) -> list[Found]:
     """Drop masks lying mostly inside a container: a bubble inside a caption card is the card's text block,
     letters inside a bubble or caption are its dialogue."""
     def inside(f: Found, kinds: tuple[str, ...], share: float) -> bool:
-        cs = [g.mask for g in found if g.kind in kinds and g is not f]
-        return bool(cs) and np.logical_and(f.mask, np.logical_or.reduce(cs)).sum() > share * f.mask.sum()
+        cs = [g for g in found if g.kind in kinds and g is not f and window(f, g) is not None]
+        if not cs:
+            return False
+        y0, y1, x0, x1 = f.bbox()
+        cover = np.logical_or.reduce([g.mask[y0:y1, x0:x1] for g in cs])
+        return np.logical_and(f.mask[y0:y1, x0:x1], cover).sum() > share * area(f)
 
     return [
         f for f in found
@@ -249,23 +310,60 @@ def group_letters(found: list[Found], reach: int) -> list[Found]:
     sfx = [f for f in found if f.kind == "sfx"]
     if len(sfx) < 2:
         return found
-    words, n = label(binary_dilation(np.logical_or.reduce([f.mask for f in sfx]), iterations=reach))
-    grouped = []
-    for k in range(1, n + 1):
-        members = [f for f in sfx if (words[f.mask] == k).any()]
-        grouped.append(Found(np.logical_or.reduce([f.mask for f in members]), max(f.score for f in members), "sfx"))
+    h, w = sfx[0].mask.shape
+    # dilate within the letters' joint box (plus the reach), not over the whole panel
+    y0 = max(0, min(f.bbox()[0] for f in sfx) - reach)
+    y1 = min(h, max(f.bbox()[1] for f in sfx) + reach)
+    x0 = max(0, min(f.bbox()[2] for f in sfx) - reach)
+    x1 = min(w, max(f.bbox()[3] for f in sfx) + reach)
+    crops = [f.mask[y0:y1, x0:x1] for f in sfx]
+    words, n = label(binary_dilation(np.logical_or.reduce(crops), iterations=reach))
+    # a mask whose letters lie far apart touches two words; words sharing a mask are one word, so each mask ends up
+    # in exactly one group (ToG 223 p79: 6 masks came out as 9, six of them duplicates)
+    parent = list(range(n + 1))
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    labels = [set(np.unique(words[c])) - {0} for c in crops]
+    for ls in labels:
+        ls = sorted(ls)
+        for a in ls[1:]:
+            parent[find(a)] = find(ls[0])
+    groups: dict[int, list[Found]] = {}
+    for f, ls in zip(sfx, labels):
+        if ls:
+            groups.setdefault(find(min(ls)), []).append(f)
+    grouped = [Found(np.logical_or.reduce([f.mask for f in g]), max(f.score for f in g), "sfx") for g in groups.values()]
     return [f for f in found if f.kind != "sfx"] + grouped
 
 
 def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, panel: int) -> list[Found]:
     w, h = img.size
+    tops = tiles(h, w)
+    tile_imgs = [img.crop((0, top, w, min(h, top + w))) for top in tops]
+    # one canvas per layout entry and tile; every image of the panel goes through the encoder in batches
+    images, where = list(tile_imgs), {}  # where[(tile, group)] = (image index, example boxes)
+    for names, cell, n in LAYOUT:
+        groups = {g: bank.pick(g, episode, panel, n) for g in names}
+        for k, t in enumerate(tile_imgs):
+            canvas, boxes = composite(t, groups, cell)
+            for g in names:
+                where[(k, g)] = (len(images), boxes.get(g))
+            images.append(canvas)
+    states = encode(proc, images)
     found: list[Found] = []
-    for top in tiles(h, w):
-        tile = img.crop((0, top, w, min(h, top + w)))
-        cache: dict = {}
+    for k, (top, tile) in enumerate(zip(tops, tile_imgs)):
         for ps in PASSES:
-            examples = bank.pick(ps.exemplars, episode, panel) if ps.exemplars else []
-            for m, s in run_pass(proc, tile, ps, examples, cache):
+            if ps.exemplars is None:
+                hits = run_pass(proc, states[k], tile, ps, None)
+            else:
+                i, boxes = where[(k, ps.exemplars)]
+                hits = run_pass(proc, states[i], tile, ps, boxes)
+            for m, s in hits:
                 full = np.zeros((h, w), bool)
                 full[top : top + m.shape[0]] = m
                 add(found, Found(full, s, ps.kind))
@@ -286,10 +384,6 @@ def save_masks(path: Path, found: list[Found]) -> None:
     )
 
 
-def load_masks(path: Path) -> list[Found]:
-    d = np.load(path)
-    h, w = d["shape"]
-    return [Found(np.unpackbits(m, axis=-1, count=w).astype(bool)[:h], float(s), str(k)) for m, k, s in zip(d["masks"], d["kinds"], d["scores"])]
 
 
 def overlay(img: Image.Image, found: list[Found]) -> Image.Image:

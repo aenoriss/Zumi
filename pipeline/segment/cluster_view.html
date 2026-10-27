@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Body Clusters</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<style>
+:root { --bg: #F7F4EF; --box: #FFFFFF; --line: #E2DCD1; --fg: #222222; --dim: #6B5E52; --accent: #A5673E; }
+@media (prefers-color-scheme: dark) { :root { --bg: #121A22; --box: #1B2430; --line: #343E4D; --fg: #EDE4D3; --dim: #9AA0A8; --accent: #E0A24A; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 "Noto Sans", system-ui, sans-serif; padding: 20px max(16px, 2vw) 40px; }
+h1 { font: 700 28px/1.1 "Barlow Condensed", "Arial Narrow", sans-serif; margin: 0 0 4px; }
+.sub { color: var(--dim); margin: 0 0 14px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; margin-bottom: 12px; }
+.controls label { display: flex; gap: 8px; align-items: center; color: var(--dim); }
+.controls b { color: var(--fg); font-variant-numeric: tabular-nums; }
+#stats { color: var(--dim); }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; }
+#plot { height: 640px; background: var(--box); border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.side { background: var(--box); border: 1px solid var(--line); border-radius: 6px; padding: 12px; display: grid; gap: 8px; align-content: start; }
+.side img.big { max-width: 100%; max-height: 260px; object-fit: contain; justify-self: center; border-radius: 4px; }
+.side .meta { color: var(--dim); font-size: 13px; }
+.mates { display: flex; flex-wrap: wrap; gap: 4px; }
+.mates img { height: 52px; border-radius: 3px; }
+h2 { font: 700 20px/1.1 "Barlow Condensed", "Arial Narrow", sans-serif; margin: 26px 0 8px; }
+.cl { background: var(--box); border: 1px solid var(--line); border-left: 6px solid var(--c); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.cl .h { font-weight: 600; margin-bottom: 6px; }
+.cl .h span { color: var(--dim); font-weight: 400; }
+.cl .imgs { display: flex; flex-wrap: wrap; gap: 4px; }
+.cl .imgs figure { margin: 0; position: relative; }
+.cl .imgs img { height: 84px; border-radius: 3px; display: block; }
+.cl .imgs figcaption { position: absolute; left: 2px; bottom: 2px; font-size: 10px; background: #000a; color: #fff; padding: 0 3px; border-radius: 2px; }
+@media (max-width: 860px) { .main { grid-template-columns: minmax(0, 1fr); } #plot { height: 480px; } }
+</style>
+</head>
+<body>
+<h1 id="title">Body-only clusters</h1>
+<p class="sub" id="sub"></p>
+<div class="controls">
+  <label>Merge threshold (cosine distance) <input type="range" id="th" min="0" max="0" step="1"> <b id="thv"></b></label>
+  <label><input type="checkbox" id="hide"> Hide singletons</label>
+  <label>Colour by <select id="by"><option value="cluster">cluster</option><option value="ep">episode</option></select></label>
+  <span id="stats"></span>
+</div>
+<div class="main">
+  <div id="plot"></div>
+  <div class="side" id="side"><span class="meta">Hover a point to see its crop and the other members of its cluster. Marker shape is the episode.</span></div>
+</div>
+<h2>Clusters</h2>
+<div id="gallery"></div>
+<script>
+const D = /*DATA*/null;
+const PAL = ["#e6194b","#3cb44b","#4363d8","#f58231","#911eb4","#42d4f4","#f032e6","#9a6324","#469990","#800000","#808000","#000075","#bfef45","#fabed4","#ffd8b1","#aaffc3","#dcbeff","#a9a9a9","#ffe119","#fffac8"];
+const SYM = ["circle", "diamond", "square", "cross", "x"];
+const EPC = ["#4363d8", "#e6194b", "#3cb44b", "#f58231", "#911eb4"];
+const th = document.getElementById("th"), hide = document.getElementById("hide"), by = document.getElementById("by");
+th.max = D.thresholds.length - 1;
+th.value = Math.min(3, D.thresholds.length - 1);
+document.getElementById("sub").textContent = `${D.points.length} character crops from ${D.eps.join(", ")}; Magiv3 boxes, ${D.encoder} CLS embedding of the whole box, average-linkage clustering that never merges two characters of the same panel. Positions: t-SNE to 3D.`;
+const epIdx = Object.fromEntries(D.eps.map((e, i) => [e, i]));
+const short = e => e.replace(/^.*-(\d+)$/, "ep $1");
+
+function sizes(lab) { const s = {}; lab.forEach(l => s[l] = (s[l] || 0) + 1); return s; }
+function colour(l, s) { return s[l] > 1 ? PAL[l % PAL.length] : "#9a9a9a"; }
+
+function render() {
+  const t = D.thresholds[th.value];
+  document.getElementById("thv").textContent = t.toFixed(2);
+  const lab = D.labels[String(t)], s = sizes(lab);
+  const keep = D.points.map((p, i) => !(hide.checked && s[lab[i]] === 1));
+  const multi = Object.keys(s).filter(k => s[k] > 1);
+  const cross = multi.filter(k => new Set(D.points.filter((p, i) => lab[i] == k).map(p => p.ep)).size > 1);
+  document.getElementById("stats").textContent = `${Object.keys(s).length} clusters · ${multi.length} with 2+ crops · ${cross.length} span 2+ episodes`;
+  const traces = D.eps.map((ep, e) => {
+    const idx = D.points.map((p, i) => i).filter(i => D.points[i].ep === ep && keep[i]);
+    return {
+      type: "scatter3d", mode: "markers", name: short(ep),
+      x: idx.map(i => D.points[i].xyz[0]), y: idx.map(i => D.points[i].xyz[1]), z: idx.map(i => D.points[i].xyz[2]),
+      customdata: idx, hovertemplate: `${short(ep)} · panel %{text}<extra></extra>`, text: idx.map(i => `${D.points[i].panel} · C${lab[i]}`),
+      marker: { size: 4.5, symbol: SYM[e % SYM.length], opacity: 0.9, line: { width: 0 },
+        color: idx.map(i => by.value === "ep" ? EPC[e % EPC.length] : colour(lab[i], s)) },
+    };
+  });
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const ax = { showticklabels: false, title: "", gridcolor: dark ? "#2A3340" : "#EAE4DA", zerolinecolor: dark ? "#343E4D" : "#E2DCD1", backgroundcolor: "rgba(0,0,0,0)" };
+  Plotly.react("plot", traces, {
+    margin: { l: 0, r: 0, t: 0, b: 0 }, paper_bgcolor: "rgba(0,0,0,0)", font: { color: dark ? "#EDE4D3" : "#222" },
+    legend: { x: 0.01, y: 0.99, bgcolor: "rgba(0,0,0,0)" }, uirevision: "keep",
+    scene: { xaxis: ax, yaxis: ax, zaxis: ax, aspectmode: "cube" },
+  }, { displaylogo: false, responsive: true });
+  gallery(lab, s);
+}
+
+function preview(i) {
+  const t = D.thresholds[th.value], lab = D.labels[String(t)], p = D.points[i];
+  const mates = D.points.map((q, j) => j).filter(j => lab[j] === lab[i] && j !== i).slice(0, 40);
+  document.getElementById("side").innerHTML =
+    `<img class="big" src="data:image/jpeg;base64,${p.img}" alt="">` +
+    `<span class="meta">${short(p.ep)} · panel ${p.panel} · cluster C${lab[i]} (${mates.length + 1} crops)</span>` +
+    `<div class="mates">${mates.map(j => `<img src="data:image/jpeg;base64,${D.points[j].img}" title="${short(D.points[j].ep)} p${D.points[j].panel}" alt="">`).join("")}</div>`;
+}
+
+function gallery(lab, s) {
+  const ks = Object.keys(s).map(Number).filter(k => s[k] > 1).sort((a, b) => s[b] - s[a]);
+  const singles = D.points.map((p, i) => i).filter(i => s[lab[i]] === 1);
+  const fig = i => `<figure><img loading="lazy" src="data:image/jpeg;base64,${D.points[i].img}" alt=""><figcaption>${short(D.points[i].ep).replace("ep ", "")}·${D.points[i].panel}</figcaption></figure>`;
+  document.getElementById("gallery").innerHTML = ks.map(k => {
+    const idx = D.points.map((p, i) => i).filter(i => lab[i] === k);
+    const per = D.eps.map(e => `${short(e)} ${idx.filter(i => D.points[i].ep === e).length}`).join(", ");
+    return `<div class="cl" style="--c:${colour(k, s)}"><div class="h">C${k} · ${idx.length} crops <span>(${per})</span></div><div class="imgs">${idx.map(fig).join("")}</div></div>`;
+  }).join("") + `<div class="cl" style="--c:#9a9a9a"><div class="h">Singletons · ${singles.length} <span>(no match under this threshold)</span></div><div class="imgs">${singles.map(fig).join("")}</div></div>`;
+}
+
+th.oninput = render; hide.onchange = render; by.onchange = render;
+render();
+document.getElementById("plot").on("plotly_hover", ev => preview(ev.points[0].customdata));
+</script>
+</body>
+</html>

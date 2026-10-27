@@ -37,6 +37,8 @@ def _otsu(values: np.ndarray) -> float:
     omega, mu = np.cumsum(p), np.cumsum(p * np.arange(256))
     with np.errstate(divide="ignore", invalid="ignore"):
         between = (mu[-1] * omega - mu) ** 2 / (omega * (1 - omega))
+    if np.isnan(between).all():  # every value equal (a flat region, ToG 228): no split; MIN_CUTOFF decides
+        return 0.0
     return float(np.nanargmax(between))
 
 

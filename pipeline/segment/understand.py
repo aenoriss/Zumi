@@ -55,9 +55,13 @@ For every numbered element decide:
 or sound effect, including its tail. Two bubble shapes joined into one (a figure-eight, one bubble flowing into the \
 next) or a caption box made of joined parts count as ONE element: keep. A sound effect repeated at different places \
 gives separate elements with the same text: keep each. false only if the outline cuts through the bubble or its \
-letters, encloses two bubbles that do not touch, or the element is not lettering (a sign, a whole picture). When \
-unsure, keep it.
-- "issue": when keep is false, a few words saying why; otherwise null.
+letters, encloses two bubbles that do not touch, or the element is not lettering (a whole picture). Comic \
+annotations are lettering: a word or short phrase written over the art to label a feeling or an action, often with \
+an arrow or lines pointing at a character (IGNORED, SHY, BLUSH, STARE): keep, kind "sfx". When unsure, keep it.
+- "in_world": true only if the text belongs to the drawn world rather than the comic's lettering: a phone or \
+computer screen, a chat or social-media interface, a sign or poster, a letter, book or printed page, text on \
+clothing or objects. false for every speech bubble, thought bubble, caption and sound effect.
+- "issue": when keep is false or in_world is true, a few words saying why; otherwise null.
 - "kind": one of "speech", "thought", "shout", "caption", "sfx".
 - "text": exactly the words inside this element's own coloured outline in image 2, line breaks as single spaces, \
 keeping punctuation. Faded words in image 2 lie outside the outline and belong to another element: never include them.
@@ -84,7 +88,7 @@ them later). When a line names someone ("ENKIDU", "SUA"), that name belongs to t
 the listener is, add {{"id": <their id>, "name": <name>}} to "names". Give the panel "mood" in a few words.
 
 Answer with JSON only:
-{{"elements": [{{"id": 1, "keep": true, "issue": null, "kind": "speech", "text": "...", "speaker": "...", "confidence": "high", "anchor": [0.5, 0.3]}}],
+{{"elements": [{{"id": 1, "keep": true, "in_world": false, "issue": null, "kind": "speech", "text": "...", "speaker": "...", "confidence": "high", "anchor": [0.5, 0.3]}}],
   "new_cast": [{{"id": "...", "name": "...", "look": "..."}}], "names": [], "mood": "..."}}"""
 
 
@@ -257,7 +261,25 @@ def understand(model: str, img: Image.Image, masks: list[np.ndarray], kinds: lis
         result = parse(text)
     except (ValueError, json.JSONDecodeError):
         result = {"elements": [], "new_cast": [], "names": [], "mood": "", "error": text[:500]}
-    return normalise(result, img.width, img.height), usage, tails
+    return enforce(normalise(result, img.width, img.height), kinds), usage, tails
+
+
+def enforce(result: dict, kinds: list[str]) -> dict:
+    """Dialogue is never dropped on the model's say-so: a segmented bubble or caption stays unless the model marks
+    it in-world text (a screen, a sign, a printed page). The model dropped real bubbles and captions as "part of
+    another element" or "outline cuts through" (Tower of God 223 p48, True Beauty 7 p49 and p50)."""
+    for e in result.get("elements", []):
+        i = e.get("id")
+        if not isinstance(i, int) or not 1 <= i <= len(kinds):
+            continue
+        in_world = bool(e.get("in_world"))
+        if kinds[i - 1] in ("bubble", "caption"):
+            if not e.get("keep") and not in_world:
+                e["overruled"] = e.get("issue")
+            e["keep"] = not in_world
+        elif in_world:
+            e["keep"] = False
+    return result
 
 
 def report(img: Image.Image, masks: list[np.ndarray], tails: list, result: dict, title: str) -> Image.Image:
