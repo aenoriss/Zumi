@@ -128,6 +128,8 @@ def measure(img: np.ndarray, mask: np.ndarray) -> dict:
             hs = np.array([b[3] - b[1] for b in boxes], float)
             m0 = np.median(hs)
             letters = [b for b, h in zip(boxes, hs) if 0.6 * m0 <= h <= 1.6 * m0]
+            if not letters:  # two marks of very different heights: none near the median (P&C 36 p3)
+                letters = boxes
             glyph_h = float(np.median([b[3] - b[1] for b in letters]))
             tb = np.array([b for b, h in zip(boxes, hs) if h >= 0.25 * m0])  # punctuation in, specks out
             tbox = [int(tb[:, 0].min()) + x0, int(tb[:, 1].min()) + y0, int(tb[:, 2].max()) + x0, int(tb[:, 3].max()) + y0]

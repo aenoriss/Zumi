@@ -12,6 +12,7 @@ import base64
 import datetime as dt
 import io
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
 SPEND = ROOT / ".data/spend"
 LEDGER = SPEND / "openrouter.jsonl"
+_PRICING_LOCK = threading.Lock()
 DAILY_CAP_USD = 2.0
 API = "https://openrouter.ai/api/v1"
 TOKENS_PER_IMAGE = 2500  # conservative estimate for the pre-call worst case
@@ -61,8 +63,12 @@ def pricing(model: str) -> tuple[float, float]:
     """USD per prompt token and per completion token, from OpenRouter's model list (cached per day)."""
     SPEND.mkdir(parents=True, exist_ok=True)
     cache = SPEND / f"models-{dt.date.today()}.json"
-    if not cache.exists():
-        cache.write_text(json.dumps(_request("/models")))
+    # one thread fetches, the file appears whole (a parallel review read it half written: JSONDecodeError, P&C 36)
+    with _PRICING_LOCK:
+        if not cache.exists():
+            tmp = cache.with_suffix(".tmp")
+            tmp.write_text(json.dumps(_request("/models")))
+            tmp.replace(cache)
     for m in json.loads(cache.read_text())["data"]:
         if m["id"] == model:
             return float(m["pricing"]["prompt"]), float(m["pricing"]["completion"])

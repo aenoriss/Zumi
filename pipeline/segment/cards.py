@@ -179,7 +179,8 @@ def add_lettering(pid: str, img: np.ndarray, letter_masks: list[np.ndarray], bub
         png = f"{pid}.card-{n}.png"
         _rgba(img, alpha, bb).save(mesh_dir / png)
         text = (b.get("text") or "").strip()
-        added.append({"png": png, "bbox": bb, "z": b["depth"], "kind": "lettering",
+        # "bubble": its id in <pid>.bubbles.json (text, kind, outline) and in the lettering masks (id - 1)
+        added.append({"png": png, "bbox": bb, "z": b["depth"], "kind": "lettering", "bubble": b["id"],
                       "name": (text[:24] + "…") if len(text) > 24 else (text or f"lettering {b['id']}")})
         n += 1
     c["layers"] += sorted(added, key=lambda l: -l["z"])  # far to near among themselves, after the scene

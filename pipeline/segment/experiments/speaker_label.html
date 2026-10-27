@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaker labels</title>
+<style>
+  :root { --bg: #16161a; --panel: #202026; --ink: #e8e8ee; --dim: #8a8a96; --bubble: #ffd84a; --pick: #3ddc84; --prop: #4aa3ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; display: flex; height: 100vh; }
+  #stage { flex: 1; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  canvas { max-width: 100%; max-height: 100%; cursor: pointer; }
+  #side { width: 340px; background: var(--panel); padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  h1 { font-size: 15px; margin: 0; }
+  .text { font-size: 16px; background: #2b2b33; padding: 10px; border-radius: 6px; min-height: 48px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { background: #2f2f39; color: var(--ink); border: 1px solid #44444f; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  button.on { background: var(--pick); color: #0b2; border-color: var(--pick); color: #052; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .bar { height: 6px; background: #2b2b33; border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--pick); }
+  kbd { background: #33333d; border-radius: 3px; padding: 0 4px; font-size: 12px; }
+  #status { font-size: 12px; color: var(--pick); min-height: 16px; }
+  select { background: #2f2f39; color: var(--ink); border: 1px solid #44444f; border-radius: 6px; padding: 4px; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="side">
+  <h1>Who says this bubble?</h1>
+  <div class="row"><select id="ep"></select><label class="muted"><input type="checkbox" id="todo"> unlabelled only</label></div>
+  <div class="bar"><div id="prog"></div></div>
+  <div class="muted" id="where"></div>
+  <div class="text" id="text"></div>
+  <div class="muted" id="prop"></div>
+  <div><div class="muted">Speaker card(s) — click on the image or press its number (several for a chorus)</div>
+    <div class="row" id="cards"></div></div>
+  <div class="row">
+    <button id="k-off">off-panel <kbd>O</kbd></button>
+    <button id="k-nar">narrator / caption <kbd>N</kbd></button>
+    <button id="k-sfx">sound effect <kbd>S</kbd></button>
+    <button id="k-skip">not a bubble <kbd>X</kbd></button>
+  </div>
+  <div class="row"><button id="prev">← back</button><button id="next">save &amp; next <kbd>Enter</kbd></button></div>
+  <div id="status"></div>
+  <div class="muted">Yellow: the bubble (its tail tip a dot). Blue: the proposal. Green: your pick. Numbers: character cards. Enter accepts what is selected (it starts as the proposal).</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let data, labels, items = [], idx = 0, cur = null, img = new Image();
+const cv = $("cv"), g = cv.getContext("2d");
+const hue = i => `hsl(${(i * 67) % 360} 80% 60%)`;
+
+function key(b, x) { return `${b.pid}#${x.id}`; }
+
+async function load() {
+  data = await (await fetch("dataset.json")).json();
+  labels = await (await fetch("labels.json")).json();
+  const eps = [...new Set(data.boxes.map(b => b.episode))];
+  $("ep").innerHTML = `<option value="">all episodes</option>` + eps.map(e => `<option>${e}</option>`).join("");
+  $("ep").onchange = $("todo").onchange = () => { rebuild(); show(0); };
+  rebuild(); show(Math.max(0, items.findIndex(it => !labels[it.k])));
+}
+function rebuild() {
+  const ep = $("ep").value, todo = $("todo").checked;
+  items = [];
+  for (const b of data.boxes) if (!ep || b.episode === ep)
+    for (const x of b.bubbles) { const k = key(b, x); if (!todo || !labels[k]) items.push({ box: b, bub: x, k }); }
+  const done = data.boxes.flatMap(b => b.bubbles.map(x => key(b, x))).filter(k => labels[k]).length;
+  const all = data.boxes.reduce((s, b) => s + b.bubbles.length, 0);
+  $("prog").style.width = `${100 * done / all}%`;
+  $("status").textContent = `${done} / ${all} labelled`;
+}
+function show(i) {
+  if (!items.length) { $("text").textContent = "nothing to label here"; return; }
+  idx = Math.max(0, Math.min(items.length - 1, i));
+  const it = items[idx], p = it.bub.proposal, l = labels[it.k];
+  cur = l ? { speakers: [...l.speakers], kind: l.kind, skip: !!l.skip }
+          : { speakers: [...p.speakers], kind: p.speaker_kind, skip: false };
+  $("where").textContent = `${it.box.pid} · bubble ${it.bub.id} · ${it.bub.kind || "?"} · ${idx + 1}/${items.length}` + (l ? " · labelled" : "");
+  $("text").textContent = it.bub.text || "(no text read)";
+  $("prop").textContent = `proposal: ${p.speaker_kind} ${p.speakers.join(",")} (${p.rule}, ${p.confidence})`;
+  $("cards").innerHTML = it.box.cards.map(c => `<button data-i="${c.i}" style="border-color:${hue(c.i)}">${c.i + 1}</button>`).join("");
+  for (const btn of $("cards").children) btn.onclick = () => toggle(+btn.dataset.i);
+  if (img.dataset.src !== it.box.img) { img = new Image(); img.dataset.src = it.box.img; img.onload = draw; img.src = it.box.img; } else draw();
+  paint();
+}
+function toggle(i) {
+  cur.skip = false; cur.kind = "card";
+  cur.speakers = cur.speakers.includes(i) ? cur.speakers.filter(s => s !== i) : [...cur.speakers, i];
+  if (!cur.speakers.length) cur.kind = "off_panel";
+  paint(); draw();
+}
+function setKind(k) { cur.kind = k; cur.speakers = []; cur.skip = false; paint(); draw(); }
+function paint() {
+  for (const b of $("cards").children) b.classList.toggle("on", cur.speakers.includes(+b.dataset.i));
+  $("k-off").classList.toggle("on", cur.kind === "off_panel" && !cur.skip);
+  $("k-nar").classList.toggle("on", cur.kind === "narrator");
+  $("k-sfx").classList.toggle("on", cur.kind === "sfx");
+  $("k-skip").classList.toggle("on", cur.skip);
+}
+function poly(pts) { g.beginPath(); pts.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); }
+function draw() {
+  const it = items[idx]; if (!it || !img.complete) return;
+  const b = it.box; cv.width = b.w; cv.height = b.h;
+  g.drawImage(img, 0, 0);
+  g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(0, 0, b.w, b.h);
+  g.lineWidth = 2;
+  for (const f of b.frames) for (const p of f) { poly(p); g.strokeStyle = "rgba(255,255,255,0.25)"; g.stroke(); }
+  for (const c of b.cards) {
+    const picked = cur.speakers.includes(c.i), prop = it.bub.proposal.speakers.includes(c.i);
+    for (const p of c.outline) {
+      poly(p);
+      if (picked) { g.fillStyle = "rgba(61,220,132,0.25)"; g.fill(); }
+      g.lineWidth = picked ? 4 : prop ? 3 : 1.5;
+      g.strokeStyle = picked ? "#3ddc84" : prop ? "#4aa3ff" : hue(c.i); g.stroke();
+    }
+    const xs = c.outline.flat().map(p => p[0]), ys = c.outline.flat().map(p => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = Math.min(...ys) + 22;
+    g.fillStyle = "#000c"; g.beginPath(); g.arc(cx, cy, 16, 0, 7); g.fill();
+    g.fillStyle = picked ? "#3ddc84" : hue(c.i); g.font = "bold 20px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(String(c.i + 1), cx, cy + 1);
+  }
+  g.lineWidth = 4; g.strokeStyle = "#ffd84a";
+  for (const p of it.bub.outline) { poly(p); g.stroke(); }
+  if (it.bub.tail_tip) { g.fillStyle = "#ffd84a"; g.beginPath(); g.arc(it.bub.tail_tip[0], it.bub.tail_tip[1], 6, 0, 7); g.fill(); }
+}
+async function save(step) {
+  const it = items[idx]; if (!it) return;
+  labels[it.k] = { speakers: cur.speakers, kind: cur.skip ? "skip" : cur.kind, skip: cur.skip };
+  const r = await fetch("save", { method: "POST", body: JSON.stringify(labels) });
+  $("status").textContent = r.ok ? "saved" : "SAVE FAILED";
+  const todo = $("todo").checked;
+  rebuild();
+  show(todo ? idx : idx + step);
+}
+cv.onclick = e => {
+  const it = items[idx], r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * cv.width / r.width, y = (e.clientY - r.top) * cv.height / r.height;
+  for (const c of [...it.box.cards].reverse()) for (const p of c.outline) { poly(p); if (g.isPointInPath(x, y)) return toggle(c.i); }
+};
+$("k-off").onclick = () => setKind("off_panel");
+$("k-nar").onclick = () => setKind("narrator");
+$("k-sfx").onclick = () => setKind("sfx");
+$("k-skip").onclick = () => { cur.skip = !cur.skip; cur.speakers = []; paint(); draw(); };
+$("next").onclick = () => save(1);
+$("prev").onclick = () => show(idx - 1);
+addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return;
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); save(1); }
+  else if (e.key === "ArrowLeft" || e.key === "Backspace") show(idx - 1);
+  else if (e.key === "ArrowRight") show(idx + 1);
+  else if (/^[1-9]$/.test(e.key)) toggle(+e.key - 1);
+  else if (e.key === "o") setKind("off_panel");
+  else if (e.key === "n") setKind("narrator");
+  else if (e.key === "s") setKind("sfx");
+  else if (e.key === "x") $("k-skip").click();
+});
+load();
+</script>
+</body>
+</html>
