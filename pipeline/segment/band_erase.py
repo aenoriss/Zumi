@@ -119,13 +119,20 @@ def box_layers(cj: dict, mesh: Path) -> tuple[list[dict], list[np.ndarray]]:
 
 
 def band_mask(cards: list[dict], frames: list[np.ndarray], art: np.ndarray) -> np.ndarray:
-    """The erase mask: per card a band of its shift + BAND_PAD px (bubbles whole), then grown per frame toward the
-    interior while the frame's masked share stays under MAX_SHARE."""
+    """The erase mask: per card a band of its shift + BAND_PAD px, then grown per frame toward the interior while
+    the frame's masked share stays under MAX_SHARE; the bubbles whole, past the frames too. A bubble clipped to its
+    frame left its outer half in the image and the model completed its lettering into the fill (garbled text in
+    P&C 39 p6, p8, p14, p17); the old erase (hidden_layers.prepare) masked them whole and never showed it."""
     foot = np.logical_or.reduce([c["mask"] for c in cards])
     d = edt(foot)
     band = np.zeros_like(foot)
+    bubbles = np.zeros_like(foot)
     for c in cards:
-        band |= c["mask"] if c["kind"] == "lettering" else c["mask"] & (d <= abs(c["shift"]) + BAND_PAD)
+        if c["kind"] == "lettering":
+            bubbles |= c["mask"]
+        else:
+            band |= c["mask"] & (d <= abs(c["shift"]) + BAND_PAD)
+    band |= bubbles
     for fa in frames:
         fa = fa & art
         if not fa.any():
@@ -134,7 +141,7 @@ def band_mask(cards: list[dict], frames: list[np.ndarray], art: np.ndarray) -> n
         while extra < 400 and ((band | (foot & (d <= extra + GROW_STEP))) & fa).sum() / fa.sum() < MAX_SHARE:
             extra += GROW_STEP
         band |= foot & fa & (d <= extra)
-    return band & art
+    return (band & art) | binary_dilation(bubbles, iterations=2)
 
 
 def prefill(img: np.ndarray, foot: np.ndarray, mask: np.ndarray, frames: list[np.ndarray]) -> np.ndarray:
