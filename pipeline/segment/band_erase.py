@@ -31,6 +31,7 @@ import hashlib
 import io
 import json
 import sys
+import threading
 import zipfile
 from pathlib import Path
 
@@ -50,6 +51,7 @@ MARGIN_PX = 10       # px each character and bubble is grown outward, in the mas
 MARGIN_OBJ_PX = 16   # ...each object
 SEAM_GROW = 24       # px past that over which the model's output is blended into the art
 API_DILATE = 8       # px the erase API grows the mask itself (flux_erase.erase, dilate_pixels)
+WORKERS = 16         # boxes erased at once (BFL allows 24 requests in flight; a box's frame retries add to it)
 INPUT_VERSION = "white-page"  # part of the saved outputs' key: v1 sent the page as it was
 TEX_MIN = 0.12       # placeholder check: fill texture / real background texture (failures 0.00-0.12, fills 0.13+)
 TEX_MIN_SHARE = 0.20 # ...applied to masks of at least this share of the art
@@ -335,6 +337,33 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
     return res
 
 
+def erase_boxes(jobs: list[tuple], dry: bool = False, workers: int = WORKERS, log=print) -> None:
+    """erase_box on every (pid, img, cards.json dict, mesh dir, plates dir), WORKERS boxes at a time: a call is 5-9 s
+    of waiting on BFL, so in sequence 29 boxes took ~4 min. Each box's lines are printed together when it is done.
+    The daily cap (flux_erase reserves every call in flight) stops the boxes not yet sent; a refused box (BFL
+    moderation) skips only itself."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    stop = threading.Event()
+
+    def one(job):
+        pid, img, cj, mesh, out = job
+        lines = [pid]
+        if stop.is_set():
+            return lines + ["  not sent: the daily budget was reached"]
+        try:
+            erase_box(img, cj, mesh, out, dry, log=lines.append)
+        except SystemExit as e:
+            stop.set()
+            lines.append(f"  STOP: {e}")
+        except Exception as e:
+            lines.append(f"  failed, box kept on its old plate (or the art): {str(e)[:160]}")
+        return lines
+
+    with ThreadPoolExecutor(workers) as ex:
+        for fut in as_completed([ex.submit(one, j) for j in jobs]):
+            log("\n".join(fut.result()))
+
+
 def main():
     zumi, out = Path(sys.argv[1]), Path(sys.argv[2])
     dry = "--dry" in sys.argv
@@ -344,20 +373,14 @@ def main():
     if "--panels" in sys.argv:
         picks = [int(v) for v in sys.argv[sys.argv.index("--panels") + 1].split(",")]
     mesh = out / "parallax" / "mesh"
+    jobs = []
     for i in picks:
         pid = f"{zumi.stem}-p{i:03d}"
         cjp = mesh / f"{pid}.cards.json"
-        if not cjp.exists():
-            continue
-        img = np.asarray(Image.open(io.BytesIO(z.read(panels[i]["layers"][0]["image"]))).convert("RGB"))
-        print(pid)
-        try:
-            erase_box(img, json.loads(cjp.read_text()), mesh, out / "parallax" / "plates" / pid, dry)
-        except SystemExit as e:  # the daily budget
-            print(f"STOP: {e}")
-            break
-        except Exception as e:  # one refused box (BFL moderation) skips only itself
-            print(f"  failed, box kept on its old plate: {str(e)[:160]}")
+        if cjp.exists():
+            img = np.asarray(Image.open(io.BytesIO(z.read(panels[i]["layers"][0]["image"]))).convert("RGB"))
+            jobs.append((pid, img, json.loads(cjp.read_text()), mesh, out / "parallax" / "plates" / pid))
+    erase_boxes(jobs, dry)
     print(f"BFL spend today {FE.spent_today():.2f} USD")
 
 

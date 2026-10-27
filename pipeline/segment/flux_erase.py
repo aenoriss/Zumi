@@ -13,6 +13,7 @@ import io
 import json
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,12 +53,32 @@ def b64(im):
     return base64.b64encode(b.getvalue()).decode()
 
 
+_LOCK = threading.Lock()
+_INFLIGHT = [0.0]  # USD reserved by calls sent and not yet logged: parallel calls must not overshoot the daily cap
+RESERVE_USD = 0.06  # per call: the most one erase has cost (5.8 credits)
+MAX_TRIES = 6       # on HTTP 429 (more than 24 requests in flight, docs.bfl.ai integration guidelines): back off
+
+
 def erase(img, mask, dilate=8):
-    if spent_today() >= DAILY_USD:
-        raise SystemExit(f"BFL daily budget reached ({spent_today():.2f} USD)")
+    with _LOCK:
+        if spent_today() + _INFLIGHT[0] + RESERVE_USD > DAILY_USD + 1e-9:
+            raise SystemExit(f"BFL daily budget reached ({spent_today():.2f} USD, {_INFLIGHT[0]:.2f} in flight)")
+        _INFLIGHT[0] += RESERVE_USD
+    try:
+        return _erase(img, mask, dilate)
+    finally:
+        with _LOCK:
+            _INFLIGHT[0] -= RESERVE_USD
+
+
+def _erase(img, mask, dilate):
     h = {"x-key": key(), "accept": "application/json"}
-    r = requests.post(f"{API}/flux-tools/erase-v1", headers=h, timeout=60,
-                      json={"image": b64(img), "mask": b64(mask), "dilate_pixels": dilate, "output_format": "png"})
+    body = {"image": b64(img), "mask": b64(mask), "dilate_pixels": dilate, "output_format": "png"}
+    for k in range(MAX_TRIES):
+        r = requests.post(f"{API}/flux-tools/erase-v1", headers=h, timeout=60, json=body)
+        if r.status_code != 429:
+            break
+        time.sleep(2 ** k)
     r.raise_for_status()
     job = r.json()
     t = time.perf_counter()
@@ -73,7 +94,7 @@ def erase(img, mask, dilate=8):
     cost = job.get("cost", p.get("cost"))
     usd = (cost or 0) / 100
     SPEND.parent.mkdir(parents=True, exist_ok=True)
-    with SPEND.open("a") as f:
+    with _LOCK, SPEND.open("a") as f:
         f.write(json.dumps({"day": datetime.now(timezone.utc).date().isoformat(), "credits": cost, "usd": usd,
                             "size": img.size}) + "\n")
     out = Image.open(io.BytesIO(requests.get(p["result"]["sample"], timeout=120).content)).convert("RGB")

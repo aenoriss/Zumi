@@ -214,20 +214,10 @@ def erase_step(a, stem, picks, imgs, letters, chars, und=None) -> None:
     if a.no_layers:  # no paid erase: the layers stay on the art (or on band plates an earlier run paid for)
         return
     mesh = a.out / "parallax" / "mesh"
-    for i in picks:
-        pid = f"{stem}-p{i:03d}"
-        cj = mesh / f"{pid}.cards.json"
-        if not cj.exists():
-            continue
-        print(f"  {pid} erase")
-        try:
-            BE.erase_box(np.asarray(imgs[i]), json.loads(cj.read_text()), mesh, a.out / "parallax" / "plates" / pid,
-                         log=lambda s: print(f"  {s}"))
-        except SystemExit as e:  # the BFL daily cap: the rest keep their art (or an earlier run's plate)
-            print(f"  STOP erase: {e}")
-            break
-        except Exception as e:  # one refused box (BFL moderation) skips only itself
-            print(f"  erase {pid} failed, box kept on the art: {str(e)[:160]}")
+    jobs = [(f"{stem}-p{i:03d}", np.asarray(imgs[i]), json.loads((mesh / f"{stem}-p{i:03d}.cards.json").read_text()),
+             mesh, a.out / "parallax" / "plates" / f"{stem}-p{i:03d}")
+            for i in picks if (mesh / f"{stem}-p{i:03d}.cards.json").exists()]
+    BE.erase_boxes(jobs, log=lambda s: print("  " + s.replace("\n", "\n  ")))  # boxes in parallel, budget-safe
     torch.cuda.empty_cache()
     print("  (second pass: the cards on the erased plates)")
     layers_step(a, stem, picks, imgs, letters, chars, und)
