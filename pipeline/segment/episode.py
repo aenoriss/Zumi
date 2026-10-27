@@ -16,8 +16,11 @@ Understand. This script runs steps 2-5 on a chapter step 1 has cut.
    b. characters: characters.py; reviewed.
    c. objects: picked by scene_judge.choose_objects (Haiku, names, points and relations), masked by SAM
       (objects.py); reviewed (choose_box_objects).
-3. Erase (hidden_layers.py): what the art hides behind characters, lettering and objects, from ONE FLUX Erase call
-   per box (BFL API, ~0.034-0.06 USD, 2 USD/day cap).
+3. Erase (band_erase.py): what the art hides behind characters, objects and lettering. The card interiors are
+   prefilled with the frame's plain background colour, a band as wide as a head move uncovers is masked, and ONE
+   FLUX Erase call per box paints it (BFL API, 0.034 USD a call, 2 USD/day cap); a result that is the model's
+   placeholder is retried frame by frame. Its masks need the cards and their depth, so it runs between two passes
+   of step 4 (erase_step).
 4. Flat layers (cards.py): per frame the backdrop and one card per character and object, ordered by
    DA3MONO run on each frame alone, fixed steps between them; the lettering in front as cards of the original
    bubbles, placed by lettering_layer.py. The depth-based surface this replaced is legacy_mesh.py (--legacy-mesh).
@@ -198,31 +201,50 @@ def load_frames(out_dir: Path, pid: str) -> list[np.ndarray] | None:
     return [m.mask for m in B.load_masks(f)] if f.exists() else None
 
 
-def erase_step(a, stem, picks, imgs, letters, chars) -> tuple[dict, dict]:
-    """Step 3, ONE FLUX Erase call per box with every mask (lettering, characters, the objects of step 2c), paid
-    results cached by mask content (hidden_layers.erase_boxes). Stops cleanly at the BFL daily cap. (boxes, crops)."""
-    from hidden_layers import erase_boxes, prepare
-    boxes = {}
+def erase_step(a, stem, picks, imgs, letters, chars, und=None) -> None:
+    """Steps 3-4: the band erase (band_erase.py) between two passes of the flat layers. Its masks come from the
+    cards (their outlines, and how far each slides at a head move, which needs their depth), so a first layers pass
+    lays the cards out on the art; band_erase then paints what is behind them, ONE FLUX Erase call per box (a box
+    whose result is the model's placeholder is retried frame by frame; paid results cached by mask, the BFL daily cap
+    stops it cleanly); the second pass rebuilds the layers on its plates. The first pass costs ~5 s per box. It
+    replaced hidden_layers.erase_boxes (every mask whole, two copies packed per call), kept for legacy_mesh.py."""
+    import band_erase as BE
+    print("  (first pass: the cards on the art)")
+    layers_step(a, stem, picks, imgs, letters, chars, und)
+    if a.no_layers:  # no paid erase: the layers stay on the art (or on band plates an earlier run paid for)
+        return
+    mesh = a.out / "parallax" / "mesh"
     for i in picks:
         pid = f"{stem}-p{i:03d}"
-        shape = (imgs[i].height, imgs[i].width)
-        objs = load_box_objects(a.out, pid)
-        b = prepare(pid, imgs[i], _union(chars[i], shape), _union(letters[i], shape), a.out / "parallax" / "plates" / pid,
-                    objects=np.logical_or.reduce([o["mask"] for o in objs]) if objs else None)
-        if b is not None:
-            boxes[i] = b
-    return boxes, erase_boxes(list(boxes.values()))
+        cj = mesh / f"{pid}.cards.json"
+        if not cj.exists():
+            continue
+        print(f"  {pid} erase")
+        try:
+            BE.erase_box(np.asarray(imgs[i]), json.loads(cj.read_text()), mesh, a.out / "parallax" / "plates" / pid,
+                         log=lambda s: print(f"  {s}"))
+        except SystemExit as e:  # the BFL daily cap: the rest keep their art (or an earlier run's plate)
+            print(f"  STOP erase: {e}")
+            break
+        except Exception as e:  # one refused box (BFL moderation) skips only itself
+            print(f"  erase {pid} failed, box kept on the art: {str(e)[:160]}")
+    torch.cuda.empty_cache()
+    print("  (second pass: the cards on the erased plates)")
+    layers_step(a, stem, picks, imgs, letters, chars, und)
 
 
-def layers_step(a, stem, picks, imgs, letters, chars, boxes, crops, und=None) -> None:
+def layers_step(a, stem, picks, imgs, letters, chars, und=None) -> None:
     """Step 4, the flat layers of every box (cards.py): per frame of step 1 the backdrop and one card per character
-    and erased object, ordered by DA3MONO on each frame alone, then the original bubbles as cards in front, placed by
-    lettering_layer."""
+    and object, ordered by DA3MONO on each frame alone, then the original bubbles as cards in front, placed by
+    lettering_layer. The backdrop is the box's band-erase plate (step 3) when it has one, else the art itself;
+    the depth model sees the box with its lettering filled in (band_erase.lettering_free)."""
+    import band_erase as BE
     import cards as CD
     import depth as DP
     import lettering_layer as LL
     import parallax as PX
-    from hidden_layers import plates_for
+    from hidden_layers import GROW
+    from scipy.ndimage import binary_dilation
     root = a.out / "parallax"
     und = und or {}
     # DA3MONO on each frame alone, for everything (user, 2026-10-26): it orders the cards and gives each frame's
@@ -233,28 +255,24 @@ def layers_step(a, stem, picks, imgs, letters, chars, boxes, crops, und=None) ->
         pid = f"{stem}-p{i:03d}"
         img = np.asarray(imgs[i])
         shape = img.shape[:2]
-        b = boxes.get(i)
-        g = b.gutter if b is not None else PX.gutter(imgs[i], _union(letters[i], shape))
-        fringe = b.fringe if b is not None else PX.claim_fringe(imgs[i], _union(chars[i], shape), g)
-        objects, lettering, base = [], None, None
-        if b is not None and pid in crops:
-            lettering = b.lettering
-            plates, base = plates_for(b, crops[pid])
-            if "all" in plates:  # the objects are erased from the backdrop: each one becomes a card
-                backdrop = plates["all"]
-                objects = load_box_objects(a.out, pid)
-            else:
-                backdrop = plates["full"] if b.full is not b.lettering else base
-        else:  # nothing erased (nothing to erase, or the erase was refused): the art itself behind the cards
-            backdrop = img
-        # the band erase (band_erase.py, 2026-10-27) when it has run on this box: the whole box, FLUX's fill under
-        # every card, the art elsewhere
+        let = _union(letters[i], shape)
+        g = PX.gutter(imgs[i], let)
+        fringe = PX.claim_fringe(imgs[i], _union(chars[i], shape), g)
+        frames = load_frames(a.out, pid)
+        lettering = binary_dilation(let, iterations=GROW) & ~g if let.any() else None
+        base = BE.lettering_free(img, lettering, frames if frames else [~g]) if lettering is not None else None
+        # the band erase paints behind every object too (each one a card); without its plate the objects stay
+        # painted on the art
         bp = root / "plates" / pid / "band-plate.png"
         if bp.exists():
             backdrop = np.asarray(Image.open(bp).convert("RGB"))
+            objects = load_box_objects(a.out, pid)
+        else:
+            backdrop = img
+            objects = [] if a.no_layers else load_box_objects(a.out, pid)
         # depth is never estimated on a whole box, only on each frame alone, in one pass (user, 2026-10-26)
         info, D = CD.build(pid, img, [e.mask for e in chars[i]], objects, backdrop, g, None, root / "mesh", fringe,
-                           lettering, depth_img=base, depth_fn=lambda r: DP.frame_infer(mono, r),                           frames=load_frames(a.out, pid))
+                           lettering, depth_img=base, depth_fn=lambda r: DP.frame_infer(mono, r), frames=frames)
         print(f"  {pid} layers: {info}")
         # the viewer's "segmentation" view (its "depth" view is written by cards.build)
         CD.seg_view(img, [e.mask for e in chars[i]], [(o["name"], o["mask"]) for o in load_box_objects(a.out, pid)],
@@ -281,12 +299,8 @@ def depth_and_layers(a, stem, picks, img_of, letters, chars, und=None, proc=None
         box_frames(a, stem, missing, imgs, letters)
     times["2c objects + 1 frames"] = time.perf_counter() - t
     t = time.perf_counter()
-    boxes, crops = ({}, {}) if a.no_layers else erase_step(a, stem, picks, imgs, letters, chars)
-    times["3 erase"] = time.perf_counter() - t
-    torch.cuda.empty_cache()
-    t = time.perf_counter()
-    layers_step(a, stem, picks, imgs, letters, chars, boxes, crops, und)
-    times["4 layers"] = time.perf_counter() - t
+    erase_step(a, stem, picks, imgs, letters, chars, und)
+    times["3 erase + 4 layers"] = time.perf_counter() - t
     return times
 
 
@@ -398,21 +412,15 @@ def main() -> None:
     save_understand()
 
     if not a.no_depth:
-        # 3. erase: one call per box
-        print("== 3 erase")
+        # 3-4. the band erase between two passes of the flat layers (erase_step); the legacy path erases its own way
+        print("== 3 erase + 4 flat layers")
         t = time.perf_counter()
-        legacy = getattr(a, "legacy_mesh", False)  # the legacy path erases in its own way
-        boxes, crops = ({}, {}) if a.no_layers or legacy else erase_step(a, stem, picks, imgs, letters, chars)
-        times["3 erase"] = time.perf_counter() - t
-        # 4. flat layers
-        print("== 4 flat layers")
-        t = time.perf_counter()
-        if legacy:
+        if getattr(a, "legacy_mesh", False):
             import legacy_mesh
             times.update(legacy_mesh.depth_and_layers(a, stem, picks, img_of, letters, chars, {}, None))
         else:
-            layers_step(a, stem, picks, imgs, letters, chars, boxes, crops)
-        times["4 layers"] = time.perf_counter() - t
+            erase_step(a, stem, picks, imgs, letters, chars)
+        times["3 erase + 4 layers"] = time.perf_counter() - t
         save_understand()
 
     # 5. Understand, last and optional: data only (understand.json), it feeds nothing in the 3D

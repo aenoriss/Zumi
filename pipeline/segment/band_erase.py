@@ -45,9 +45,10 @@ LEAN = 0.3 / 1.5     # the head move the band covers, in units of the reading di
 BAND_PAD = 6         # px past that shift
 MAX_SHARE = 0.55     # a frame's band grown while its masked share stays under this
 GROW_STEP = 8        # px per growth step
-WINDOW_GROW = 26     # a window is cut 12 px inside its frame (cards.INSET): grown back past the frame's edge
+WINDOW_GROW = 13     # a window is cut 12 px inside its frame (cards.INSET): grown back to the frame's edge
 UNDER_GROW = 4       # px past the cards where the model's output replaces the art
 TEX_MIN = 0.12       # placeholder check: fill texture / real background texture (failures 0.00-0.12, fills 0.13+)
+TEX_MIN_SHARE = 0.20 # ...applied to masks of at least this share of the art
 FLAT_MIN = 0.40      # placeholder check: share of the mask in one flat colour...
 SEEN_MAX = 0.02      # ...seen in under this share of the real background
 
@@ -145,16 +146,18 @@ def prefill(img: np.ndarray, foot: np.ndarray, mask: np.ndarray, frames: list[np
     return out
 
 
-def placeholder(got: np.ndarray, m: np.ndarray, img: np.ndarray) -> str | None:
-    """Why `got` is the model's placeholder rather than a fill, or None."""
+def placeholder(got: np.ndarray, m: np.ndarray, img: np.ndarray, art: np.ndarray) -> str | None:
+    """Why `got` is the model's placeholder rather than a fill, or None. The texture test only on masks of at least
+    TEX_MIN_SHARE of the art: a small mask is often meant to come back plain (the credits page, P&C 39 p30, a
+    false alarm that paid 5 retries)."""
     if m.sum() < 500:
         return None
     g8 = np.clip(got, 0, 255).astype(np.uint8)
     grey = lambda a: cv2.cvtColor(a, cv2.COLOR_RGB2GRAY).astype(np.float32)
     sd = lambda a, k: np.sqrt(np.maximum(cv2.blur(grey(a) ** 2, (k, k)) - cv2.blur(grey(a), (k, k)) ** 2, 0))
     inner = m & ~binary_dilation(~m, iterations=6)
-    ref = ~m & ~binary_dilation(m, iterations=4) & (img.min(-1) < 245)
-    if inner.any() and ref.any():
+    ref = ~m & ~binary_dilation(m, iterations=4) & art
+    if inner.any() and ref.any() and m[art].mean() >= TEX_MIN_SHARE:
         ratio = float(np.median(sd(g8, 7)[inner]) / max(np.median(sd(img, 7)[ref]), 1e-6))
         if ratio < TEX_MIN:
             return f"texture {ratio:.2f} of the background's"
@@ -167,6 +170,17 @@ def placeholder(got: np.ndarray, m: np.ndarray, img: np.ndarray) -> str | None:
     if flat > FLAT_MIN and seen < SEEN_MAX:
         return f"flat {tuple(int(v) for v in col)} on {flat:.0%} of the mask"
     return None
+
+
+def lettering_free(img: np.ndarray, lettering: np.ndarray, frames: list[np.ndarray]) -> np.ndarray:
+    """The box with its lettering filled in by each frame's surrounding colour: what the depth model sees, so a
+    bubble gets no depth of its own. Smooth is enough there; the backdrop under the bubbles is FLUX's (erase_box)."""
+    out = img.copy()
+    for fa in frames:
+        hole = lettering & fa
+        if hole.any() and (fa & ~lettering).sum() > 200:
+            out[hole] = membrane(img, fa & ~lettering).clip(0, 255).astype(np.uint8)[hole]
+    return out
 
 
 def cast_fit(got: np.ndarray, ref: np.ndarray, m: np.ndarray) -> np.ndarray:
@@ -225,10 +239,12 @@ def _call(sent: np.ndarray, m: np.ndarray, cache: Path, dry: bool):
 def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = False, log=print) -> np.ndarray | None:
     """The band-erase plate of one box (the art outside its cards), or None when it has no cards (or dry)."""
     cards, frames = box_layers(cj, mesh)
-    if not cards:
+    if not cards or not frames:
         return None
-    page = img.min(-1) >= 245
-    art = ~page
+    # the page is what lies outside every frame: a near-white test took the bubbles' white interiors for page, so
+    # they were neither masked nor painted and each bubble stayed in its plate (a ghost behind the bubble card)
+    art = np.logical_or.reduce(frames)
+    page = ~art
     foot = np.logical_or.reduce([c["mask"] for c in cards])
     mask = band_mask(cards, frames, art)
     pre = prefill(img, foot, mask, frames)
@@ -241,7 +257,7 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
         return None
     g = np.zeros(img.shape, np.float32)
     g[y0:y1, x0:x1] = got
-    why = placeholder(g[y0:y1, x0:x1], mask[y0:y1, x0:x1], img[y0:y1, x0:x1])
+    why = placeholder(g[y0:y1, x0:x1], mask[y0:y1, x0:x1], img[y0:y1, x0:x1], art[y0:y1, x0:x1])
     if why:
         log(f"  placeholder ({why}): retry frame by frame")
         for k, fa in enumerate(frames):
@@ -254,7 +270,7 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
             got_k, line_k = _call(pre[sl], fm, out / f"band-raw-f{k}.npz", dry)
             if got_k is None:
                 return None
-            why_k = placeholder(got_k, fm, img[sl])
+            why_k = placeholder(got_k, fm, img[sl], fa[sl])
             log(f"    frame {k}: {line_k}" + (f"; still a placeholder ({why_k})" if why_k else ""))
             g[sl] = np.where(fa[sl][..., None], got_k, g[sl])
     fit = ~binary_dilation(foot, iterations=12) & art
@@ -264,20 +280,7 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
     under = binary_dilation(foot, iterations=UNDER_GROW) & art
     res = np.where(under[..., None], g, img.astype(np.float32))
     reach = max(abs(c["shift"]) + BAND_PAD for c in cards)
-    res = seam_match(img, res, under, page, reach)
-    # under the bubbles: the frame's fill around them, interpolated in. A bubble's white interior passes the near-white
-    # page test above, so it was neither masked nor taken from the model and the bubble stayed in the plate (a ghost
-    # behind the bubble card at a head move). Bubbles always sit in front, so a smooth fill is enough there.
-    # TODO the page as what lies outside the frames (the windows), not "white": then the model fills under the
-    # bubbles too (a changed mask, so a paid rerun)
-    letters = [c["mask"] for c in cards if c["kind"] == "lettering"]
-    if letters:
-        bub = binary_dilation(np.logical_or.reduce(letters), iterations=UNDER_GROW)
-        for fa in frames:
-            hole = bub & fa
-            if hole.any() and (fa & ~bub).sum() > 200:
-                res[hole] = membrane(res, fa & ~bub)[hole]
-    res = res.clip(0, 255).astype(np.uint8)
+    res = seam_match(img, res, under, page, reach).clip(0, 255).astype(np.uint8)
     Image.fromarray(res).save(out / "band-plate.png")
     return res
 
