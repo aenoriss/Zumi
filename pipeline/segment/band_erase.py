@@ -47,6 +47,7 @@ MAX_SHARE = 0.55     # a frame's band grown while its masked share stays under t
 GROW_STEP = 8        # px per growth step
 WINDOW_GROW = 13     # a window is cut 12 px inside its frame (cards.INSET): grown back to the frame's edge
 UNDER_GROW = 4       # px past the cards where the model's output replaces the art
+INPUT_VERSION = "white-page"  # part of the saved outputs' key: v1 sent the page as it was
 TEX_MIN = 0.12       # placeholder check: fill texture / real background texture (failures 0.00-0.12, fills 0.13+)
 TEX_MIN_SHARE = 0.20 # ...applied to masks of at least this share of the art
 FLAT_MIN = 0.40      # placeholder check: share of the mask in one flat colour...
@@ -224,7 +225,8 @@ def seam_match(img, res, foot, page, reach, cap=30.0, sat_max=200, S=8.0):
 
 def _call(sent: np.ndarray, m: np.ndarray, cache: Path, dry: bool):
     """FLUX Erase on sent/m, or the saved output for this very mask. (output, log line)."""
-    key = hashlib.sha1(np.packbits(m).tobytes() + str(m.shape).encode()).hexdigest()[:16]
+    # the key: the mask, and INPUT_VERSION for changes to what is sent beside it (bump it when the input changes)
+    key = hashlib.sha1(np.packbits(m).tobytes() + str(m.shape).encode() + INPUT_VERSION.encode()).hexdigest()[:16]
     if cache.exists():
         z = np.load(cache)
         if str(z["key"]) == key:
@@ -248,6 +250,9 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
     foot = np.logical_or.reduce([c["mask"] for c in cards])
     mask = band_mask(cards, frames, art)
     pre = prefill(img, foot, mask, frames)
+    # the page goes to the model white: a bubble crossing a frame's edge left its outer part (outside the mask) in
+    # the image, and the model continued its lettering into the mask (garbled text in P&C 39 p6, p8, p14, p17)
+    pre[page] = 255
     ys, xs = np.nonzero(art)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
     out.mkdir(parents=True, exist_ok=True)
@@ -257,22 +262,25 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
         return None
     g = np.zeros(img.shape, np.float32)
     g[y0:y1, x0:x1] = got
-    why = placeholder(g[y0:y1, x0:x1], mask[y0:y1, x0:x1], img[y0:y1, x0:x1], art[y0:y1, x0:x1])
-    if why:
-        log(f"  placeholder ({why}): retry frame by frame")
-        for k, fa in enumerate(frames):
-            fy, fx = np.nonzero(fa)
-            if not len(fy) or not (mask & fa).any():
-                continue
-            fy0, fy1, fx0, fx1 = fy.min(), fy.max() + 1, fx.min(), fx.max() + 1
-            sl = np.s_[fy0:fy1, fx0:fx1]
-            fm = mask[sl] & fa[sl]
-            got_k, line_k = _call(pre[sl], fm, out / f"band-raw-f{k}.npz", dry)
-            if got_k is None:
-                return None
-            why_k = placeholder(got_k, fm, img[sl], fa[sl])
-            log(f"    frame {k}: {line_k}" + (f"; still a placeholder ({why_k})" if why_k else ""))
-            g[sl] = np.where(fa[sl][..., None], got_k, g[sl])
+    # checked frame by frame: a placeholder in one frame of a box hid behind the other frames' good fills (a white
+    # close-up in P&C 39 p10); only the failing frames are retried
+    for k, fa in enumerate(frames):
+        fy, fx = np.nonzero(fa)
+        if not len(fy) or not (mask & fa).any():
+            continue
+        fy0, fy1, fx0, fx1 = fy.min(), fy.max() + 1, fx.min(), fx.max() + 1
+        sl = np.s_[fy0:fy1, fx0:fx1]
+        fm = mask[sl] & fa[sl]
+        why = placeholder(g[sl], fm, img[sl], fa[sl])
+        if not why:
+            continue
+        log(f"  frame {k}: placeholder ({why}): retry this frame alone")
+        got_k, line_k = _call(pre[sl], fm, out / f"band-raw-f{k}.npz", dry)
+        if got_k is None:
+            return None
+        why_k = placeholder(got_k, fm, img[sl], fa[sl])
+        log(f"    {line_k}" + (f"; still a placeholder ({why_k})" if why_k else ""))
+        g[sl] = np.where(fa[sl][..., None], got_k, g[sl])
     fit = ~binary_dilation(foot, iterations=12) & art
     g = cast_fit(g, img, fit)
     # the model's pixels under the cards and UNDER_GROW px past them (the API grows the mask 8 px): the outline's
