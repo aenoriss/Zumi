@@ -46,7 +46,10 @@ BAND_PAD = 6         # px past that shift
 MAX_SHARE = 0.55     # a frame's band grown while its masked share stays under this
 GROW_STEP = 8        # px per growth step
 WINDOW_GROW = 13     # a window is cut 12 px inside its frame (cards.INSET): grown back to the frame's edge
-UNDER_GROW = 4       # px past the cards where the model's output replaces the art
+MARGIN_PX = 10       # px each character and bubble is grown outward, in the mask and in what is replaced
+MARGIN_OBJ_PX = 16   # ...each object
+SEAM_GROW = 24       # px past that over which the model's output is blended into the art
+API_DILATE = 8       # px the erase API grows the mask itself (flux_erase.erase, dilate_pixels)
 INPUT_VERSION = "white-page"  # part of the saved outputs' key: v1 sent the page as it was
 TEX_MIN = 0.12       # placeholder check: fill texture / real background texture (failures 0.00-0.12, fills 0.13+)
 TEX_MIN_SHARE = 0.20 # ...applied to masks of at least this share of the art
@@ -132,7 +135,7 @@ def band_mask(cards: list[dict], frames: list[np.ndarray], art: np.ndarray) -> n
             bubbles |= c["mask"]
         else:
             band |= c["mask"] & (d <= abs(c["shift"]) + BAND_PAD)
-    band |= bubbles
+    band |= bubbles | margin(cards, sent=True)
     for fa in frames:
         fa = fa & art
         if not fa.any():
@@ -141,7 +144,38 @@ def band_mask(cards: list[dict], frames: list[np.ndarray], art: np.ndarray) -> n
         while extra < 400 and ((band | (foot & (d <= extra + GROW_STEP))) & fa).sum() / fa.sum() < MAX_SHARE:
             extra += GROW_STEP
         band |= foot & fa & (d <= extra)
-    return (band & art) | binary_dilation(bubbles, iterations=2)
+    return (band & art) | bubbles
+
+
+def margin(cards: list[dict], sent: bool = False) -> np.ndarray:
+    """The ring each card is grown by outward, MARGIN_PX (objects MARGIN_OBJ_PX): a figure's dark outline, glow and
+    anti-aliased fringe go with it (hidden_layers.prepare's GROW; at 8 px around objects the model kept a ghost of a
+    desk). Without it the outline stayed in the backdrop beside the sliding card. sent: the part of it the mask itself
+    carries, the API adding API_DILATE px (the full ring in the mask put boxes at 80-90% masked, where the model
+    answers with its placeholder)."""
+    out = np.zeros_like(cards[0]["mask"])
+    for c in cards:
+        r = MARGIN_OBJ_PX if c["kind"] == "object" else MARGIN_PX
+        # sent: figures and bubbles carry none (the API's own 8 px repaint their outline; the 2 px beyond that
+        # are taken from the model's output too, where it reproduces the art), objects the rest of their 16
+        r = (max(0, r - API_DILATE) if c["kind"] == "object" else 0) if sent else r
+        if r > 0:
+            out |= binary_dilation(c["mask"], iterations=r) & ~c["mask"]
+    return out
+
+
+def colour_transform(got: np.ndarray, ref: np.ndarray, same: np.ndarray) -> np.ndarray:
+    """got brought to ref's colours by one 3x3 + offset transform (least squares in RGB), fitted where both show the
+    same scene: the model shifts the tone of its whole image, hue included, which a per-channel gain cannot undo
+    (hidden_layers.colour_transform)."""
+    if same.sum() < 200:
+        return got.astype(np.float32)
+    X = np.c_[got[same].reshape(-1, 3).astype(np.float64), np.ones(int(same.sum()))]
+    Y = ref[same].reshape(-1, 3).astype(np.float64)
+    sub = np.arange(len(X))[:: max(1, len(X) // 200000)]
+    A, *_ = np.linalg.lstsq(X[sub], Y[sub], rcond=None)
+    flat = np.c_[got.reshape(-1, 3).astype(np.float64), np.ones(got.shape[0] * got.shape[1])] @ A
+    return np.clip(flat, 0, 255).reshape(got.shape).astype(np.float32)
 
 
 def prefill(img: np.ndarray, foot: np.ndarray, mask: np.ndarray, frames: list[np.ndarray]) -> np.ndarray:
@@ -288,14 +322,15 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
         why_k = placeholder(got_k, fm, img[sl], fa[sl])
         log(f"    {line_k}" + (f"; still a placeholder ({why_k})" if why_k else ""))
         g[sl] = np.where(fa[sl][..., None], got_k, g[sl])
-    fit = ~binary_dilation(foot, iterations=12) & art
-    g = cast_fit(g, img, fit)
-    # the model's pixels under the cards and UNDER_GROW px past them (the API grows the mask 8 px): the outline's
-    # mixed pixels and the backdrop under the cards' 2 px pad (cards.build) are background too, not the figure's edge
-    under = binary_dilation(foot, iterations=UNDER_GROW) & art
+    g = colour_transform(g, img, art & ~binary_dilation(mask, iterations=8))
+    # the model's pixels under the cards and their margin (outline, glow), then blended into the art over SEAM_GROW px
+    # past it: a hard switch left a visible seam around each patch (hidden_layers.plates_for)
+    under = (foot | margin(cards)) & art
     res = np.where(under[..., None], g, img.astype(np.float32))
     reach = max(abs(c["shift"]) + BAND_PAD for c in cards)
-    res = seam_match(img, res, under, page, reach).clip(0, 255).astype(np.uint8)
+    res = seam_match(img, res, under, page, reach)
+    a = np.clip(1 - edt(~under) / SEAM_GROW, 0, 1) * art
+    res = (res * a[..., None] + img.astype(np.float32) * (1 - a[..., None])).clip(0, 255).astype(np.uint8)
     Image.fromarray(res).save(out / "band-plate.png")
     return res
 
