@@ -36,9 +36,9 @@ def top_key(mask: np.ndarray) -> tuple[int, int]:
 
 
 def top_order(found: list) -> list:
-    """Masks top to bottom, then left to right: the saved order, so a mask's index (a bubble id, an Understand element
-    id) is the same in memory and on disk. episode.py sorted only on saving and gave Understand the unsorted list:
-    understand.json's ids pointed at other bubbles after a --from-masks re-run (133 of 329 bubbles, P&C 37-39)."""
+    """Masks top to bottom, then left to right: the saved order, so a mask's index (a bubble id, a Transcribe element
+    id) is the same in memory and on disk. episode.py sorted only on saving and gave Understand (Transcribe's
+    predecessor) the unsorted list: its ids pointed at other bubbles after a --from-masks re-run (133 of 329 bubbles, P&C 37-39)."""
     return sorted(found, key=lambda f: top_key(f.mask))
 
 

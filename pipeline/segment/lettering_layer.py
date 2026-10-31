@@ -1,10 +1,10 @@
 """Lettering as data. The lettering erased from the art comes back as one floating panel per element, at the same
 place: shape, colours and text size measured from the ORIGINAL pixels, and a depth just in front of whatever is behind
-it (place); cards.lettering_layers draws each as a card of the original bubble. Understand's text, kind and
-speaker are joined in by understood (at build, or afterwards with annotate).
+it (place); cards.lettering_layers draws each as a card of the original bubble. Transcribe's text and kind are
+joined in by transcribed (at build, or afterwards with annotate).
 
 build returns the box's bubbles.json (the caller saves it, boxstore.Box.save_bubbles):
-  {pid, w, h, fov, font, cap_ratio, bubbles: [{id, text, kind, speaker, anchor, bbox, shape, polygon, fill, outline,
+  {pid, w, h, fov, font, cap_ratio, bubbles: [{id, text, kind, bbox, shape, polygon, fill, outline,
    outline_px, text_colour, text_px, font_px, line_height, lines, text_box, text_area, uppercase, depth, placement}]}
 bbox, polygon, text_box in box px; text_area [cx, cy, max_w, max_h] is where the text is wrapped and centred (both
 renderers: greedy word wrap at max_w, shrink 5% at a time until the block fits max_h); depth is camera-space (the
@@ -177,33 +177,33 @@ def place(mask: np.ndarray, depth: np.ndarray, ok: np.ndarray, taken: np.ndarray
     return d_b, {"pop": round(pop, 3), "violations": int((nearer & (dist < need)).sum())}
 
 
-def understood(e: dict, kind: str | None) -> dict:
-    """A bubble's fields from Understand's element for it (e, {} when none), `kind` its kind so far: the text it read
-    (none when it dropped the element), its finer kind (speech, caption, shout) when it gave one, the speaker and
-    the anchor on the speaker. The one place these fields are joined into bubbles."""
+def transcribed(e: dict, kind: str | None) -> dict:
+    """A bubble's fields from Transcribe's element for it (e, {} when none), `kind` its kind so far: the text it read
+    (none when it dropped the element) and its finer kind (speech, caption, shout) when it gave one. The one place
+    these fields are joined into bubbles."""
     text = (e.get("text") or "") if e.get("keep", True) and e else ""
-    return {"text": text, "kind": e.get("kind") or kind, "speaker": e.get("speaker"), "anchor": e.get("anchor")}
+    return {"text": text, "kind": e.get("kind") or kind}
 
 
 def annotate(bubbles: dict, result: dict) -> dict:
-    """bubbles (lettering_layer.build's) with Understand's result for its box joined in (understood)."""
+    """bubbles (lettering_layer.build's) with Transcribe's result for its box joined in (transcribed)."""
     els = {int(e["id"]): e for e in (result or {}).get("elements", []) if "id" in e}
     for b in bubbles.get("bubbles", []):
         if b["id"] in els:
-            b.update(understood(els[b["id"]], b.get("kind")))
+            b.update(transcribed(els[b["id"]], b.get("kind")))
             b["uppercase"] = (not b["text"]) or b["text"] == b["text"].upper()
     return bubbles
 
 
-def build(pid: str, img, letter_masks: list[np.ndarray], understand_result: dict | None, depth: np.ndarray,
+def build(pid: str, img, letter_masks: list[np.ndarray], transcript: dict | None, depth: np.ndarray,
           kinds: list[str] | None = None, valid: np.ndarray | None = None) -> dict:
     """The box's bubbles.json (the caller saves it). img: the original box (RGB, lettering still in it).
-    letter_masks: per element, element k is understand's id k+1. depth: camera-space depth of the box (H x W).
+    letter_masks: per element, element k is Transcribe's id k+1. depth: camera-space depth of the box (H x W).
     valid: pixels with a real surface (not gutter); all when None. kinds: the segmenter's kind per mask, used when
-    understand has none."""
+    Transcribe has none."""
     img = np.asarray(img.convert("RGB")) if isinstance(img, Image.Image) else np.asarray(img)
     h, w = img.shape[:2]
-    els = {int(e["id"]): e for e in (understand_result or {}).get("elements", []) if "id" in e}
+    els = {int(e["id"]): e for e in (transcript or {}).get("elements", []) if "id" in e}
     ok = np.isfinite(depth) & (depth > 0) & (valid if valid is not None else True)
     bubbles = []
     f = focal(w, h)
@@ -221,8 +221,8 @@ def build(pid: str, img, letter_masks: list[np.ndarray], understand_result: dict
         x0, y0, x1, y1 = mm["bbox"]
         bw, bh = x1 - x0, y1 - y0
         rect = mm.pop("fill_share") > RECT_FILL
-        und = understood(els.get(k + 1, {}), kinds[k] if kinds and k < len(kinds) else None)
-        text = und["text"]
+        tr = transcribed(els.get(k + 1, {}), kinds[k] if kinds and k < len(kinds) else None)
+        text = tr["text"]
         # layout shared by both renderers: font from the measured cap height, text centred where the original was
         font_px = (mm["text_px"] / CAP_RATIO) if mm["text_px"] else max(10.0, 0.08 * min(bw, bh))
         lh = float(np.clip(mm["line_px"] / font_px, 1.0, 1.6)) if mm["line_px"] else 1.2
@@ -231,7 +231,7 @@ def build(pid: str, img, letter_masks: list[np.ndarray], understand_result: dict
         cx, cy = ((tb[0] + tb[2]) / 2, (tb[1] + tb[3]) / 2) if tb else ((x0 + x1) / 2, (y0 + y1) / 2)
         max_w = min(bw * inset, ((tb[2] - tb[0]) * 1.05) if tb else bw * inset)  # the original's line breaks
         bubbles.append({
-            "id": k + 1, **und,
+            "id": k + 1, **tr,
             "bbox": mm["bbox"], "shape": "rect" if rect else "ellipse", "polygon": _polygon(mask),
             "fill": mm["fill"], "outline": mm["outline"], "outline_px": mm["outline_px"], "text_colour": mm["text_colour"],
             "text_px": mm["text_px"], "font_px": round(font_px, 1), "line_height": round(lh, 3), "lines": mm["lines"],

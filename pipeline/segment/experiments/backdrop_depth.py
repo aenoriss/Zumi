@@ -51,7 +51,7 @@ def main():
     arg = sys.argv[sys.argv.index("--panels") + 1]
     picks = range(len(ch)) if arg == "all" else [int(v) for v in arg.split(",")]
     mono = DP.load()
-    und = ep.understanding()["panels"]
+    transcripts = ep.transcripts()
     seen = []
     order, relief = CD.order, CD.backdrop_relief
 
@@ -75,7 +75,7 @@ def main():
         if letters is None or chars is None or not (fr and fr.current):
             print(f"p{p}: no saved masks or no current frames, skipped")
             continue
-        episode.layers_step(ep, {p: ch.image(p)}, {p: letters}, {p: chars}, und,
+        episode.layers_step(ep, {p: ch.image(p)}, {p: letters}, {p: chars}, transcripts,
                             lambda rgb: DP.frame_infer(mono, rgb), objects=box.plate() is not None)
         img = np.asarray(ch.image(p))
         rows = []

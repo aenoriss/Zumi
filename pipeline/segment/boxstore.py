@@ -8,11 +8,11 @@ paths or formats.
     out/masks/<pid>-frames.npz                       the frame step's frames, which are flat, the page, and whether
                                                      the model answered (frames.split)
     out/parallax/mesh/<pid>.cards.json + PNGs        the flat layers (cards.layers) and the viewer's views
-    out/parallax/mesh/<pid>.bubbles.json             the lettering's placement (lettering_layer.build), Understand's
-                                                     text, kinds and speakers joined in (lettering_layer.annotate)
+    out/parallax/mesh/<pid>.bubbles.json             the lettering's placement (lettering_layer.build), Transcribe's
+                                                     text and kinds joined in (lettering_layer.annotate)
     out/parallax/mesh/<pid>.speakers.json            who speaks each bubble (speakers.run_box)
     out/parallax/plates/<pid>/                       the band erase's plate and paid outputs (band_erase.py)
-    out/understand.json                              Understand's results per box index and the episode's cast
+    out/transcripts.json                             Transcribe's results per box index
     out/run.json                                     the run log: each review's fixes and cost, each step's time
 
     ep = Episode(out, stem); box = ep.box(i); box.letters(); box.frames().page; box.cards()
@@ -56,7 +56,7 @@ class Frames:
         return self.page is not None and self.answered
 
 
-_UND: dict[Path, dict] = {}
+_TR: dict[Path, dict] = {}
 
 
 class Box:
@@ -192,7 +192,7 @@ class Box:
         return self.mesh / f"{self.pid}.bubbles.json"
 
     def bubbles(self) -> dict | None:
-        """bubbles.json: {pid, w, h, fov, font, cap_ratio, bubbles: [...]} (lettering_layer.build, with Understand's
+        """bubbles.json: {pid, w, h, fov, font, cap_ratio, bubbles: [...]} (lettering_layer.build, with Transcribe's
         fields joined in by lettering_layer.annotate)."""
         return json.loads(self.bubbles_file.read_text(encoding="utf-8")) if self.bubbles_file.exists() else None
 
@@ -225,14 +225,14 @@ class Box:
         self.plates.mkdir(parents=True, exist_ok=True)
         return self.plates / ("band-raw.npz" if frame is None else f"band-raw-f{frame}.npz")
 
-    # ---- Understand
-    def understanding(self) -> dict:
-        """This box's result in out/understand.json ({} when Understand has not run on it)."""
-        return load_understanding(self.out)["panels"].get(self.index, {})
+    # ---- Transcribe
+    def transcript(self) -> dict:
+        """This box's result in out/transcripts.json ({} when Transcribe has not run on it)."""
+        return load_transcripts(self.out).get(self.index, {})
 
 
 class Episode:
-    """An episode's out dir: its boxes (box(i)), Understand's results and the run log."""
+    """An episode's out dir: its boxes (box(i)), Transcribe's results and the run log."""
 
     def __init__(self, out: Path, stem: str):
         self.out, self.stem = Path(out), stem
@@ -240,11 +240,11 @@ class Episode:
     def box(self, i: int) -> Box:
         return Box(self.out, pid_of(self.stem, i))
 
-    def understanding(self) -> dict:
-        return load_understanding(self.out)
+    def transcripts(self) -> dict[int, dict]:
+        return load_transcripts(self.out)
 
-    def save_understanding(self, results: dict[int, dict], cast: list | None = None, drop=()) -> None:
-        save_understanding(self.out, results, cast, drop)
+    def save_transcripts(self, results: dict[int, dict], drop=()) -> None:
+        save_transcripts(self.out, results, drop)
 
     def save_run_log(self, review: dict, times: dict) -> None:
         """out/run.json, merged into the previous runs': each segmentation task's review per box ("p<i> <task>":
@@ -256,25 +256,25 @@ class Episode:
         f.write_text(json.dumps(d, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
 
 
-def _understanding_file(out: Path) -> Path:
-    return Path(out) / "understand.json"
+def _transcripts_file(out: Path) -> Path:
+    return Path(out) / "transcripts.json"
 
 
-def load_understanding(out: Path) -> dict:
-    """Understand's results for an episode: {"cast": [...], "panels": {box index: result}}; read once per file and
-    kept until save_understanding changes it."""
-    f = _understanding_file(out)
-    if f not in _UND:
+def load_transcripts(out: Path) -> dict[int, dict]:
+    """Transcribe's results for an episode, {box index: result} (the file: {"panels": {...}}); read once per file
+    and kept until save_transcripts changes it."""
+    f = _transcripts_file(out)
+    if f not in _TR:
         d = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-        _UND[f] = {"cast": d.get("cast", []), "panels": {int(k): v for k, v in d.get("panels", {}).items()}}
-    return _UND[f]
+        _TR[f] = {int(k): v for k, v in d.get("panels", {}).items()}
+    return _TR[f]
 
 
-def save_understanding(out: Path, results: dict[int, dict], cast: list | None = None, drop=()) -> None:
-    """Merged into understand.json: `results` replace those boxes' results, `drop` removes boxes' results (masks
-    segmented again: the element ids no longer match), `cast` replaces the cast when given."""
-    d = load_understanding(out)
-    panels = {k: v for k, v in d["panels"].items() if k not in set(drop)} | dict(results)
-    new = {"cast": d["cast"] if cast is None else cast, "panels": dict(sorted(panels.items()))}
-    _understanding_file(out).write_text(json.dumps(new, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
-    _UND[_understanding_file(out)] = new
+def save_transcripts(out: Path, results: dict[int, dict], drop=()) -> None:
+    """Merged into transcripts.json: `results` replace those boxes' results, `drop` removes boxes' results (masks
+    segmented again: the element ids no longer match)."""
+    panels = {k: v for k, v in load_transcripts(out).items() if k not in set(drop)} | dict(results)
+    panels = dict(sorted(panels.items()))
+    _transcripts_file(out).write_text(json.dumps({"panels": panels}, indent=1, ensure_ascii=False, default=str),
+                                      encoding="utf-8")
+    _TR[_transcripts_file(out)] = panels

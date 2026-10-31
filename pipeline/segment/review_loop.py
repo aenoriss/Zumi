@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_fill_holes
 
 from bubbles import dialogue_like, letter_shaped
@@ -33,7 +33,6 @@ from characters import clean
 from masks import Found
 from openrouter import BudgetExceeded, Truncated, ask_json, image_part
 from sam import THRESHOLD
-from understand import font
 
 REVIEW_MODEL, REVIEW_EFFORT = "anthropic/claude-haiku-5.5", "high"
 SMALL_FIGURE, DENSE = 0.02, 8  # 8+ character masks under 2% of the panel each: judged together as possible background
@@ -206,7 +205,7 @@ def marked(img: Image.Image, els: list[Found]) -> Image.Image:
         ys, xs = np.nonzero(e.mask)
         y, x = int(np.median(ys)), int(np.median(xs))
         d.rectangle([(x, y), (x + size * 1.4, y + size * 1.2)], fill=COLOURS[k % len(COLOURS)])
-        d.text((x + size * 0.2, y + size * 0.05), str(k + 1), fill=(255, 255, 255), font=font(size))
+        d.text((x + size * 0.2, y + size * 0.05), str(k + 1), fill=(255, 255, 255), font=ImageFont.load_default(size=size))
     return out
 
 

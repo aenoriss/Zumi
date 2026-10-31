@@ -50,7 +50,7 @@ def build(root: Path, zumis: list[Path]) -> None:
                 a = SP.assign(b, cards, frames)
                 recs.append({"id": b.id, "order": b.order, "kind": b.kind, "text": b.text, "frame": b.frame,
                              "outline": outline(b.mask), "tail_tip": b.tail_tip, "tail_dir": b.tail_dir,
-                             "anchor": b.anchor, "proposal": a})
+                             "proposal": a})
             boxes.append({"pid": pid, "episode": zp.stem, "w": w, "h": h, "img": f"boxes/{pid}.jpg",
                           "cards": [{"i": k, "key": c.key, "frame": c.frame, "outline": outline(c.mask)}
                                     for k, c in enumerate(cards)],

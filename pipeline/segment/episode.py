@@ -1,9 +1,9 @@
 """The episode pipeline: box breakdown, segmentation (each task with its review), the erase, the flat layers, then
-Understand. This script runs steps 2-5 on a chapter step 1 has cut; each step is a function of its own inputs, and
+Transcribe. This script runs steps 2-5 on a chapter step 1 has cut; each step is a function of its own inputs, and
 steps hand data to each other through what they save (boxstore.Box).
 
     uv run python episode.py <episode.zumi> <out dir> [--panels 10-15 | --panels 3,7,9] [--no-review]
-                             [--no-depth] [--no-layers] [--no-understand] [--from-masks]
+                             [--no-depth] [--no-layers] [--no-transcribe] [--from-masks]
 
 1. Box breakdown. The chapter is cut into boxes by intake (pipeline/zumi/intake, `zumi intake`: the strip stitched,
    gutters scanned, one box per panel, packed as a .zumi). Within each box, its frames and the page around them
@@ -25,13 +25,14 @@ steps hand data to each other through what they save (boxstore.Box).
 4. Flat layers (cards.layers): per frame the backdrop and one card per character and object, ordered by DA3MONO run
    on each frame alone, fixed steps between them; the lettering in front as cards of the original bubbles, placed
    by lettering_layer.py.
-5. Understand (understand.Reader, Llama 4 Maverick), last and optional: bubble text, kind and speaker in reading
-   order, saved to understand.json and joined into the layers' bubbles.json (the export's bubble text and speakers);
-   it moves nothing in the 3D. A fresh segmentation drops the old results of its boxes (their ids changed).
+5. Transcribe (transcribe.py, Llama 4 Maverick), last and optional: each bubble's text and kind, boxes in parallel,
+   saved to transcripts.json and joined into the layers' bubbles.json (the export's bubble text); it moves nothing
+   in the 3D and says nothing about speakers (speakers.py). A fresh segmentation drops the old results of its boxes
+   (their ids changed).
 
-Writes what boxstore.py lists (masks, frames and page, objects, layers, plates, understand.json), out/run.json (each
+Writes what boxstore.py lists (masks, frames and page, objects, layers, plates, transcripts.json), out/run.json (each
 review's fixes and cost, each step's time), out/step1-strip.png and out/sheets/<episode>-pNNN.png (panel |
-lettering | characters | Understand).
+lettering | characters | Transcribe).
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ from PIL import Image, ImageDraw
 
 import bubbles as B
 import characters as CH
-import understand as U
+import transcribe as T
 from boxstore import OBJECT_META_KEYS, Episode
 from chapter import Chapter
 from masks import Found, top_order, union
@@ -82,22 +83,22 @@ def strip_view(ch: Chapter, picks) -> Image.Image:
         y = p["strip"]["y"] - top
         canvas.paste(ch.image(i), (0, y))
         d.rectangle([(0, y), (p["size"]["w"] - 1, y + p["size"]["h"] - 1)], outline=(220, 0, 0), width=4)
-        d.text((w + 10, y + 10), f"panel {i}", fill=(220, 0, 0), font=U.font(22))
+        d.text((w + 10, y + 10), f"panel {i}", fill=(220, 0, 0), font=T.font(22))
     return canvas
 
 
-def sheet(img, letters, chars, understood, title) -> Image.Image:
+def sheet(img, letters, chars, transcribed, title) -> Image.Image:
     cols = [("1. panel", img), ("2. lettering", B.overlay(img, letters)), ("2. characters", CH.overlay(img, chars))]
-    if understood is not None:
-        cols.append(("3. understand", understood))
+    if transcribed is not None:
+        cols.append(("5. transcribe", transcribed))
     h = max(im.height for _, im in cols)
     out = Image.new("RGB", (sum(im.width + 20 for _, im in cols), h + 50), (255, 255, 255))
     d = ImageDraw.Draw(out)
-    d.text((6, 4), title, fill=(0, 0, 0), font=U.font(16))
+    d.text((6, 4), title, fill=(0, 0, 0), font=T.font(16))
     x = 0
     for name, im in cols:
         out.paste(im, (x, 50))
-        d.text((x + 6, 26), name, fill=(0, 0, 0), font=U.font(16))
+        d.text((x + 6, 26), name, fill=(0, 0, 0), font=T.font(16))
         x += im.width + 20
     return out
 
@@ -215,17 +216,17 @@ def objects_step(ep: Episode, seg: Segmenter | None, imgs: Imgs, chars: Masks, r
             print(f"p{i}: objects {[o['name'] + (' @ ' + o['on'] if o.get('on') else '') + (' [held]' if o.get('held') else '') + (' [front]' if o.get('front') else '') for o in per] or 'none'}{fixes}")
 
 
-def layers_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, und: dict, depth_fn,
+def layers_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, transcripts: dict, depth_fn,
                 objects: bool = True) -> None:
     """Step 4, the flat layers of every box (cards.layers) on the frames the frame step saved. objects: the saved
     objects as cards even without an erase plate (off when no erase is paid for: they stay painted on the art)."""
     import cards as CD
     for i, img in imgs.items():
         box = ep.box(i)
-        print(f"  {box.pid} layers: {CD.layers(box, img, letters[i], chars[i], und.get(i), depth_fn, objects)}")
+        print(f"  {box.pid} layers: {CD.layers(box, img, letters[i], chars[i], transcripts.get(i), depth_fn, objects)}")
 
 
-def erase_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, und: dict, erase: bool = True) -> None:
+def erase_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, transcripts: dict, erase: bool = True) -> None:
     """Steps 3-4: the band erase (band_erase.py) between two passes of the flat layers. Its masks come from the
     cards (their outlines, and how far each slides at a head move, which needs their depth), so a first layers pass
     lays the cards out on the art; band_erase then paints what is behind them, ONE FLUX Erase call per box (a box
@@ -240,7 +241,7 @@ def erase_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, und: dict,
     mono = DP.load()
     depth_fn = lambda rgb: DP.frame_infer(mono, rgb)  # noqa: E731
     print("  (first pass: the cards on the art)")
-    layers_step(ep, imgs, letters, chars, und, depth_fn, objects=erase)
+    layers_step(ep, imgs, letters, chars, transcripts, depth_fn, objects=erase)
     if not erase:
         return
     boxes = [(ep.box(i), np.asarray(imgs[i])) for i in imgs]
@@ -248,23 +249,18 @@ def erase_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, und: dict,
                    log=lambda s: print("  " + s.replace("\n", "\n  ")))
     torch.cuda.empty_cache()
     print("  (second pass: the cards on the erased plates)")
-    layers_step(ep, imgs, letters, chars, und, depth_fn, objects=erase)
+    layers_step(ep, imgs, letters, chars, transcripts, depth_fn, objects=erase)
 
 
-def understand_step(ep: Episode, imgs: Imgs, img_of, letters: Masks, layers: bool) -> dict:
-    """Step 5, Understand (understand.Reader) per box in reading order, saved (understand.json) and, when this run
-    built the layers, joined into them (cards.annotate: bubbles.json's text, kinds, speakers and the lettering cards'
-    names). Stops at the daily cap, keeping what it has. Returns the report picture per box."""
+def transcribe_step(ep: Episode, imgs: Imgs, letters: Masks, layers: bool) -> dict:
+    """Step 5, Transcribe (transcribe.read_boxes, boxes in parallel), saved (transcripts.json) and, when this run
+    built the layers, joined into them (cards.annotate: bubbles.json's text and kinds and the lettering cards'
+    names). A box the daily cap refuses is skipped; the others are kept. Returns the report picture per box."""
     import cards as CD
-    reader, results, pictures = U.Reader(), {}, {}
-    try:
-        for i, img in imgs.items():
-            if letters[i]:
-                results[i], pictures[i] = reader.read(img, [f.mask for f in letters[i]], [f.kind for f in letters[i]], i,
-                                                      f"{ep.stem} p{i}", img_of(i - 1) if i > 0 else None)
-    except BudgetExceeded as e:
-        print(f"STOP: {e}")
-    ep.save_understanding(results, reader.cast)
+    jobs = {i: (img, [f.mask for f in letters[i]], [f.kind for f in letters[i]], f"{ep.stem} p{i}")
+            for i, img in imgs.items() if letters[i]}
+    results, pictures = T.read_boxes(jobs)
+    ep.save_transcripts(results)
     if layers:
         for i, r in results.items():
             CD.annotate(ep.box(i), r)
@@ -278,15 +274,15 @@ def main() -> None:
     ap.add_argument("--panels", default="")
     ap.add_argument("--no-review", action="store_true")
     ap.add_argument("--no-depth", action="store_true",
-                    help="no erase and no layers: segmentation, then Understand (saved, not joined into older layers)")
+                    help="no erase and no layers: segmentation, then Transcribe (saved, not joined into older layers)")
     ap.add_argument("--no-layers", action="store_true",
                     help="skip step 3's paid erase (and the objects): the layers are still built, on the original art")
-    ap.add_argument("--no-understand", action="store_true",
-                    help="skip Understand (bubble text, kind, speaker): without it the exported bubbles have no text, "
+    ap.add_argument("--no-transcribe", action="store_true",
+                    help="skip Transcribe (bubble text and kind): without it the exported bubbles have no text, "
                          "so test runs of the 3D do without it")
     ap.add_argument("--from-masks", action="store_true",
-                    help="reuse the masks and Understand's results of an earlier run: objects, frames when not current, "
-                         "the erase and the layers (no SAM for lettering and characters, no Understand)")
+                    help="reuse the masks and Transcribe's results of an earlier run: objects, frames when not current, "
+                         "the erase and the layers (no SAM for lettering and characters, no Transcribe)")
     a = ap.parse_args()
     ch = Chapter(a.zumi)
     ep = Episode(a.out, ch.stem)
@@ -319,7 +315,7 @@ def main() -> None:
         stale = {i: imgs[i] for i in imgs if not ((f := ep.box(i).frames()) and f.current)}
         if stale:
             timed("1 frames", frames_step, ep, stale, letters)
-        timed("3 erase + 4 layers", erase_step, ep, imgs, letters, chars, ep.understanding()["panels"], erase)
+        timed("3 erase + 4 layers", erase_step, ep, imgs, letters, chars, ep.transcripts(), erase)
         ep.save_run_log(log, times)
         print({k: round(v, 1) for k, v in times.items()})
         return
@@ -341,7 +337,7 @@ def main() -> None:
         letters[i], chars[i] = top_order(letters[i]), top_order(chars[i])  # one numbering in memory and on disk
         ep.box(i).save_letters(letters[i])
         ep.box(i).save_characters(chars[i])
-    ep.save_understanding({}, drop=picks)  # new masks: the old results' element ids point at other bubbles
+    ep.save_transcripts({}, drop=picks)  # new masks: the old results' element ids point at other bubbles
     if not a.no_depth and erase:
         print("== 2c objects")
         timed("2c objects", objects_step, ep, seg, imgs, chars, not a.no_review, log)
@@ -355,10 +351,10 @@ def main() -> None:
         timed("3 erase + 4 layers", erase_step, ep, imgs, letters, chars, {}, erase)
         ep.save_run_log(log, times)
 
-    # 5. Understand, last and optional: joined into the layers this run built
-    print("== 5 understand" + (" (skipped)" if a.no_understand else ""))
-    if not a.no_understand:
-        pictures = timed("5 understand", understand_step, ep, imgs, ch.image, letters, not a.no_depth)
+    # 5. Transcribe, last and optional: joined into the layers this run built
+    print("== 5 transcribe" + (" (skipped)" if a.no_transcribe else ""))
+    if not a.no_transcribe:
+        pictures = timed("5 transcribe", transcribe_step, ep, imgs, letters, not a.no_depth)
     for i in picks:
         sheet(imgs[i], letters[i], chars[i], pictures.get(i), f"{ch.stem} panel {i}").save(a.out / "sheets" / f"{ch.pid(i)}.png")
     ep.save_run_log(log, times)

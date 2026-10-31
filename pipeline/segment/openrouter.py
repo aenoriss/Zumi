@@ -105,7 +105,7 @@ def chat(model: str, messages: list[dict], max_tokens: int = 2000, tag: str = ""
     """One chat completion; returns (text, usage). Raises BudgetExceeded before sending if the cap would break.
     max_tokens is the answer's budget; with reasoning, the one budget rule for every caller: REASONING_TOKENS[effort]
     more on top. brief: the model asked to be brief and to the point (BRIEF), off where the answer carries long text
-    the brevity line could shorten (Understand's transcriptions). A reply that spends the whole budget has no answer:
+    the brevity line could shorten (Transcribe's). A reply that spends the whole budget has no answer:
     usage["truncated"] is set, the ledger says so and a line is printed (callers read an empty answer as "nothing")."""
     if reasoning:
         max_tokens += REASONING_TOKENS[reasoning]

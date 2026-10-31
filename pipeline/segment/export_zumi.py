@@ -8,8 +8,8 @@ Per processed box the panel becomes renderMode "scene3d" with panels/<id>/scene.
              field of view from the 55 deg assumed on the long side (view.py); units are shares of the reading
              distance, the frames' windows at 1
 Unlit materials (KHR_materials_unlit): the art is already lit. Bubbles go into the manifest as the schema allows
-(id, text, kind, position = normalised centre, speakerId from Understand's cast, which is added to the manifest's,
-anchor = Understand's point on the speaker); their measured style and placement (shape, colours, font size, depth:
+(id, text, kind from Transcribe, position = normalised centre; who speaks is not exported yet); their measured
+style and placement (shape, colours, font size, depth:
 lettering_layer.py) go into panels/<id>/bubbles.style.json next to the scene, until the schema has them. The
 lettering is also in the scene, as cards of the original bubbles.
 The original flat layer stays as the panel's fallback.
@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from boxstore import Box, load_understanding, pid_of
+from boxstore import Box, pid_of
 from view import focal
 
 KIND = {"speech": "speech", "thought": "thought", "caption": "caption", "sfx": "shout", "shout": "shout"}
@@ -159,10 +159,6 @@ def main():
     zin = zipfile.ZipFile(src)
     man = json.loads(zin.read("manifest.json"))
     stem = src.stem
-    # Understand's cast, so the bubbles can name their speaker (speakerId: a cast id); the schema keeps id and name
-    known = {c.get("id") for c in man.setdefault("cast", [])}
-    man["cast"] += [{"id": c["id"], "name": c.get("name") or c["id"]} for c in load_understanding(ep_out)["cast"]
-                    if c.get("id") and c["id"] not in known]
     tmp = dst.parent / (dst.stem + "_build")
     tmp.mkdir(parents=True, exist_ok=True)
     added: dict[str, bytes] = {}
@@ -187,11 +183,6 @@ def main():
                          "position": {"x": round((x0 + x1) / 2 / W, 4), "y": round((y0 + y1) / 2 / H, 4)}}
                 if KIND.get(b.get("kind") or ""):
                     entry["kind"] = KIND[b["kind"]]
-                if b.get("speaker") and b.get("kind") not in ("caption", None) and any(
-                        c.get("id") == b["speaker"] for c in man.get("cast", [])):
-                    entry["speakerId"] = b["speaker"]
-                if b.get("anchor"):  # Understand's point on the speaker, 0..1 of the box
-                    entry["anchor"] = {"x": round(b["anchor"][0], 4), "y": round(b["anchor"][1], 4)}
                 p["bubbles"].append(entry)
             added[f"panels/{p['id']}/bubbles.style.json"] = box.bubbles_file.read_bytes()
         done += 1

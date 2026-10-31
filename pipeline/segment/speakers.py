@@ -6,7 +6,7 @@ Per bubble, from the box's flat layers (mesh/<pid>.cards.json, .bubbles.json) an
   frame     the frame its stack is read in (home_frame, on the frame step's frames)
   tail      the bubble's tail, if it has one: the part of the mask a large opening removes, its tip the point farthest
             from the bubble's body; the direction body -> tip points at the speaker
-  anchor    Understand's point on the speaker (bubbles.json), when Understand has run
+  kind      Transcribe's (bubbles.json): a caption goes to the narrator, a sound effect to nobody
 Candidates are every character card in the box (any frame, a penalty across frames). The rules (assign) are tuned on
 a labelled dataset (experiments/speaker_dataset.py, speaker_eval.py); what they leave undecided goes to an LLM with
 the candidates numbered (TODO). A logistic regression over the same features, scored leave-one-episode-out on the
@@ -70,8 +70,6 @@ class Bubble:
     centroid: tuple[float, float]
     tail_tip: tuple[float, float] | None = None
     tail_dir: tuple[float, float] | None = None
-    anchor: tuple[float, float] | None = None
-    understand: str | None = None
     order: int = 0
     feats: dict = field(default_factory=dict)
 
@@ -170,12 +168,12 @@ def load_box(box: Box) -> tuple[list[Card], list[Bubble], list[np.ndarray], tupl
     fr = box.frames()
     frames = fr.masks if fr else []  # flat frames (credits) included: their mascots speak, and those bubbles are labelled
     bub = {b["id"]: b for b in (box.bubbles() or {}).get("bubbles", [])}
-    # Understand's text, kind, speaker and anchor, joined as the layers join them (lettering_layer.understood): its
-    # element ids are the bubble ids
-    for e in box.understanding().get("elements", []):
+    # Transcribe's text and kind, joined as the layers join them (lettering_layer.transcribed): its element ids are
+    # the bubble ids
+    for e in box.transcript().get("elements", []):
         if "id" in e:
             b = bub.setdefault(int(e["id"]), {})
-            b.update(LL.understood(e, b.get("kind")))
+            b.update(LL.transcribed(e, b.get("kind")))
     cards, bubbles = [], []
     for l in cj["layers"]:
         if l["kind"] == "character":
@@ -185,9 +183,8 @@ def load_box(box: Box) -> tuple[list[Card], list[Bubble], list[np.ndarray], tupl
             m = box.layer_mask(l, (h, w))
             b = bub.get(l.get("bubble"), {})
             tip, dirn = tail(m)
-            anc = b.get("anchor")
             bubbles.append(Bubble(l.get("bubble", -1), l["png"], b.get("kind"), b.get("text", ""), m, None, _centroid(m),
-                                  tip, dirn, (anc[0] * w, anc[1] * h) if anc else None, b.get("speaker")))
+                                  tip, dirn))
     order_bubbles(bubbles, frames)  # also homes each bubble in its frame
     return cards, bubbles, frames, (w, h)
 
@@ -372,7 +369,7 @@ def as_groups(cards: list[Card]) -> tuple[list[Card], list[list[int]]]:
 
 def features(b: Bubble, cards: list[Card]) -> list[dict]:
     """Per candidate card: distance from the bubble (and from its tail tip), the tail's aim at it (cosine), same
-    frame, the anchor inside it."""
+    frame."""
     out = []
     for i, c in enumerate(cards):
         if not hasattr(c, "_dist"):  # the distance map to a card, once per box
@@ -389,9 +386,6 @@ def features(b: Bubble, cards: list[Card]) -> list[dict]:
             dd = np.hypot(dx, dy) + 1e-6
             cos = (dx * b.tail_dir[0] + dy * b.tail_dir[1]) / dd
             f["aim"] = float(np.percentile(cos, 95))
-        if b.anchor is not None:
-            ax, ay = int(min(max(b.anchor[0], 0), c.mask.shape[1] - 1)), int(min(max(b.anchor[1], 0), c.mask.shape[0] - 1))
-            f["anchor_dist"] = float(dist_c[ay, ax])
         out.append(f)
     return out
 
@@ -419,7 +413,7 @@ def _assign(b: Bubble, cards: list[Card], frames: list[np.ndarray]) -> dict:
     card (-7 to -19), chorus by touching cards (+1/-2), off-panel when no card is aimed (-6: the tail's direction is
     wrong on spiky shouts), Understand's speaker anchor as arbiter (0/40 against the tail)."""
     # a balloon of punctuation alone ("!!!", "???", "...") WITH a tail is a character's reaction, not a sound effect,
-    # whatever Understand called it (8 of 8 in P&C 36-39, all tailed); without a tail it stays lettering
+    # whatever Transcribe called it (8 of 8 in P&C 36-39, all tailed); without a tail it stays lettering
     reaction = b.tail_tip is not None and re.fullmatch(r"[!?.… ]+", (b.text or "").strip() or "x") is not None
     if b.kind in SFX and not reaction:
         return {"speakers": [], "speaker_kind": "sfx", "confidence": 0.9, "rule": "kind_sfx"}

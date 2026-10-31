@@ -2,7 +2,7 @@
 model only orders them. A depth-based surface before it failed: on close-ups DA3MONO gave a ramp with no figure in
 it, and where it worked the surface came out as 1-3 M points for what reads as a few planes.
 
-    layers(box, img, letters, chars, und, depth_fn)    one box, from what the earlier steps saved (boxstore.Box)
+    layers(box, img, letters, chars, transcript, depth_fn)    one box, from what the earlier steps saved (boxstore.Box)
 
 Per frame of the box (the frame step's, frames.split):
   backdrop    the erased plate (characters, lettering and, when erased, the chosen objects removed), alpha = the frame
@@ -203,13 +203,13 @@ def lettering_layers(box, img: np.ndarray, letter_masks: list[np.ndarray], bubbl
 
 
 def lettering_name(b: dict) -> str:
-    """A lettering card's name: its bubble's text (shortened), or "lettering <id>" before Understand read it."""
+    """A lettering card's name: its bubble's text (shortened), or "lettering <id>" before Transcribe read it."""
     text = (b.get("text") or "").strip()
     return (text[:24] + "…") if len(text) > 24 else (text or f"lettering {b['id']}")
 
 
 def annotate(box, result: dict) -> None:
-    """Understand's result for a box joined into its built layers: bubbles.json's text, kinds, speakers and anchors
+    """Transcribe's result for a box joined into its built layers: bubbles.json's text and kinds
     (lettering_layer.annotate) and the lettering cards' names. Nothing when the box has no layers."""
     import lettering_layer as LL
     bj, cj = box.bubbles(), box.cards()
@@ -632,7 +632,8 @@ def _scene(box, img: np.ndarray, chars: list[np.ndarray], objects: list[dict], p
 LETTERING_GROW = 10  # px the lettering is grown where it is taken out of the depth image and the backdrop
 
 
-def layers(box, img: Image.Image, letters: list, chars: list, und: dict | None, depth_fn, objects: bool = True) -> dict:
+def layers(box, img: Image.Image, letters: list, chars: list, transcript: dict | None, depth_fn,
+           objects: bool = True) -> dict:
     """The flat layers of one box (boxstore.Box), its frames and page from the frame step: per frame the backdrop
     and one card per character and object, ordered by depth_fn (rgb crop -> depth, DA3MONO) on each frame alone,
     then the original bubbles as cards in front, placed by lettering_layer. The backdrop is the box's band-erase plate
@@ -668,7 +669,7 @@ def layers(box, img: Image.Image, letters: list, chars: list, und: dict | None, 
     if letters:
         # placement (depth clear of the layers) from lettering_layer; what is drawn is the original bubble, cut from
         # the art (lettering_layers)
-        bub = LL.build(box.pid, img, [e.mask for e in letters], und, D, kinds=[e.kind for e in letters], valid=~g)
+        bub = LL.build(box.pid, img, [e.mask for e in letters], transcript, D, kinds=[e.kind for e in letters], valid=~g)
         box.save_bubbles(bub)
         lets = lettering_layers(box, rgb, [e.mask for e in letters], bub, n)
         cj["layers"] = scene + lets
