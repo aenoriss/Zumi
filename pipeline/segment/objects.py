@@ -2,7 +2,7 @@
 prompted with the name (square tiles, as characters.py) and the mask that contains the point, best score first, is kept.
 The point is the model's way of saying "this one": text prompts alone also returned floors and walls.
 
-    python objects.py <image.png> <objects.json> <out.npz>
+    python objects.py <image.png> <objects.json> <out.npz>   (masks.save_masks: kind "object", the name kept)
 """
 from __future__ import annotations
 
@@ -11,23 +11,16 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
-import torch
 from PIL import Image
 from scipy.ndimage import distance_transform_edt
 
-from bubbles import CKPT, tiles
-from characters import Sam3Processor, build_sam3_image_model, tile_masks
+from masks import Found, save_masks
+from sam import THRESHOLD, Segmenter, tiles
 
-THR = 0.2
 NEAR_PX = 80  # a point this close to a mask still picks it: the model reads points off a 100 px grid, and on small
               # objects they missed by more than 12 px (vase, teapot, plate on ToG 228 p6, all found by SAM at 0.88-0.93);
               # a mask holding the point still wins
-
-
-def load_processor() -> Sam3Processor:
-    return Sam3Processor(build_sam3_image_model(checkpoint_path=str(CKPT), load_from_HF=False), confidence_threshold=THR)
 
 
 def sam_name(name: str) -> str:
@@ -56,41 +49,39 @@ def alt_names(name: str) -> list[str]:
     return [x for x in dict.fromkeys(out) if x != n][:MAX_ALT]
 
 
-def masks_for_objects(proc, img: Image.Image, objs: list[dict], log=print, _retry: bool = True) -> tuple[np.ndarray, list[dict]]:
-    """(union of the objects' masks, [{"name", "point", "mask", "score"} per object found]). proc: a Sam3Processor, or
-    None to load one here. An object whose point lies in no mask of its name (or within NEAR_PX of one) is left out."""
+def masks_for_objects(seg: Segmenter, img: Image.Image, objs: list[dict], log=print, _retry: bool = True) -> tuple[np.ndarray, list[dict]]:
+    """(union of the objects' masks, [{"name", "point", "mask", "score"} per object found]). An object whose point
+    lies in no mask of its name (or within NEAR_PX of one) is left out."""
     img = img.convert("RGB")
     w, h = img.size
     union = np.zeros((h, w), bool)
     if not objs:
         return union, []
-    proc = proc or load_processor()
     found = [[] for _ in objs]  # (inside, distance, score, mask) per candidate
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        for top in tiles(h, w):
-            tile = img.crop((0, top, w, min(h, top + w)))
-            todo = [k for k, o in enumerate(objs) if top <= o["point"][1] < top + tile.height]
-            if not todo:
-                continue
-            base = proc.set_image(tile)
-            for k in todo:
-                x, y = (int(round(v)) for v in objs[k]["point"])
-                x, y = min(max(x, 0), w - 1), min(max(y, 0), h - 1)
-                for m, s in tile_masks(proc, base, sam_name(objs[k]["name"]), THR, tile):
-                    if m[y - top, x]:
-                        d = 0.0
-                    else:
-                        r0, r1 = max(0, y - top - NEAR_PX), y - top + NEAR_PX + 1
-                        c0, c1 = max(0, x - NEAR_PX), x + NEAR_PX + 1
-                        win = m[r0:r1, c0:c1]
-                        if not win.any():
-                            continue
-                        d = float(distance_transform_edt(~win)[y - top - r0, x - c0])
-                        if d > NEAR_PX:
-                            continue
-                    full = np.zeros((h, w), bool)
-                    full[top:top + m.shape[0]] = m
-                    found[k].append((d == 0, -d, s, full))
+    for top in tiles(h, w):
+        tile = img.crop((0, top, w, min(h, top + w)))
+        todo = [k for k, o in enumerate(objs) if top <= o["point"][1] < top + tile.height]
+        if not todo:
+            continue
+        # every instance SAM returns (its floor, sam.THRESHOLD): the point decides, not the score
+        for k, hits in zip(todo, seg.instances(tile, [(sam_name(objs[k]["name"]), THRESHOLD) for k in todo])):
+            x, y = (int(round(v)) for v in objs[k]["point"])
+            x, y = min(max(x, 0), w - 1), min(max(y, 0), h - 1)
+            for m, s in hits:
+                if m[y - top, x]:
+                    d = 0.0
+                else:
+                    r0, r1 = max(0, y - top - NEAR_PX), y - top + NEAR_PX + 1
+                    c0, c1 = max(0, x - NEAR_PX), x + NEAR_PX + 1
+                    win = m[r0:r1, c0:c1]
+                    if not win.any():
+                        continue
+                    d = float(distance_transform_edt(~win)[y - top - r0, x - c0])
+                    if d > NEAR_PX:
+                        continue
+                full = np.zeros((h, w), bool)
+                full[top:top + m.shape[0]] = m
+                found[k].append((d == 0, -d, s, full))
     # a name SAM finds nothing for at the point gets other names, in order: the head noun alone ("bar counter" ->
     # "counter"), then SYNONYMS of it (P&C 39 p1: no mask for "broom", the brooms found as "broomstick" at 0.62)
     for _ in range(MAX_ALT if _retry else 0):
@@ -100,7 +91,7 @@ def masks_for_objects(proc, img: Image.Image, objs: list[dict], log=print, _retr
         for o in retry:
             o.setdefault("_alts", alt_names(o["name"]))
         alt = [{**o, "name": o["_alts"].pop(0)} for o in retry]
-        _, again = masks_for_objects(proc, img, alt, log=lambda s: None, _retry=False)
+        _, again = masks_for_objects(seg, img, alt, log=lambda s: None, _retry=False)
         for o, a in zip(retry, alt):
             hit = next((g for g in again if g["name"] == a["name"] and g["point"] == o["point"]), None)
             if hit:
@@ -127,8 +118,8 @@ def masks_for_objects(proc, img: Image.Image, objs: list[dict], log=print, _retr
 def main():
     img = Image.open(sys.argv[1]).convert("RGB")
     objs = json.loads(Path(sys.argv[2]).read_text())
-    _, per = masks_for_objects(None, img, objs)
-    np.savez_compressed(sys.argv[3], masks=np.array([p["mask"] for p in per]), names=np.array([p["name"] for p in per]))
+    _, per = masks_for_objects(Segmenter(), img, objs)
+    save_masks(Path(sys.argv[3]), [Found(p["mask"], p["score"], "object", p["name"]) for p in per])
 
 
 if __name__ == "__main__":

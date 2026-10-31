@@ -1,8 +1,10 @@
-"""Steps 4-5 as flat layers (user, 2026-10-25): each box is a few textured rectangles facing the camera, and the depth
-model only orders them. It replaced the depth-based surface (legacy_mesh.py): on close-ups DA3MONO gave a ramp with
-no figure in it, and where it worked the surface came out as 1-3 M points for what reads as a few planes.
+"""Step 4, the flat layers (user, 2026-10-25): each box is a few textured rectangles facing the camera, and the depth
+model only orders them. A depth-based surface before it failed: on close-ups DA3MONO gave a ramp with no figure in
+it, and where it worked the surface came out as 1-3 M points for what reads as a few planes.
 
-Per frame of the box (frames.py):
+    layers(box, img, letters, chars, und, depth_fn)    one box, from what the earlier steps saved (boxstore.Box)
+
+Per frame of the box (the frame step's, frames.split):
   backdrop    the erased plate (characters, lettering and, when erased, the chosen objects removed), alpha = the frame
   cards       one per character and per erased object: the original art, alpha = its mask (with its fringe of
               outline ink, claim_fringe) feathered FEATHER px
@@ -12,24 +14,23 @@ farther level STEP beyond, the backdrop at least BACKDROP_Z deep. DA3MONO, run o
 cards within TIE share a level) and shapes their relief.
 A character the erase did not reach (refused, or the daily cap) is still a card, its copy left in the backdrop: a
 doubled outline at a head move instead of a hole. The lettering is erased from the backdrop and comes back as cards of the
-original bubbles (add_lettering), at the depth lettering_layer.place gives each.
+original bubbles (lettering_layers), at the depth lettering_layer.place gives each.
 
 Writes mesh/<pid>.cards.json ({w, h, fov, layers: [{png, bbox, z, kind, name}]}, far to near), mesh/<pid>.card-N.png
-(each cropped to its bbox) and mesh/<pid>.json (size and fov, as the viewer and export_zumi.py read it).
+(each cropped to its bbox) and mesh/<pid>.json (size and fov, as the browser viewer reads it).
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-FOV = 55.0
+from view import FOV, WINDOW_Z, focal
+
 # Depths (user, 2026-10-26: the headset values of docs/research/relief-depth-budget-2026-10.md, which replaced the
 # desktop tuning: 2% steps were under 2 px of stereo at 1.5 m) are shares of d, the reading distance, where every
-# frame's window stands (WINDOW_Z); everything lies behind it. The depth model only orders the cards.
-WINDOW_Z = 1.0
+# frame's window stands (view.WINDOW_Z); everything lies behind it. The depth model only orders the cards.
 NEAR_GAP = 0.005  # the nearest card's relief peak this far behind the window ("just behind the front of the window")
 BACKDROP_Z = 1.20 # every frame's backdrop at least this deep (20% of d: 30 cm at 1.5 m), farther when the cards need it
 BACKDROP_MAX = 1.25
@@ -38,6 +39,7 @@ STEP = 0.04       # between card levels (6 cm at 1.5 m, ~2 px of stereo), squeez
 STEP_MIN = 0.025
 MAX_STEPS = 4     # card levels per frame
 PART_MIN = 50     # px a mask must have inside a frame to be a card there
+MIN_FRAME_PX = 1000  # px: a smaller frame gets no layers (frames.TEXT_MIN keeps text frames at least this big)
 MARGIN = 0.06     # share of the box's long side each backdrop runs past its frame (backdrop_image): the frame is a window
                   # in front of everything, and a head move must not look past the backdrop (a backdrop at 1.4 shifts
                   # ~66 px of a 1200 px box against the window at a 30 cm head move at 1.5 m)
@@ -56,28 +58,21 @@ BACK_RELIEF = 0.13   # the backdrop's relief in units of d, its tilt kept (a flo
 BACK_MIN_SHARE = 0.35   # ... the background (the frame minus the cards) at least this share of the frame
 BACK_MIN_SPREAD = 0.5   # ... and its depth spread (2-98th pct) at least this share of the whole frame's
 BACKDROP_RELIEF_MAX = 1.38  # a backdrop with relief may go this deep, so its near part stays behind the cards
-HEAD_MOVE = 0.2 / 1.5   # the head move a backdrop's breaks are judged at: 20 cm at 1.5 m, in units of d
-BREAK_STRETCH = 0.30    # backdrop_layers: a pixel whose texture stretches more than this at HEAD_MOVE is steep
-BREAK_MIN_STEEP = 0.01  # ... a backdrop breaks only when this share of its frame is steep
-BREAK_VALLEY = 0.5      # ... at a valley of its relief histogram under this share of the lower peak beside it
-MAX_BREAKS = 0          # ... into at most this + 1 layers; off (user, 2026-10-26: with breaks, 2 then the backdrop
-                        # still "heavily deforming"; backed off to the plain relief)
 BACK_CELL = 8        # px of the box between the vertices of a backdrop's relief surface ("relief_cell"): at 24 per side
                      # the cells were 35-66 px (median 35 on P&C 39) and the depth's detail never reached the screen
-BACK_EQUALIZE = 0.5  # kept when the detail boost and the breaks were backed off (user, 2026-10-26). The backdrop's
-                     # relief blended this much with its histogram-equalised self (same order, values
+BACK_EQUALIZE = 0.5  # the backdrop's relief blended this much with its histogram-equalised self (same order, values
                      # spread evenly over the range): on a street with sky (P&C 39 p2) the middle half of the pixels
-                     # held 15% of the range, the sky and the nearest wall the ends (median over 44 backdrops 36%)
-BACK_DETAIL = 0.0    # off (user, 2026-10-26: backed off, the backdrop bent at head moves; was 1.0). The backdrop depth's local detail (what an edge-preserving smoothing over BACK_BASE of the frame's
-BACK_BASE = 0.05     # long side removes) is boosted by this much (1.0: doubled) before the relief is normalised: more
-                     # depth contrast between neighbouring things (a cupboard off its wall) for the same total range
-                     # (user, 2026-10-26); edge-preserving, so a depth jump does not grow a halo. Scaled per pixel by
-                     # how drawn the art is there (drawn): the full boost on windows and furniture, none on a plain wall
+                     # held 15% of the range, the sky and the nearest wall the ends (median over 44 backdrops 36%).
+                     # A detail boost and breaks at depth edges were tried on the backdrop and backed off (user,
+                     # 2026-10-26: it bent and "heavily deformed" at head moves)
+BACK_BASE = 0.05     # relief_map: a card's depth detail is what an edge-preserving smoothing over this share of its
+                     # long side removes
 DRAWN_BLUR = 0.01    # drawn(): the edge strength blurred over this share of the long side
 DRAWN_PCT = 80       # drawn(): ... and divided by this percentile of it in the frame (above it: full boost)
 BACK_BLUR = 0.003    # the backdrop's depth blurred by this share of its frame's long side before it becomes relief
 RELIEF_CELL = 8   # px between the vertices of a character or object card's relief surface ("relief_cell")
-RELIEF_DETAIL = 1.0    # a card's relief: detail boost where drawn, as BACK_DETAIL (relief_map)
+RELIEF_DETAIL = 1.0    # a card's relief: its depth detail boosted this much (1.0: doubled) where the art is drawn
+                       # (relief_map): more depth contrast between neighbouring parts for the same total range
 RELIEF_EQUALIZE = 0.5  # ... and blend with its histogram-equalised self over the mask, as BACK_EQUALIZE
 RELIEF_EDGE = 6   # px over which the relief fades to 0 at the card's outline
 MERGE_TIE = 0.10  # an object touching a character whose median depth is within this share of the frame's depth spread
@@ -155,19 +150,41 @@ def join_held(chars: list[np.ndarray], objects: list[dict]) -> tuple[list[np.nda
     return chars, rest
 
 
+FRINGE_PX = 12    # px outside a character mask searched for its missed fringe (claim_fringe)
+
+
+def claim_fringe(img: Image.Image, chars: np.ndarray, g: np.ndarray, reach: int = FRINGE_PX) -> np.ndarray:
+    """The character's fringe the mask missed: hair strands, a robe's edge or hem. Within `reach` px outside the mask,
+    a pixel whose colour (CIELAB) is closer to the nearest character pixel than to the nearest clear background pixel
+    belongs to the character. Left out, those pixels took the floor's depth with the character's colour, and showed as
+    a spray of green and white specks behind him from the side (pin 261025-182210: 5973 px on ToG 228 p6)."""
+    import cv2
+    from scipy.ndimage import binary_dilation, distance_transform_edt
+    if not chars.any():
+        return np.zeros_like(chars)
+    a = cv2.cvtColor(np.asarray(img.convert("RGB")), cv2.COLOR_RGB2LAB).astype(np.float32)
+    near = binary_dilation(chars, iterations=reach)
+    ring = near & ~chars & ~g
+    clear = ~near & ~g
+    if not clear.any():
+        return np.zeros_like(chars)
+    _, (iy, ix) = distance_transform_edt(~chars, return_indices=True)
+    _, (by, bx) = distance_transform_edt(~clear, return_indices=True)
+    to_char = np.linalg.norm(a - a[iy, ix], axis=-1)
+    to_bg = np.linalg.norm(a - a[by, bx], axis=-1)
+    return ring & (to_char < to_bg)
+
+
 LETTER_GROW = 3   # px around a bubble's mask kept on its card: its drawn outline sits just outside the mask
 
 
-def add_lettering(pid: str, img: np.ndarray, letter_masks: list[np.ndarray], bubbles: dict, mesh_dir: Path) -> int:
+def lettering_layers(box, img: np.ndarray, letter_masks: list[np.ndarray], bubbles: dict, n: int) -> list[dict]:
     """The lettering as cards of the ORIGINAL art (user, 2026-10-25: the redrawn bubbles looked off): each bubble's
     pixels, alpha = its mask grown LETTER_GROW px and feathered, at the depth lettering_layer.place chose for it
-    (just in front of whatever is behind it). Appended to mesh/<pid>.cards.json, nearest last. Returns the count."""
+    (just in front of whatever is behind it). Their PNGs numbered from n, after the scene's cards; the layers far to
+    near, to go after the scene's."""
     import cv2
     from scipy.ndimage import binary_dilation
-    cj = mesh_dir / f"{pid}.cards.json"
-    c = json.loads(cj.read_text())
-    c["layers"] = [l for l in c["layers"] if l["kind"] != "lettering"]
-    n = 1 + max((int(l["png"].rsplit("-", 1)[1].split(".")[0]) for l in c["layers"]), default=-1)
     added = []
     for b in bubbles.get("bubbles", []):
         k = b["id"] - 1
@@ -176,29 +193,45 @@ def add_lettering(pid: str, img: np.ndarray, letter_masks: list[np.ndarray], bub
         m = binary_dilation(letter_masks[k], iterations=LETTER_GROW)
         alpha = cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER) if FEATHER else m.astype(np.float32)
         bb = _bbox(m, PAD)
-        png = f"{pid}.card-{n}.png"
-        _rgba(img, alpha, bb).save(mesh_dir / png)
-        text = (b.get("text") or "").strip()
+        png = box.card(n)
+        box.save_image(png, _rgba(img, alpha, bb))
         # "bubble": its id in <pid>.bubbles.json (text, kind, outline) and in the lettering masks (id - 1)
         added.append({"png": png, "bbox": bb, "z": b["depth"], "kind": "lettering", "bubble": b["id"],
-                      "name": (text[:24] + "…") if len(text) > 24 else (text or f"lettering {b['id']}")})
+                      "name": lettering_name(b)})
         n += 1
-    c["layers"] += sorted(added, key=lambda l: -l["z"])  # far to near among themselves, after the scene
-    cj.write_text(json.dumps(c, indent=1))
-    return len(added)
+    return sorted(added, key=lambda l: -l["z"])  # far to near among themselves
 
 
-def order(M: np.ndarray, masks: list[np.ndarray], area: np.ndarray, behind: list[tuple[int, int]] = (),
-          Mo: np.ndarray | None = None) -> list[int]:
-    """The level of each mask, 0 = nearest (at most MAX_STEPS levels): M (or Mo, a second depth, when given) only
-    ORDERS the cards, depths() spaces the levels. Cards whose median
-    depths differ by less than TIE of the frame's depth spread share a step. behind: pairs (i, j) where mask i must be
-    farther than mask j (an object the picker put behind the character it touches: the armchair's visible slivers
-    around a seated man read nearer than him in DA3METRIC, ToG 228 p6)."""
-    Mo = M if Mo is None else Mo
-    lo, hi = np.percentile(Mo[area], [2, 98])
+def lettering_name(b: dict) -> str:
+    """A lettering card's name: its bubble's text (shortened), or "lettering <id>" before Understand read it."""
+    text = (b.get("text") or "").strip()
+    return (text[:24] + "…") if len(text) > 24 else (text or f"lettering {b['id']}")
+
+
+def annotate(box, result: dict) -> None:
+    """Understand's result for a box joined into its built layers: bubbles.json's text, kinds, speakers and anchors
+    (lettering_layer.annotate) and the lettering cards' names. Nothing when the box has no layers."""
+    import lettering_layer as LL
+    bj, cj = box.bubbles(), box.cards()
+    if bj is None or cj is None:
+        return
+    bj = LL.annotate(bj, result)
+    box.save_bubbles(bj)
+    by_id = {b["id"]: b for b in bj["bubbles"]}
+    for l in cj["layers"]:
+        if l["kind"] == "lettering" and l.get("bubble") in by_id:
+            l["name"] = lettering_name(by_id[l["bubble"]])
+    box.save_cards(cj)
+
+
+def order(M: np.ndarray, masks: list[np.ndarray], area: np.ndarray, behind: list[tuple[int, int]] = ()) -> list[int]:
+    """The level of each mask, 0 = nearest (at most MAX_STEPS levels): M only ORDERS the cards, depths() spaces the
+    levels. Cards whose median depths differ by less than TIE of the frame's depth spread share a step. behind: pairs
+    (i, j) where mask i must be farther than mask j (an object the picker put behind the character it touches: the
+    armchair's visible slivers around a seated man read nearer than him in DA3METRIC, ToG 228 p6)."""
+    lo, hi = np.percentile(M[area], [2, 98])
     tie = TIE * max(float(hi - lo), 1e-6)
-    meds = [float(np.median(Mo[m])) for m in masks]
+    meds = [float(np.median(M[m])) for m in masks]
     for _ in range(len(masks)):  # push each constrained mask just past the one it must be behind, until none moves
         moved = False
         for i, j in behind:
@@ -307,19 +340,23 @@ def padded(a: np.ndarray, bb, fill=0) -> np.ndarray:
     return out
 
 
-def backdrop_image(rgb: np.ndarray, area: np.ndarray, m: int, inset: int = 0) -> tuple[Image.Image, tuple, Image.Image, tuple]:
+def backdrop_image(rgb: np.ndarray, area: np.ndarray, m: int, inset: int = 0,
+                   own: np.ndarray | None = None) -> tuple[Image.Image, tuple, Image.Image, tuple]:
     """(backdrop RGBA, its box, window RGBA, its box). The backdrop runs m px past its frame, so a head move through
     the window in front never looks past it: each pixel out there takes the colour of the frame pixel mirrored across
     the nearest edge point (the nearest frame pixel itself where the mirror falls outside the frame). The nearest
     frame pixel's colour alone streaked the edge outward, and with the backdrop 20-38% behind the window a head move
     showed the streaks (user, 2026-10-26); the reader stretching the texture's edge made a vignette's brush stroke at
     its box edge a line (P&C 39 p5). The window is the frame's shape cut inset px inside it (alpha), on the frame's
-    box."""
+    box. own (optional, within area): the pixels the margin is mirrored from, when not the whole frame: a frame
+    keeps the page inside its box, and a gutter sliver along its edge mirrored outward was what a head move showed
+    past the window (the frames audit, 2026-10-30: frames with over 10% page in that ring, 38 -> 19 of 208)."""
     from scipy.ndimage import distance_transform_edt
     fb = _bbox(area, 0)
     eb = (fb[0] - m, fb[1] - m, fb[2] + m, fb[3] + m)
     a = padded(area, eb, False)
-    col, dist = mirror_fill(padded(rgb, eb, 0), a)
+    src = padded(own, eb, False) if own is not None and own.any() else a
+    col, dist = mirror_fill(padded(rgb, eb, 0), src)
     alpha = (dist <= m).astype(np.uint8) * 255
     back = Image.fromarray(np.dstack([col, alpha]), "RGBA")
     inner = distance_transform_edt(a)[m:m + fb[3] - fb[1], m:m + fb[2] - fb[0]] > inset
@@ -338,13 +375,12 @@ def mirror_fill(rgb: np.ndarray, own: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return np.where(own[ry, rx][..., None], rgb[ry, rx], rgb[iy, ix]), dist
 
 
-def backdrop_relief(area: np.ndarray, Mb: np.ndarray, eb, rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The backdrop's relief over its box eb (the frame and its margin), at full resolution: Mb is DA3MONO on the
-    backdrop itself (rgb), the erased plate under the cards, so it is the
-    background's depth there and not a fill; in the margin the depth of the nearest frame pixel. Its tilt kept (a
-    floor recedes), normalised over the frame (2nd-98th percentile), white = nearest. A nearest-background fill under
-    the cards on the original's depth left flat plateaus in the characters' shapes (P&C 39 p5). Returns (relief,
-    the relief before the even spread: its histogram keeps the valleys backdrop_layers splits at), 0..1 floats."""
+def backdrop_relief(area: np.ndarray, Mb: np.ndarray, eb) -> np.ndarray:
+    """The backdrop's relief over its box eb (the frame and its margin), at full resolution, 0..1 float, white =
+    nearest: Mb is DA3MONO on the backdrop itself, the erased plate under the cards, so it is the background's depth
+    there and not a fill; in the margin the depth of the nearest frame pixel. Its tilt kept (a floor recedes),
+    normalised over the frame (2nd-98th percentile), then spread (BACK_EQUALIZE). A nearest-background fill under the
+    cards on the original's depth left flat plateaus in the characters' shapes (P&C 39 p5)."""
     import cv2
     from scipy.ndimage import distance_transform_edt
     a = padded(area, eb, False)
@@ -352,64 +388,11 @@ def backdrop_relief(area: np.ndarray, Mb: np.ndarray, eb, rgb: np.ndarray) -> tu
     d = padded(Mb.astype(np.float32), eb, 0)[iy, ix]
     d = cv2.GaussianBlur(d, (0, 0), max(0.5, BACK_BLUR * max(d.shape)))
     norm = lambda v: (v - np.percentile(v[a], 2)) / max(float(np.subtract(*np.percentile(v[a], [98, 2]))), 1e-6)
-    h = norm(-d).astype(np.float32)
-    if BACK_DETAIL:  # depth contrast: the detail over an edge-preserving base boosted where the art is drawn
-        base = guided_filter(h, h, max(2, round(BACK_BASE * max(d.shape))), 0.01)
-        h = norm(base + (1 + BACK_DETAIL * drawn(padded(rgb, eb, 0)[iy, ix], a)) * (h - base))
-    h = pre = np.clip(h, 0, 1)
+    h = np.clip(norm(-d).astype(np.float32), 0, 1)
     if BACK_EQUALIZE:  # each value's rank among the frame's pixels: an even spread, the order kept
         ranks = np.sort(h[a][:: max(1, int(a.sum()) // 200000)])
         h = (1 - BACK_EQUALIZE) * h + BACK_EQUALIZE * np.interp(h, ranks, np.linspace(0, 1, len(ranks)))
-    return h.astype(np.float32), pre.astype(np.float32)
-
-
-def backdrop_layers(h: np.ndarray, pre: np.ndarray, a: np.ndarray, rgb: np.ndarray,
-                    stretch: float) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    """The backdrop broken at its big depth edges (user, 2026-10-26): as one surface, a roof against the sky or a
-    cupboard against its wall was a steep ramp whose texture stretched at a head move (over 30% on 5-7% of P&C 39 p2,
-    p4, p28). h: the relief over the backdrop's box, pre: before the even spread, a: the frame on that box, rgb: the
-    backdrop's colours there, stretch: the texture stretch at a HEAD_MOVE per unit of relief slope (per px).
-
-    Where over BREAK_MIN_STEEP of the frame stretches more than BREAK_STRETCH, the relief values are cut at up to
-    MAX_BREAKS valleys of pre's histogram (few pixels sit between a roof and the sky) that the steep pixels cross.
-    Returns [(mask, relief, rgb)] far to near over the box: layer k covers every pixel at its depth or nearer (it goes
-    on under the nearer layers), its relief there its own, its steep pixels and the pixels under nearer layers taking
-    the nearest of its own flat ones (no ramp left at a break), its colours under nearer layers mirrored from its own
-    (what a head move uncovers continues its texture). One layer, the relief whole, when nothing needs breaking."""
-    from scipy.ndimage import distance_transform_edt, gaussian_filter1d
-    gy, gx = np.gradient(h)
-    steep = a & (stretch * np.hypot(gx, gy) > BREAK_STRETCH)
-    whole = [(np.ones_like(a), h, rgb)]
-    if steep.sum() < BREAK_MIN_STEEP * a.sum():
-        return whole
-    bins = 64
-    hist = gaussian_filter1d(np.histogram(pre[a], bins, (0, 1))[0].astype(np.float64), 1.5)
-    shist = np.histogram(pre[steep], bins, (0, 1))[0]
-    cuts = []
-    for b in range(3, bins - 3):
-        if hist[b] > hist[b - 1] or hist[b] > hist[b + 1]:
-            continue
-        if hist[b] > BREAK_VALLEY * min(hist[:b].max(), hist[b + 1:].max()):
-            continue
-        cuts.append((shist[max(0, b - 2):b + 3].sum(), (b + 0.5) / bins))
-    cuts = sorted(t for s, t in sorted(cuts, reverse=True)[:MAX_BREAKS] if s >= BREAK_MIN_STEEP * a.sum() / 4)
-    if not cuts:
-        return whole
-    lab = np.digitize(pre, cuts)  # 0 = farthest
-    out = []
-    for k in range(len(cuts) + 1):
-        own = lab == k
-        flat = own & ~steep
-        if flat.sum() < 50:
-            flat = own
-        if not own.any():
-            continue
-        _, (iy, ix) = distance_transform_edt(~flat, return_indices=True)
-        rel = np.where(flat, h, h[iy, ix])
-        col, _ = mirror_fill(rgb, own)
-        out.append((lab >= k, rel.astype(np.float32), col))
-    out[0] = (np.ones_like(a), out[0][1], out[0][2])  # the farthest layer is the whole backdrop
-    return out
+    return h.astype(np.float32)
 
 
 def drawn(rgb: np.ndarray, a: np.ndarray) -> np.ndarray:
@@ -532,24 +515,23 @@ def _bbox(m: np.ndarray, pad: int) -> tuple[int, int, int, int]:
             min(h, int(ys.max()) + 1 + pad))
 
 
-def build(pid: str, img: np.ndarray, chars: list[np.ndarray], objects: list[dict],
-          plate: np.ndarray, g: np.ndarray, M: np.ndarray, mesh_dir: Path,
-          fringe: np.ndarray | None = None, lettering: np.ndarray | None = None, order_fn=None,
-          depth_img: np.ndarray | None = None, depth_fn=None,
-          frames: list[np.ndarray] | None = None) -> tuple[dict, np.ndarray]:
+def _scene(box, img: np.ndarray, chars: list[np.ndarray], objects: list[dict], plate: np.ndarray,
+           g: np.ndarray, frames: list[np.ndarray], flat: list[bool], depth_fn,
+           fringe: np.ndarray | None = None, lettering: np.ndarray | None = None,
+           depth_img: np.ndarray | None = None) -> tuple[dict, np.ndarray, list[dict], int]:
     """img: the original box (RGB). chars: one mask per character. objects: the picker's objects erased from the
     plate ({"name", "mask", "on", "held", "front", "except"}; empty when the objects were not erased: they stay
     painted on it); held ones join their holder, supported ones their support. plate: the erased plate. g: the page
-    around the art. M: a depth map of the box, or None with depth_fn: rgb crop -> depth, run on each frame alone
+    around the art. frames, flat: the frame step's. depth_fn: rgb crop -> depth, run on each frame alone
     (frame_depth) on depth_img (the lettering-free image when there is one); it gives the backdrops' distance and
-    orders the cards. order_fn (optional): a second per-frame depth that only orders the cards.
-    lettering: the erased lettering (redrawn by the reader).
-    Returns (log info, depth per pixel of the nearest layer, 0 on the page: what the lettering is placed against).
+    orders the cards. lettering: the lettering, taken out of the backdrop (it comes back as cards of the original
+    bubbles, lettering_layers).
+    Writes the layers' PNGs through box; returns (log info, depth per pixel of the nearest layer, 0 on the page:
+    what the lettering is placed against, the layers far to near, the next card number).
     The backdrop is the original art except under the cards and the lettering, where it is the plate: the erase
     model also removes cast shadows and redraws outlines in the band its mask is grown by, and showing the plate
     there put a lighter floor where the character's shadow was (3.2% of ToG 228 p6's art off by more than 40)."""
     import cv2
-    import frames as FR
     from scipy.ndimage import binary_dilation, distance_transform_edt
     h, w = g.shape
     art = ~g
@@ -570,33 +552,27 @@ def build(pid: str, img: np.ndarray, chars: list[np.ndarray], objects: list[dict
     if lettering is not None:
         under |= lettering
     backdrop = np.where(under[..., None], plate, img)
-    # the frames of step 1 (episode.box_frames) when given, else found here
-    fr = frames if frames is not None else FR.frames(Image.fromarray(img), g)
-    areas = [f & art for f in fr] if len(fr) > 1 else [art]
+    # each frame's area is the frame itself (frames.split: its box, the page inside it kept): taking the page out
+    # again here made a vignette its silhouette and notched frames at bubbles (P&C 39 p27, p8). flat: a frame of text
+    # (credits), its backdrop without relief; its characters are still cards (the mascots of P&C's credits pages
+    # speak, and their bubbles are labelled)
+    kept = [(f, x) for f, x in zip(frames, flat) if f.any()]
+    areas, flats = ([f for f, _ in kept], [x for _, x in kept]) if kept else ([art], [False])
     # depth only ever per frame (user, 2026-10-26)
-    dimg = img if depth_img is None else depth_img
-    if depth_fn is not None:
-        M = frame_depth(depth_fn, dimg, areas)
-    Mo = frame_depth(order_fn, dimg, areas) if order_fn is not None else None
-    mesh_dir.mkdir(parents=True, exist_ok=True)
-    depth_view(M if Mo is None else Mo, areas, mesh_dir / f"{pid}.depth.png")
-    # this box's earlier output, cards and the legacy surface's files (legacy_mesh.py), so nothing reads a stale one
-    for pat in (f"{pid}.card-*.png", f"{pid}.f32", f"{pid}.png", f"{pid}.ldi.*", f"{pid}.fig.*", f"{pid}.bg*",
-                f"{pid}.fgclean.*", f"{pid}.seg.u8", f"{pid}.layers.json"):
-        for old in mesh_dir.glob(pat):
-            old.unlink()
-    mesh_dir.mkdir(parents=True, exist_ok=True)
+    M = frame_depth(depth_fn, img if depth_img is None else depth_img, areas)
+    box.clear_cards()
+    depth_view(M, areas, box.view_file("depth"))
     layers, D = [], np.zeros((h, w), np.float32)
     n = 0
     for fk, area in enumerate(areas):
-        if area.sum() < 1000:
+        if area.sum() < MIN_FRAME_PX:
             continue
         # every card the plate was erased under is kept, however small (dropped, an erased vase left only its outline
         # in the backdrop); a mask spanning several frames is a card in each, its part there: the review merges copies
         # of one character across frames into one mask, and given whole to the frame holding most of it, P&C 39 p10's
         # Pepper vanished from the wide frame (erased from the backdrop, on no card)
         mine = [(s[0], s[1], s[2] & area, s[3]) for s in segs if (s[2] & area).sum() >= PART_MIN]
-        mine = merge_level(mine, M if Mo is None else Mo, area)
+        mine = merge_level(mine, M, area)
         mine = exclusive(mine)
         # the picker's front/behind for each object against every character it touches (within 3 px), reversed for
         # the characters its "except" points mark (a counter in front of the barkeeper, behind the customer)
@@ -610,65 +586,92 @@ def build(pid: str, img: np.ndarray, chars: list[np.ndarray], objects: list[dict
                     near = binary_dilation(mc, iterations=EXCEPT_PX)
                     flip = any(0 <= y < h and 0 <= x < w and near[y, x] for x, y in o.get("except") or [])
                     behind.append((c_, a_) if bool(o.get("front")) != flip else (a_, c_))
-        f = max(w, h) / (2 * np.tan(np.radians(FOV / 2)))
+        f = focal(w, h)
         covered = np.logical_or.reduce([s[2] for s in mine]) if mine else np.zeros_like(area)
-        relief_on = BACK_RELIEF > 0 and back_range_ok(M if Mo is None else Mo, area, covered)
-        zb, ampb, zs, amps = depths(order(M, [s[2] & area for s in mine], area, behind, Mo),
+        relief_on = BACK_RELIEF > 0 and not flats[fk] and back_range_ok(M, area, covered)
+        zb, ampb, zs, amps = depths(order(M, [s[2] & area for s in mine], area, behind),
                                     [card_relief(s[2] & area, f) for s in mine], BACK_RELIEF if relief_on else 0.0)
-        back, eb, win, fb = backdrop_image(backdrop, area, round(MARGIN * max(w, h)), round(INSET * max(w, h)))
-        win.save(mesh_dir / f"{pid}.card-{n}.window.png")
+        inset = round(INSET * max(w, h))
+        # the margin is mirrored from the frame minus the page along its edge (where the window hides nothing)
+        own = area & ~(g & (distance_transform_edt(area) <= inset + 1))
+        back, eb, win, fb = backdrop_image(backdrop, area, round(MARGIN * max(w, h)), inset, own)
+        box.save_image(box.card(n, "window"), win)
         # "frame": the reader shows each frame's layers through a window of the frame's shape ("window", on
         # "window_bbox", at depth "window_z") in front of them (user, 2026-10-26); lettering is not clipped. The
         # backdrop's box runs past the frame by its margin and may reach past the image
-        layers.append({"png": f"{pid}.card-{n}.png", "bbox": [int(v) for v in eb], "z": round(zb, 5),
+        layers.append({"png": box.card(n), "bbox": [int(v) for v in eb], "z": round(zb, 5),
                        "kind": "backdrop", "name": f"backdrop {fk + 1}", "frame": fk,
-                       "window": f"{pid}.card-{n}.window.png", "window_bbox": [int(v) for v in fb],
-                       "window_z": WINDOW_Z})
-        parts = []
+                       "window": box.card(n, "window"), "window_bbox": [int(v) for v in fb],
+                       "window_z": WINDOW_Z, **({"flat": True} if flats[fk] else {})})
         if ampb > 0:
-            # depth on the backdrop's own frame (the erased plate under the cards), only for a frame with relief;
-            # broken at its big depth edges into layers far to near (backdrop_layers), the first the backdrop itself
-            rel, pre = backdrop_relief(area, frame_depth(depth_fn, backdrop, [area]) if depth_fn is not None else M,
-                                       eb, backdrop)
-            ba = np.asarray(back)
-            parts = backdrop_layers(rel, pre, padded(area, eb, False), ba[..., :3].copy(),
-                                    f * HEAD_MOVE * ampb / zb)
-            back = Image.fromarray(np.dstack([parts[0][2], ba[..., 3]]), "RGBA")
-            Image.fromarray((parts[0][1] * 255).astype(np.uint8)).save(mesh_dir / f"{pid}.card-{n}.relief.png")
-            layers[-1].update({"relief": f"{pid}.card-{n}.relief.png", "relief_amp": round(ampb, 5),
-                               "relief_cell": BACK_CELL})
-        back.save(mesh_dir / f"{pid}.card-{n}.png")
+            # depth on the backdrop's own frame (the erased plate under the cards), only for a frame with relief
+            rel = backdrop_relief(area, frame_depth(depth_fn, backdrop, [area]), eb)
+            box.save_image(box.card(n, "relief"), Image.fromarray((rel * 255).astype(np.uint8)))
+            layers[-1].update({"relief": box.card(n, "relief"), "relief_amp": round(ampb, 5), "relief_cell": BACK_CELL})
+        box.save_image(box.card(n), back)
         D[area] = zb * (1 - ampb)  # the nearest each layer gets: the lettering is placed in front of it
         n += 1
-        for k, (pm, prel, pcol) in enumerate(parts[1:], 2):
-            # a nearer layer of the backdrop: a card on the backdrop's plane and relief scale, cut at its break
-            alpha = cv2.GaussianBlur(pm.astype(np.float32), (0, 0), FEATHER) * (np.asarray(back)[..., 3] / 255)
-            cb = _bbox(pm, PAD)
-            sl = np.s_[cb[1]:cb[3], cb[0]:cb[2]]
-            Image.fromarray(np.dstack([pcol[sl], (np.clip(alpha[sl], 0, 1) * 255).astype(np.uint8)]), "RGBA").save(
-                mesh_dir / f"{pid}.card-{n}.png")
-            Image.fromarray((prel[sl] * 255).astype(np.uint8)).save(mesh_dir / f"{pid}.card-{n}.relief.png")
-            layers.append({"png": f"{pid}.card-{n}.png",
-                           "bbox": [int(eb[0] + cb[0]), int(eb[1] + cb[1]), int(eb[0] + cb[2]), int(eb[1] + cb[3])],
-                           "z": round(zb, 5), "kind": "scenery", "name": f"backdrop {fk + 1} layer {k}", "frame": fk,
-                           "relief": f"{pid}.card-{n}.relief.png", "relief_amp": round(ampb, 5),
-                           "relief_cell": BACK_CELL})
-            n += 1
         for (kind, name, m, _), z, amp in sorted(zip(mine, zs, amps), key=lambda c: -c[1]):
             m = m & area
             alpha = cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER) if FEATHER else m.astype(np.float32)
             alpha *= art
             bb = _bbox(m, PAD)
-            _rgba(img, alpha, bb).save(mesh_dir / f"{pid}.card-{n}.png")
-            relief_map(m[bb[1]:bb[3], bb[0]:bb[2]], (M if Mo is None else Mo)[bb[1]:bb[3], bb[0]:bb[2]],
-                       img[bb[1]:bb[3], bb[0]:bb[2]]).save(mesh_dir / f"{pid}.card-{n}.relief.png")
-            layers.append({"png": f"{pid}.card-{n}.png", "bbox": bb, "z": round(z, 5), "kind": kind, "name": name,
-                           "frame": fk, "relief": f"{pid}.card-{n}.relief.png", "relief_amp": round(amp, 5),
+            box.save_image(box.card(n), _rgba(img, alpha, bb))
+            box.save_image(box.card(n, "relief"), relief_map(m[bb[1]:bb[3], bb[0]:bb[2]], M[bb[1]:bb[3], bb[0]:bb[2]],
+                                                             img[bb[1]:bb[3], bb[0]:bb[2]]))
+            layers.append({"png": box.card(n), "bbox": bb, "z": round(z, 5), "kind": kind, "name": name,
+                           "frame": fk, "relief": box.card(n, "relief"), "relief_amp": round(amp, 5),
                            "relief_cell": RELIEF_CELL})
             D[m] = z * (1 - amp)  # far to near: the nearest card is written last
             n += 1
-    (mesh_dir / f"{pid}.cards.json").write_text(json.dumps({"w": w, "h": h, "fov": FOV, "layers": layers}, indent=1))
-    (mesh_dir / f"{pid}.json").write_text(json.dumps({"w": w, "h": h, "fov": FOV, "cards": True}))
     info = {"frames": len(areas), "cards": sum(1 for l in layers if l["kind"] != "backdrop"),
             "z": [f"{l['kind'][0]}{l['z']:.3f}" for l in layers]}
-    return info, D
+    return info, D, layers, n
+
+
+LETTERING_GROW = 10  # px the lettering is grown where it is taken out of the depth image and the backdrop
+
+
+def layers(box, img: Image.Image, letters: list, chars: list, und: dict | None, depth_fn, objects: bool = True) -> dict:
+    """The flat layers of one box (boxstore.Box), its frames and page from the frame step: per frame the backdrop
+    and one card per character and object, ordered by depth_fn (rgb crop -> depth, DA3MONO) on each frame alone,
+    then the original bubbles as cards in front, placed by lettering_layer. The backdrop is the box's band-erase plate
+    (step 3) when it has one, else the art itself; the depth model sees the box with its lettering filled in
+    (band_erase.lettering_free). objects: cut the saved objects out as cards on the art too (without a plate they stay
+    painted on the backdrop as well). Writes cards.json, the card PNGs, bubbles.json and the viewer's depth and
+    segmentation views; returns the log info. Raises when the box has no frames with a page (frames from before
+    2026-10-30, or none: run the frame step)."""
+    import band_erase as BE
+    import lettering_layer as LL
+    from scipy.ndimage import binary_dilation
+    from masks import union
+    fr = box.frames()
+    if fr is None or fr.page is None:
+        raise ValueError(f"{box.pid}: no frames from the frame step")
+    rgb = np.asarray(img)
+    h, w = rgb.shape[:2]
+    g = fr.page
+    let = union(letters, (h, w))
+    fringe = claim_fringe(img, union(chars, (h, w)), g)
+    lettering = binary_dilation(let, iterations=LETTERING_GROW) & ~g if let.any() else None
+    base = BE.lettering_free(rgb, lettering, fr.masks or [~g]) if lettering is not None else None
+    # the band erase paints behind every object too (each one a card); without its plate the objects stay painted
+    plate = box.plate()
+    objs = box.objects() if plate is not None or objects else []
+    info, D, scene, n = _scene(box, rgb, [c.mask for c in chars], objs, rgb if plate is None else plate, g, fr.masks,
+                               fr.flat, depth_fn, fringe, lettering, depth_img=base)
+    cj = {"w": w, "h": h, "fov": FOV, "layers": scene}
+    box.save_view_meta(w, h, FOV)
+    # the viewer's "segmentation" view (its "depth" view is written by _scene)
+    seg_view(rgb, [c.mask for c in chars], [(o["name"], o["mask"]) for o in box.objects()], [e.mask for e in letters],
+             fr.masks, box.view_file("seg"))
+    if letters:
+        # placement (depth clear of the layers) from lettering_layer; what is drawn is the original bubble, cut from
+        # the art (lettering_layers)
+        bub = LL.build(box.pid, img, [e.mask for e in letters], und, D, kinds=[e.kind for e in letters], valid=~g)
+        box.save_bubbles(bub)
+        lets = lettering_layers(box, rgb, [e.mask for e in letters], bub, n)
+        cj["layers"] = scene + lets
+        info["lettering cards"] = len(lets)
+    box.save_cards(cj)
+    return info

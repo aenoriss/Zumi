@@ -1,47 +1,34 @@
-"""Step 6: lettering as data. The lettering erased from the art (hidden_layers.prepare) comes back as one floating panel
-per element, drawn by the reader at the same place: shape, colours and text size measured from the ORIGINAL pixels.
+"""Lettering as data. The lettering erased from the art comes back as one floating panel per element, at the same
+place: shape, colours and text size measured from the ORIGINAL pixels, and a depth just in front of whatever is behind
+it (place); cards.lettering_layers draws each as a card of the original bubble. Understand's text, kind and
+speaker are joined in by understood (at build, or afterwards with annotate).
 
-    uv run python lettering_layer.py room     # ToG 228 p6: bubbles.json for the viewer + an offline check image
-
-Writes <out>/<pid>.bubbles.json:
+build returns the box's bubbles.json (the caller saves it, boxstore.Box.save_bubbles):
   {pid, w, h, fov, font, cap_ratio, bubbles: [{id, text, kind, speaker, anchor, bbox, shape, polygon, fill, outline,
-   outline_px, text_colour, text_px, font_px, line_height, lines, text_box, text_area, uppercase, depth}]}
+   outline_px, text_colour, text_px, font_px, line_height, lines, text_box, text_area, uppercase, depth, placement}]}
 bbox, polygon, text_box in box px; text_area [cx, cy, max_w, max_h] is where the text is wrapped and centred (both
 renderers: greedy word wrap at max_w, shrink 5% at a time until the block fits max_h); depth is camera-space (the
-cloud2 depth, -z): the bubble's plane faces the panel camera and projects exactly onto bbox.
+layers' nearest depth): the bubble's plane faces the panel camera and projects exactly onto bbox.
 """
 from __future__ import annotations
 
-import json
-import sys
-from pathlib import Path
-
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from scipy.ndimage import binary_dilation, binary_erosion, find_objects, label
 
-DATA = Path(__file__).resolve().parents[1] / ".data"
-FONT_FILE = DATA / "fonts" / "ComicNeue-Bold.ttf"
+from view import FOV, WINDOW_Z, focal
+
 FONT_NAME = "Comic Neue"
 CAP_RATIO = 0.681      # Comic Neue Bold: cap height / em (PIL getbbox("H") at 1000 px: 225..906)
-FOV = 55.0             # parallax.FOV, long side
 RECT_FILL = 0.90       # mask share of its bbox above which the shape is a rectangle
 MAX_POLY = 64
-RING_PX = 20           # scene depth is sampled this far around the mask
-DEPTH_PCT = 5
-DEPTH_FRONT = 0.97     # floats just in front of the nearest scene around it (fallback only; see place)
-NUDGE_MAX = 0          # px a bubble may move sideways from where the artist put it: 0, collisions are solved in depth
-                       # only (z), the bubble stays exactly where it was drawn (user, 2026-10-25)
-NUDGE_STEP = 4
 MARGIN = 6             # px around the bubble that must also lie behind it
 GAP = 0.007            # the bubble sits this much in front of the nearest scene under it, and never behind the frames'
-WINDOW_Z = 1.0         # windows (cards.WINDOW_Z): the bubbles are not clipped, so they stand at the window, in front
+                       # windows (view.WINDOW_Z): the bubbles are not clipped, so they stand at the window, in front
                        # of the layers seen through it, not down among them
 CLEAR_PX = 60          # px around the bubble checked for nearer surfaces a head move could slide over it
 HEAD_SHIFT = 0.05      # head move as a share of scene depth (the parallax design value)
-POP_WEIGHT = 4.0       # cost of floating far in front of the scene behind (1.0 = a full NUDGE_MAX shift per 25%)
-VIOL_WEIGHT = 20.0     # cost per clearance violation, as a share of the bubble's area
 
 
 def _dominant(px: np.ndarray) -> np.ndarray | None:
@@ -161,72 +148,65 @@ def measure(img: np.ndarray, mask: np.ndarray) -> dict:
     return out
 
 
-def place(mask: np.ndarray, depth: np.ndarray, ok: np.ndarray, taken: np.ndarray, f: float) -> tuple[int, int, float, dict]:
-    """Where a bubble goes without colliding with the 3D scene: (dx, dy, depth, why).
-
-    Collisions are of two kinds: scene geometry poking through the bubble (something under it nearer than it), and
-    geometry nearer than the bubble sliding over it when the head moves. Small shifts around the original position
-    (up to NUDGE_MAX px, every NUDGE_STEP) are tried; for each, the bubble's depth is GAP in front of the NEAREST scene
-    under it and a MARGIN around it (minimum, not a percentile: nothing pokes through), and the scene is checked
-    out to CLEAR_PX around it: a surface nearer than the bubble must be farther from its edge than a HEAD_SHIFT head
-    move can carry it, f * T * (1/d_near - 1/d_bubble) px. Cost: the shift (stay where the artist put it), how far the
-    bubble pops out in front of the scene behind it (pulled very close it looks detached), and clearance violations.
-    Shifts overlapping another placed bubble or leaving the art are ruled out."""
-    from scipy.ndimage import distance_transform_edt, shift as nd_shift
+def place(mask: np.ndarray, depth: np.ndarray, ok: np.ndarray, taken: np.ndarray, f: float) -> tuple[float, dict]:
+    """A bubble's depth where the artist drew it, and why: (depth, {"pop", "violations"}). It never moves sideways:
+    collisions are solved in depth only (user, 2026-10-25). Its depth is GAP in front of the NEAREST scene under it and
+    a MARGIN around it (minimum, not a percentile: nothing pokes through), never behind the frames' windows. Logged:
+    how far it pops out in front of the scene behind it, and the clearance violations within CLEAR_PX around it (a
+    surface nearer than the bubble closer to its edge than a HEAD_SHIFT head move carries it,
+    f * T * (1/d_near - 1/d_bubble) px). A bubble over one placed before it, or with almost no scene under it,
+    stays in front of everything under it."""
+    from scipy.ndimage import distance_transform_edt
     h, w = mask.shape
-    best = None
     ys, xs = np.nonzero(mask)
-    for dy in range(-NUDGE_MAX, NUDGE_MAX + 1, NUDGE_STEP):
-        for dx in range(-NUDGE_MAX, NUDGE_MAX + 1, NUDGE_STEP):
-            if dx * dx + dy * dy > NUDGE_MAX * NUDGE_MAX:
-                continue
-            yy, xx = ys + dy, xs + dx
-            if yy.min() < 0 or xx.min() < 0 or yy.max() >= h or xx.max() >= w:
-                continue
-            m = np.zeros_like(mask)
-            m[yy, xx] = True
-            if (m & taken).any():
-                continue
-            if (m & ok).sum() < 0.5 * (mask & ok).sum():  # mostly off the art (the gutter)
-                continue
-            under = binary_dilation(m, iterations=MARGIN) & ok
-            if under.sum() < 20:
-                continue
-            d_near = float(depth[under].min())
-            d_b = min(d_near, WINDOW_Z) * (1 - GAP)
-            d_back = float(np.median(depth[m & ok])) if (m & ok).any() else d_near
-            pop = d_back / d_b - 1  # how far in front of the scene behind it
-            # clearance: nearer-than-bubble surfaces around it, closer to its edge than a head move carries them
-            x0, x1 = max(0, xx.min() - CLEAR_PX), min(w, xx.max() + CLEAR_PX + 1)
-            y0, y1 = max(0, yy.min() - CLEAR_PX), min(h, yy.max() + CLEAR_PX + 1)
-            sub_m = m[y0:y1, x0:x1]
-            dist = distance_transform_edt(~sub_m)
-            sd, so = depth[y0:y1, x0:x1], ok[y0:y1, x0:x1]
-            nearer = so & ~sub_m & (sd < d_b)
-            need = f * HEAD_SHIFT * (1 / np.maximum(sd, 1e-6) - 1 / d_b)
-            viol = int((nearer & (dist < need)).sum())
-            cost = (dx * dx + dy * dy) ** 0.5 / max(1, NUDGE_MAX) + POP_WEIGHT * pop + VIOL_WEIGHT * viol / max(1, int(m.sum()))
-            if best is None or cost < best[0]:
-                best = (cost, dx, dy, d_b, {"pop": round(pop, 3), "violations": viol})
-    if best is None:  # nowhere free: stay, in front of everything under it
-        under = binary_dilation(mask, iterations=MARGIN) & ok
+    under = binary_dilation(mask, iterations=MARGIN) & ok
+    if (mask & taken).any() or under.sum() < 20:
         d = min(float(depth[under].min()), WINDOW_Z) * (1 - GAP) if under.any() else WINDOW_Z * (1 - GAP)
-        return 0, 0, d, {"pop": None, "violations": None}
-    return best[1], best[2], best[3], best[4]
+        return d, {"pop": None, "violations": None}
+    d_near = float(depth[under].min())
+    d_b = min(d_near, WINDOW_Z) * (1 - GAP)
+    d_back = float(np.median(depth[mask & ok])) if (mask & ok).any() else d_near
+    pop = d_back / d_b - 1  # how far in front of the scene behind it
+    x0, x1 = max(0, xs.min() - CLEAR_PX), min(w, xs.max() + CLEAR_PX + 1)
+    y0, y1 = max(0, ys.min() - CLEAR_PX), min(h, ys.max() + CLEAR_PX + 1)
+    sub_m = mask[y0:y1, x0:x1]
+    dist = distance_transform_edt(~sub_m)
+    sd, so = depth[y0:y1, x0:x1], ok[y0:y1, x0:x1]
+    nearer = so & ~sub_m & (sd < d_b)
+    need = f * HEAD_SHIFT * (1 / np.maximum(sd, 1e-6) - 1 / d_b)
+    return d_b, {"pop": round(pop, 3), "violations": int((nearer & (dist < need)).sum())}
+
+
+def understood(e: dict, kind: str | None) -> dict:
+    """A bubble's fields from Understand's element for it (e, {} when none), `kind` its kind so far: the text it read
+    (none when it dropped the element), its finer kind (speech, caption, shout) when it gave one, the speaker and
+    the anchor on the speaker. The one place these fields are joined into bubbles."""
+    text = (e.get("text") or "") if e.get("keep", True) and e else ""
+    return {"text": text, "kind": e.get("kind") or kind, "speaker": e.get("speaker"), "anchor": e.get("anchor")}
+
+
+def annotate(bubbles: dict, result: dict) -> dict:
+    """bubbles (lettering_layer.build's) with Understand's result for its box joined in (understood)."""
+    els = {int(e["id"]): e for e in (result or {}).get("elements", []) if "id" in e}
+    for b in bubbles.get("bubbles", []):
+        if b["id"] in els:
+            b.update(understood(els[b["id"]], b.get("kind")))
+            b["uppercase"] = (not b["text"]) or b["text"] == b["text"].upper()
+    return bubbles
 
 
 def build(pid: str, img, letter_masks: list[np.ndarray], understand_result: dict | None, depth: np.ndarray,
-          out_path: Path, kinds: list[str] | None = None, valid: np.ndarray | None = None) -> dict:
-    """img: the original box (RGB, lettering still in it). letter_masks: per element, element k is understand's id k+1.
-    depth: camera-space depth of the box (H x W). valid: pixels with a real surface (not gutter); all when None.
-    kinds: the segmenter's kind per mask, used when understand has none."""
+          kinds: list[str] | None = None, valid: np.ndarray | None = None) -> dict:
+    """The box's bubbles.json (the caller saves it). img: the original box (RGB, lettering still in it).
+    letter_masks: per element, element k is understand's id k+1. depth: camera-space depth of the box (H x W).
+    valid: pixels with a real surface (not gutter); all when None. kinds: the segmenter's kind per mask, used when
+    understand has none."""
     img = np.asarray(img.convert("RGB")) if isinstance(img, Image.Image) else np.asarray(img)
     h, w = img.shape[:2]
     els = {int(e["id"]): e for e in (understand_result or {}).get("elements", []) if "id" in e}
     ok = np.isfinite(depth) & (depth > 0) & (valid if valid is not None else True)
-    fallback = float(np.percentile(depth[ok], DEPTH_PCT)) if ok.any() else float(np.median(depth))
     bubbles = []
-    f = max(w, h) / (2 * np.tan(np.radians(FOV) / 2))
+    f = focal(w, h)
     taken = np.zeros((h, w), bool)
     # biggest first: they have the least room to move
     order = sorted(range(len(letter_masks)), key=lambda k: -int(letter_masks[k].sum()))
@@ -235,17 +215,14 @@ def build(pid: str, img, letter_masks: list[np.ndarray], understand_result: dict
         mask = _clean(raw.astype(bool), valid)
         if not mask.any():
             continue
-        e = els.get(k + 1, {})
-        dx, dy, d, why = place(mask, depth, ok, taken, f)
-        mask = np.roll(np.roll(mask, dy, 0), dx, 1)  # the bubble at its placed position (place keeps it in bounds)
+        d, why = place(mask, depth, ok, taken, f)
         taken |= binary_dilation(mask, iterations=4)
-        mm = measure(np.roll(np.roll(img, dy, 0), dx, 1), mask)  # colours read where the original pixels moved to
-        d = d / DEPTH_FRONT  # (written as d * DEPTH_FRONT below)
+        mm = measure(img, mask)
         x0, y0, x1, y1 = mm["bbox"]
         bw, bh = x1 - x0, y1 - y0
         rect = mm.pop("fill_share") > RECT_FILL
-        text = (e.get("text") or "") if e.get("keep", True) and e else ""
-        kind = e.get("kind") or (kinds[k] if kinds and k < len(kinds) else None)
+        und = understood(els.get(k + 1, {}), kinds[k] if kinds and k < len(kinds) else None)
+        text = und["text"]
         # layout shared by both renderers: font from the measured cap height, text centred where the original was
         font_px = (mm["text_px"] / CAP_RATIO) if mm["text_px"] else max(10.0, 0.08 * min(bw, bh))
         lh = float(np.clip(mm["line_px"] / font_px, 1.0, 1.6)) if mm["line_px"] else 1.2
@@ -254,130 +231,14 @@ def build(pid: str, img, letter_masks: list[np.ndarray], understand_result: dict
         cx, cy = ((tb[0] + tb[2]) / 2, (tb[1] + tb[3]) / 2) if tb else ((x0 + x1) / 2, (y0 + y1) / 2)
         max_w = min(bw * inset, ((tb[2] - tb[0]) * 1.05) if tb else bw * inset)  # the original's line breaks
         bubbles.append({
-            "id": k + 1, "text": text, "kind": kind, "speaker": e.get("speaker"), "anchor": e.get("anchor"),
+            "id": k + 1, **und,
             "bbox": mm["bbox"], "shape": "rect" if rect else "ellipse", "polygon": _polygon(mask),
             "fill": mm["fill"], "outline": mm["outline"], "outline_px": mm["outline_px"], "text_colour": mm["text_colour"],
             "text_px": mm["text_px"], "font_px": round(font_px, 1), "line_height": round(lh, 3), "lines": mm["lines"],
             "text_box": tb, "text_area": [round(cx, 1), round(cy, 1), round(max_w, 1), round(bh * inset, 1)],
-            "uppercase": (not text) or text == text.upper(), "depth": round(d * DEPTH_FRONT, 5),
-            "nudge": [dx, dy], "placement": why,
+            "uppercase": (not text) or text == text.upper(), "depth": round(d, 5), "placement": why,
         })
     bubbles.sort(key=lambda b: b["id"])
-    res = {"pid": pid, "w": w, "h": h, "fov": FOV, "font": FONT_NAME, "cap_ratio": CAP_RATIO, "bubbles": bubbles}
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(res, indent=1))
-    return res
+    return {"pid": pid, "w": w, "h": h, "fov": FOV, "font": FONT_NAME, "cap_ratio": CAP_RATIO, "bubbles": bubbles}
 
 
-# ---------- offline renderer: the viewer's layout rules in PIL, to check a bubbles.json on the base image ----------
-def wrap(text: str, width_of, max_w: float) -> list[str]:
-    lines, cur = [], ""
-    for word in text.split():
-        t = (cur + " " + word).strip()
-        if cur and width_of(t) > max_w:
-            lines.append(cur); cur = word
-        else:
-            cur = t
-    return lines + ([cur] if cur else [])
-
-
-def fit_text(text: str, b: dict, font_for) -> tuple[float, list[str]]:
-    """Greedy wrap at text_area's width; the font shrinks 5% at a time until the block fits its height."""
-    _, _, max_w, max_h = b["text_area"]
-    px = b["font_px"]
-    while True:
-        f = font_for(px)
-        lines = wrap(text, f.getlength, max_w)
-        block = (len(lines) - 1) * b["line_height"] * px + CAP_RATIO * px
-        wide = max((f.getlength(l) for l in lines), default=0)
-        if (block <= max_h and wide <= max_w * 1.02) or px <= 8:
-            return px, lines
-        px *= 0.95
-
-
-def render(base: Image.Image, data: dict, scale: int = 2) -> Image.Image:
-    """Draws every bubble on the base image (supersampled by `scale`), the way the viewer draws its canvas."""
-    W, H = base.size
-    big = base.convert("RGB").resize((W * scale, H * scale), Image.LANCZOS)
-    d = ImageDraw.Draw(big)
-    fonts = {}
-    font_for = lambda px: fonts.setdefault(round(px * scale, 1), ImageFont.truetype(str(FONT_FILE), max(1, round(px * scale))))
-    S = lambda v: v * scale
-    for b in data["bubbles"]:
-        x0, y0, x1, y1 = b["bbox"]
-        ow = b["outline_px"]
-        if b["shape"] == "rect":
-            r = 0.012 * min(x1 - x0, y1 - y0)  # CORNER in the viewer
-            d.rounded_rectangle([S(x0), S(y0), S(x1) - 1, S(y1) - 1], radius=S(r), fill=b["fill"],
-                                outline=b["outline"] if ow else None, width=max(1, round(S(ow))))
-        elif len(b["polygon"]) >= 3:
-            pts = [(S(x), S(y)) for x, y in b["polygon"]]
-            d.polygon(pts, fill=b["fill"])
-            if ow:
-                d.line(pts + pts[:1], fill=b["outline"], width=max(1, round(S(ow))), joint="curve")
-        else:
-            d.ellipse([S(x0), S(y0), S(x1), S(y1)], fill=b["fill"], outline=b["outline"] if ow else None,
-                      width=max(1, round(S(ow))))
-        text = b["text"].upper() if b["uppercase"] else b["text"]
-        if not text or not b["text_colour"]:
-            continue
-        unscaled = lambda px: _Scaled(font_for(px), scale)
-        px, lines = fit_text(text, b, unscaled)
-        cx, cy = b["text_area"][:2]
-        lh = b["line_height"] * px
-        block = (len(lines) - 1) * lh + CAP_RATIO * px
-        base_y = cy - block / 2 + CAP_RATIO * px
-        f = font_for(px)
-        for i, line in enumerate(lines):
-            d.text((S(cx), S(base_y + i * lh)), line, font=f, fill=b["text_colour"], anchor="ms")
-    return big.resize((W, H), Image.LANCZOS)
-
-
-class _Scaled:
-    """A font measured in unscaled box px."""
-    def __init__(self, f, s):
-        self.f, self.s = f, s
-
-    def getlength(self, t):
-        return self.f.getlength(t) / self.s
-
-
-# ---------- the room box (ToG 228 p6): no understand JSON yet, the captions' text given by hand ----------
-def room() -> None:
-    import io
-    import zipfile
-    from masks import load_masks
-    pid = "tower-of-god-s3-228-p006"
-    out = DATA / "out"
-    z = zipfile.ZipFile(out / "chapters" / "tower-of-god-s3-228.zumi")
-    panel = json.loads(z.read("manifest.json"))["panels"][6]
-    img = Image.open(io.BytesIO(z.read(panel["layers"][0]["image"]))).convert("RGB")
-    found = load_masks(out / "heldout" / "tog228" / "lettering_rev" / f"{pid}.npz")
-    w, h = img.size
-    buf = np.fromfile(out / "parallax_viewer" / "cloud2" / f"{pid}.bin", np.uint8)
-    n = w * h
-    xyz = buf[: n * 12].view(np.float32).reshape(h, w, 3)
-    lab = buf[n * 15: n * 16].reshape(h, w)
-    depth = -xyz[..., 2]
-    texts = ["...WAS TO HAVE A SPOT AS CLOSE TO THAT BEAUTIFUL CREATURE AS POSSIBLE.",
-             "I JUST WANTED TO HAVE THE PRIVILEGE OF GAZING AT HIM AND TALKING TO HIM."]
-    order = sorted(range(len(found)), key=lambda k: found[k].bbox()[0])  # top to bottom
-    und = {"elements": [{"id": k + 1, "keep": True, "kind": "caption", "text": texts[r], "speaker": "narrator"}
-                        for r, k in enumerate(order[: len(texts)])]}
-    res = build(pid, img, [f.mask for f in found], und, depth, out / "parallax_viewer" / "mesh" / f"{pid}.bubbles.json",
-                kinds=[f.kind for f in found], valid=lab != 2)
-    base = Image.open(out / "room_plate" / pid / "r8-tone" / "base.png").convert("RGB")
-    drawn = render(base, res)
-    sheet = Image.new("RGB", (w * 3 + 32, h + 40), "white")
-    for i, (im, t) in enumerate([(img, "original box"), (base, "base (lettering erased)"), (drawn, "base + redrawn lettering")]):
-        sheet.paste(im, (8 + i * (w + 8), 32))
-        ImageDraw.Draw(sheet).text((8 + i * (w + 8), 8), t, fill=(0, 0, 0), font=ImageFont.truetype(str(FONT_FILE), 20))
-    (out / "lettering").mkdir(parents=True, exist_ok=True)
-    sheet.save(out / "lettering" / "room_check.png")
-    for b in res["bubbles"]:
-        print({k: b[k] for k in ("id", "bbox", "shape", "fill", "outline", "outline_px", "text_colour", "text_px",
-                                 "font_px", "line_height", "lines", "text_box", "depth")})
-
-
-if __name__ == "__main__":
-    {"room": room}[sys.argv[1]]()

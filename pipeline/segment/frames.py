@@ -1,186 +1,500 @@
 """Drawn frames inside one box: a page comic box (Pepper&Carrot) nearly always holds several, a webtoon box rarely
-(ToG 228 p64). Each frame is its own scene and its own camera, so step 4 fits depth per frame (parallax.build).
+(ToG 228 p64). Each frame is its own scene and its own camera, so the layers step fits depth per frame (cards.py).
 
-frames(img, page_mask) -> list of bool HxW masks, one per frame (an empty list or one mask: the box is one scene).
+split(img, gutter, layout(img)) -> Split(frames, flat, page); episode.frames_step saves it per box.
 
-Recursive XY-cut, from experiments/frame_count.py, with the page defined by the box's gutter mask (parallax.gutter:
-white, light grey or black page) instead of near-white alone, which made a grey page "art": the old count split
-speech bubbles on ToG 223's grey page into two to four "frames" (p52, p94, p120...).
-  1. gutter-like pixels: the page mask, pixels of the page's colour, and white (bubbles crossing a gutter);
-  2. a region is trimmed to its rows and columns that are not gutter-like (share under GUT), then cut at the first
-     band of at least BAND rows (or columns) that are GUT gutter-like, leaving at least MIN_PART px on both sides;
-     recurse on both sides;
-  3. a leaf is a frame when it is at least MIN_FRAME px on each side and holds drawn art: at least ART_SHARE of the
-     leaf and ART_PX pixels that are mid-tone or coloured (not near-black, not near-white) and not page. Lettering
-     is black on white (caption boxes, bubbles, a bubble cluster in the page) and fails this; the old count's
-     mid-tone test passed it on a grey page, whose 214 grey is a mid-tone.
-The mask of a frame is its leaf rectangle minus the page.
-Not detected: inset frames drawn over a larger frame, frames that touch with no gutter between them.
+Panel boxes from Claude Sonnet 5.5 (OpenRouter, under the 2 USD/day cap of openrouter.py; about 0.0043 USD and 3 s a
+box), chosen 2026-10-30: on the 6 hard boxes of the panel comparison (panel_llm.py and panel_score.py, now only in the
+git history) it
+drew the same panels as the Opus 5.5 reference on all 6 (F1 1.00, box IoU 0.98), where Magiv3 got the count right on 1
+(F1 0.80): it missed panels that touch or overlap (36-p003, 36-p025). Asked 4 times per box (panel_repeat.py, likewise) it never
+varied (24/24); Gemini 3.1 Pro, as good and a little cheaper, dropped a panel once in 30 calls (37-p000), so it is the
+fallback, not the default.
+  1. the model returns each panel's box in 0-1000 units (prompt history above PROMPT), corner points for a slanted
+     panel, the region's kind (story, title, credits, text) and its text blocks; an unusable answer (no panel list,
+     a coordinate outside 0-1000, cut off at its budget) is asked again once; answers are cached by image and prompt
+     (CACHE), so a rerun costs nothing;
+  2. boxes covering nearly the same area are one frame (IoU above DUP_IOU); boxes under MIN_SIDE px are dropped;
+  3. the page: the gutter given (page.gutter) plus a flat colour holding FLAT_SHARE of the pixels outside every
+     box (the dark grey page of P&C 36/38, which page.gutter misses);
+  4. each box is fitted to its gutters (_fit): edge lines that are page are trimmed, an edge on art snaps out to a
+     gutter line within SNAP;
+  5. a frame is its box, or its corner polygon for a slanted panel; a pixel inside several belongs to the smallest
+     (an inset is its own frame);
+  6. art outside every box joins the frame it touches (a leg past a loose box, a close-up's art running past it:
+     without this 23 of 62 multi-frame boxes lost art, 52k character px); lettering past every box joins none (the
+     lettering layer draws it); art cut off from every frame by page (credits under the last panel) and the text
+     regions form one flat frame; specks under DUST_PX are page;
+  7. each frame (not a slanted one) is the rectangle around its box and the art that joined it, taking the free
+     pixels in it; nothing is taken out: the page inside stays (a vignette's white ground, the gaps between bubbles
+     on a border). Taking it out (until 2026-10-30) made vignettes silhouettes (39-p027, 38-p018, 39-p025: about half
+     carved), notched frames at bubbles (39-p008) and left 36-p012's frame #2 too small for a backdrop.
+A box with no story panels (credits, a text page) is one flat frame (its backdrop gets no relief; its characters are
+still cards); no answer, one frame. Frames are exclusive, and with the page and the lettering past them they cover the
+box. Measured 2026-10-30 on the 81 P&C boxes with the cached v2 answers (no model call): no overlap and no art lost on
+any box; story frames' area / bounding box median 1.000, below 0.97 only where an inset or a neighbour takes part of
+the box; flat frames on the 4 credits/end pages only; speakers 310/333 against 316 on the saved frames (the losses:
+two labels naming another card of the same man (38-p009), slanted or break-out panels as rectangles (36-p025, 39-p025,
+36-p013), a cross-frame tail the rules miss (37-p000), a tailed credits caption (36-p028)). The audit behind steps
+3-7: .data/out/frames_audit/REPORT.md.
 
-    python frames.py <episode.zumi> [...]    frames per box per episode
+    uv run python frames.py <episode.zumi> [...]    frames per box per episode (paid calls for boxes not cached)
 """
 from __future__ import annotations
+
+import hashlib
+import io
+import json
+from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
 
-BAND = 5          # px, narrowest gutter
-GUT = 0.85        # share of a band's pixels that must be gutter-like (a bubble, an SFX or art may cross the gutter:
-                  # a feather drawn across P&C 39 p12's gutter left 87-90% of its rows gutter)
-PAGE_BAND = 0.7   # ... and real page (the page mask)
-MIN_PART = 80     # px, smallest part a cut may leave
-MIN_FRAME = 150   # px, smallest frame side
-ART_SHARE = 0.25  # share of the leaf that must be drawn art
-ART_PX = 12000    # px of drawn art a frame needs at least
-FILL = 0.5        # share of the leaf that is not page: a drawn frame fills its rectangle, an SFX letter in the gutter
-                  # (ToG 228 p93's red R) fills a fraction of it. Not "not gutter-like": white bubbles and highlights
-                  # inside a frame are (fill 0.42-0.50 on ToG 228 p15, ToG 223 p46, p102; not page 0.72-0.87)
-PAGE_TOL = 4.0    # CIELAB distance to the page colour (parallax.PAGE_TOL)
+import openrouter as OR
+from cards import MIN_FRAME_PX
+
+MODEL = "anthropic/claude-sonnet-5.5"  # fallback: "google/gemini-3.1-pro-preview"
+REASONING = "low"
+MAX_SIDE = 1600    # px, longest side of the image sent
+DUP_IOU = 0.85     # two panel boxes overlapping this much are one frame
+MIN_SIDE = 60      # px, smallest frame side kept
+TRIM_LINE = 0.98   # share of a box's edge line that must be gutter-like for the line to be trimmed off
+GUTTER_LINE = 0.9  # ... for a line to be the gutter an edge on art snaps out to
+SNAP = 0.03        # share of the box's width (x edges) or height (y edges) an edge may move out: the model's boxes are
+                   # off by 1-3% (36-p012: a panel's top 27 px, 2.5%, below its border)
+FLAT_MIN = 2000    # px outside every panel needed to learn a flat page colour from them
+FLAT_SHARE = 0.8   # share of those px within FLAT_TOL of their commonest colour for it to be the page: 0.92-1.00 on
+                   # the 17 P&C 36/38 boxes whose dark grey page page.gutter missed, 0.08-0.58 where it is art
+FLAT_TOL = 8.0     # CIELAB, twice page.PAGE_TOL
+POLY_MIN = 0.5     # a slanted panel's corner polygon must fill this share of its box to replace it
+PIECE_GAP = 6      # px: art outside the panels closer than twice this is one piece (letters into words and blocks)
+TOUCH_PX = 3       # px: a piece this close to a frame touches it and joins it; farther, it is loose (a flat frame)
+DUST_PX = 50       # px: a loose piece smaller than this is page dust, not a frame (37-p000: 9 px; 37-p016: specks <= 38)
+TEXT_MIN = MIN_FRAME_PX  # px a text region must hold, outside the panels and the page, to be a flat frame of its
+                         # own: the smallest frame the layers lay out
+CACHE = OR.ROOT / ".data/cache/panels"
+# The prompt's history (docs/research/frame-prompt-committee-2026-10.md); the old texts stay because the cache keys
+# of their answers are made from them:
+# v1: one sentence per panel type, boxes only. Right count on 78 of 81 P&C boxes; boxes stopping short (a vignette
+#     boxed around its main figure: 39-p025, 38-p018; a panel stopped at its inset: 36-p000; an edge 8% off: 36-p012),
+#     credits pages framed as story (36-p028, 37-p017, 39-p030).
+# v2: a three-reviewer committee's rules (Opus 5.5, a third of the boxes each): what a panel is and is not, the
+#     region's kind, text regions, whole scenes for vignettes, inset extent, shared edges. Fusing panels joined by a
+#     crossing bubble was rejected: 16 crossings, none one scene (mostly shot / reverse shot), so it says the opposite.
+#     The 3 credits pages came back with no panels; but 39-p026 came back with x in pixels and y in 0-1000 units,
+#     likely from its sentence on separately scaled axes.
+# v3 (PROMPT): v2 with the image's size given and the units spelt out per axis, and corner points for slanted panels.
+PROMPT_V2 = """This image is a region cut from a comic page. It may hold story panels, and it may also hold things that
+are not story panels. Find the story panels.
+
+What a panel is
+- A panel is one picture of the story seen from one viewpoint at one moment. Most panels are enclosed by a border
+  line or separated from their neighbours by a gutter (a strip of bare page), but the border is only the usual cue,
+  not the definition.
+- These are panels too:
+  a. a panel with no border, whose art fades out or stops on the bare page;
+  b. a panel whose art runs to the edge of the image;
+  c. an inset: a smaller panel drawn on top of a bigger one (return both; they overlap);
+  d. two panels that touch with no gutter, where the picture changes viewpoint or scene along an edge;
+  e. a vignette: a character or object drawn on the bare page with no frame and no background, when it shows a
+     moment of the story (it is drawn at the same scale and finish as the panels around it, or a bubble is spoken
+     from it).
+- These are not panels: speech bubbles, captions, sound effects, titles and logos, page numbers, blocks of text
+  (credits, lists of names, licence lines, "The End"), and small drawings that only decorate text (a mascot beside
+  the credits, an ornament, a signature).
+- Two areas are one panel only if the drawing runs on between them with no border or gutter: same background, same
+  scale, same viewpoint, and no character shown twice. Do not split a panel at something drawn inside the scene that
+  looks like a divider: bars, a pillar, a door frame, a beam of light, or a background that changes colour.
+- Bubbles, captions, sound effects and pieces of art (a hat, a tail, a weapon) often cross a panel's border or a
+  gutter. Ignore them when deciding where panels are: they never set a panel's edges and never join two panels.
+
+What kind of region it is
+- "story": story panels, with or without bubbles and captions.
+- "title": a title page or cover. Its illustration is one panel; the title lettering, logo and episode number on it
+  are not separate panels.
+- "credits": credits, patrons, licence, author notes, an end card.
+- "text": a page that is mostly prose (a foreword, a letter).
+- A region holding both story panels and text (the last panel above the credits) is "story", and the text goes in
+  "text_regions".
+
+Answer with JSON only:
+{"kind": "story" | "title" | "credits" | "text",
+ "panels": [[x0, y0, x1, y1], ...],
+ "text_regions": [[x0, y0, x1, y1], ...]}
+- x runs from 0 at the image's left edge to 1000 at its right edge; y from 0 at the top edge to 1000 at the bottom
+  edge. The axes are scaled separately, so in a wide image a square panel spans more y units than x units.
+- Each panel's box is the smallest axis-aligned rectangle containing all of its art, including its border line.
+- A panel without a border (a vignette, art fading into the page) gets a box around everything that belongs to its
+  scene: all its characters, props and sound effects out to the outermost art, not just the main figure.
+- When an inset is drawn over a bigger panel, the bigger panel's box covers its whole picture, including the part
+  under and around the inset; do not stop it at the inset's edge.
+- Where two panels meet along a straight gutter or border, put both boxes' edges on that line: neighbouring boxes
+  should neither leave art between them nor overlap past it (an inset is the exception). Along a slanted or
+  irregular border the rectangles will include some gutter and overlap; that is expected, do not shrink them.
+- "panels" lists the story panels in reading order. It may be empty.
+- "text_regions" lists the blocks of text and decoration on the bare page that are not panels. Do not list speech
+  bubbles or captions there."""
+PROMPT_V1 = """This image is one strip (a "box") cut from a comic page. Find every drawn PANEL (frame) in it: each separate
+picture the artist framed, including panels without a border, panels whose art bleeds to the edge, inset panels drawn
+over a bigger one, and panels that touch with no gutter between them. Speech bubbles and captions are not panels.
+Answer with JSON only: {"panels": [[x0, y0, x1, y1], ...]} where the coordinates are each panel's bounding box in
+0-1000 units of the image's width (x) and height (y), top-left origin, panels in reading order."""  # its cached answers
+PROMPT = """This image is a region cut from a comic page, {w} x {h} pixels. It may hold story panels, and it may also
+hold things that are not story panels. Find the story panels.
+
+What a panel is
+- A panel is one picture of the story seen from one viewpoint at one moment. Most panels are enclosed by a border
+  line or separated from their neighbours by a gutter (a strip of bare page), but the border is only the usual cue,
+  not the definition.
+- These are panels too:
+  a. a panel with no border, whose art fades out or stops on the bare page;
+  b. a panel whose art runs to the edge of the image;
+  c. an inset: a smaller panel drawn on top of a bigger one (return both; they overlap);
+  d. two panels that touch with no gutter, where the picture changes viewpoint or scene along an edge;
+  e. a vignette: a character or object drawn on the bare page with no frame and no background, when it shows a
+     moment of the story (it is drawn at the same scale and finish as the panels around it, or a bubble is spoken
+     from it).
+- These are not panels: speech bubbles, captions, sound effects, titles and logos, page numbers, blocks of text
+  (credits, lists of names, licence lines, "The End"), and small drawings that only decorate text (a mascot beside
+  the credits, an ornament, a signature).
+- Two areas are one panel only if the drawing runs on between them with no border or gutter: same background, same
+  scale, same viewpoint, and no character shown twice. Do not split a panel at something drawn inside the scene that
+  looks like a divider: bars, a pillar, a door frame, a beam of light, or a background that changes colour.
+- Bubbles, captions, sound effects and pieces of art (a hat, a tail, a weapon) often cross a panel's border or a
+  gutter. Ignore them when deciding where panels are: they never set a panel's edges and never join two panels.
+
+What kind of region it is
+- "story": story panels, with or without bubbles and captions.
+- "title": a title page or cover. Its illustration is one panel; the title lettering, logo and episode number on it
+  are not separate panels.
+- "credits": credits, patrons, licence, author notes, an end card.
+- "text": a page that is mostly prose (a foreword, a letter).
+- A region holding both story panels and text (the last panel above the credits) is "story", and the text goes in
+  "text_regions".
+
+Answer with JSON only:
+{{"kind": "story" | "title" | "credits" | "text",
+ "panels": [{{"box": [x0, y0, x1, y1]}}, {{"box": [x0, y0, x1, y1], "corners": [[x, y], ...]}}, ...],
+ "text_regions": [[x0, y0, x1, y1], ...]}}
+- Every coordinate is in 0-1000 units, never in pixels: x = 1000 * (pixels from the left edge) / {w}, and
+  y = 1000 * (pixels from the top edge) / {h}. Both x and y run from 0 to 1000, whatever the image's shape.
+- Each panel's box is the smallest axis-aligned rectangle containing all of its art, including its border line.
+- If a panel's border is slanted or not a rectangle, also give its corner points in order, as "corners"; otherwise
+  leave "corners" out.
+- A panel without a border (a vignette, art fading into the page) gets a box around everything that belongs to its
+  scene: all its characters, props and sound effects out to the outermost art, not just the main figure.
+- When an inset is drawn over a bigger panel, the bigger panel's box covers its whole picture, including the part
+  under and around the inset; do not stop it at the inset's edge.
+- Where two panels meet along a straight gutter or border, put both boxes' edges on that line: neighbouring boxes
+  should neither leave art between them nor overlap past it (an inset is the exception). Along a slanted or
+  irregular border the boxes will include some gutter and overlap; that is expected, do not shrink them.
+- "panels" lists the story panels in reading order. It may be empty.
+- "text_regions" lists the blocks of text and decoration on the bare page that are not panels. Do not list speech
+  bubbles or captions there."""
+KINDS = ("story", "title", "credits", "text")
 
 
-def _gutter_like(a: np.ndarray, page_mask: np.ndarray) -> np.ndarray:
+class PanelError(RuntimeError):
+    """The model's answer held no readable panel list."""
+
+
+def _box(v) -> list[float] | None:
+    if isinstance(v, list) and len(v) == 4 and all(isinstance(x, (int, float)) for x in v):
+        return [float(x) for x in v]
+    return None
+
+
+def _points(v) -> list[list[float]] | None:
+    if isinstance(v, list) and len(v) >= 3 and all(isinstance(p, list) and len(p) == 2 and
+                                                    all(isinstance(x, (int, float)) for x in p) for p in v):
+        return [[float(x) for x in p] for p in v]
+    return None
+
+
+def _in_range(vals) -> bool:
+    return all(-1 <= x <= 1001 for x in vals)
+
+
+def answer(img: Image.Image, model: str = MODEL, reasoning: str | None = REASONING, tag: str = "",
+           prompt: str | None = None) -> dict:
+    """The model's answer, uncached: {"kind", "panels": [box], "corners": [points or None, one per panel],
+    "text_regions": [box]}, in 0-1000 units. A panel may come as [x0, y0, x1, y1] (v1, v2) or {"box", "corners"}
+    (v3). Raises PanelError when the answer has no panel list, a coordinate outside 0-1000 (39-p026 under v2: x in
+    pixels) or was cut off at its budget; BudgetExceeded before a call the daily cap forbids."""
+    img = img.convert("RGB")
+    try:
+        v, _ = OR.ask_json(model, [{"type": "text", "text": prompt if prompt is not None else _prompt(img)},
+                                   OR.image_part(img, max_side=MAX_SIDE)], tag, 1500, reasoning)
+    except OR.Truncated as e:
+        raise PanelError(f"{model}: {e}") from None
+    if not isinstance(v.get("panels"), list):
+        raise PanelError(f"{model}: no panel list in the answer")
+    panels, corners = [], []
+    for p in v["panels"]:
+        b = _box(p) if isinstance(p, list) else _box(p.get("box")) if isinstance(p, dict) else None
+        if b is not None:
+            panels.append(b)
+            corners.append(_points(p.get("corners")) if isinstance(p, dict) else None)
+    text_regions = [b for b in map(_box, v.get("text_regions") or []) if b is not None]
+    flat = [x for b in panels + text_regions for x in b] + [x for c in corners if c for p in c for x in p]
+    if not _in_range(flat):
+        raise PanelError(f"{model}: a coordinate outside 0-1000 ({min(flat)} .. {max(flat)})")
+    return {"kind": v.get("kind") if v.get("kind") in KINDS else "story", "panels": panels, "corners": corners,
+            "text_regions": text_regions}
+
+
+def ask(img: Image.Image, model: str = MODEL, reasoning: str | None = REASONING, tag: str = "") -> list[list[float]]:
+    """The model's panel boxes in 0-1000 units, uncached (the panel comparison asked other models with it)."""
+    return answer(img, model, reasoning, tag)["panels"]
+
+
+def _prompt(img: Image.Image) -> str:
+    """PROMPT filled with the size the model sees (image_part scales the image to MAX_SIDE)."""
+    s = min(1.0, MAX_SIDE / max(img.size))
+    return PROMPT.format(w=round(img.width * s), h=round(img.height * s))
+
+
+def cache_file(img: Image.Image, prompt: str | None = None):
+    """Where the answer for this image and prompt is cached (default: the current prompt, filled for its size)."""
+    img = img.convert("RGB")
+    prompt = _prompt(img) if prompt is None else prompt
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return CACHE / f"{hashlib.sha1(buf.getvalue() + (MODEL + prompt).encode()).hexdigest()[:20]}.json"
+
+
+def _cached(img: Image.Image, tag: str) -> dict:
+    f = cache_file(img)
+    if f.exists():
+        return json.loads(f.read_text())
+    try:
+        v = answer(img, tag=tag)
+    except PanelError as e:  # one more try; an answer that fails twice is not cached, so the next run asks again
+        print(f"frames {tag}: {e}; asking again")
+        v = answer(img, tag=tag)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"model": MODEL, "tag": tag, **v}))
+    return v
+
+
+@dataclass
+class Layout:
+    """The model's answer in box pixels: panels clipped to the box, near-duplicates merged, small ones dropped,
+    largest first, each with its corner polygon or None; the region's kind; its text regions."""
+    kind: str
+    panels: list[tuple[int, int, int, int]]
+    corners: list[np.ndarray | None]
+    text: list[tuple[int, int, int, int]]
+
+
+def _px(b, w, h) -> tuple[int, int, int, int]:
+    x0, x1 = sorted((b[0], b[2])); y0, y1 = sorted((b[1], b[3]))
+    return (max(0, round(x0 * w / 1000)), max(0, round(y0 * h / 1000)), min(w, round(x1 * w / 1000)), min(h, round(y1 * h / 1000)))
+
+
+def to_layout(v: dict, w: int, h: int) -> Layout:
+    """A cached answer (any prompt version) in box pixels."""
+    corners = v.get("corners") or [None] * len(v["panels"])
+    cand = []
+    for b, c in zip(v["panels"], corners):
+        p = _px(b, w, h)
+        if p[2] - p[0] >= MIN_SIDE and p[3] - p[1] >= MIN_SIDE:
+            cand.append((p, None if c is None else np.array([[x * w / 1000, y * h / 1000] for x, y in c])))
+    cand.sort(key=lambda pc: -(pc[0][2] - pc[0][0]) * (pc[0][3] - pc[0][1]))
+    kept = []
+    for p, c in cand:
+        if all(_iou(p, k[0]) < DUP_IOU for k in kept):
+            kept.append((p, c))
+    text = [t for t in (_px(b, w, h) for b in v.get("text_regions") or []) if t[2] > t[0] and t[3] > t[1]]
+    return Layout(v.get("kind", "story"), [k[0] for k in kept], [k[1] for k in kept], text)
+
+
+def layout(img: Image.Image, tag: str = "panels") -> Layout:
+    """The cached answer for this box, asked for when not cached. Raises OR.BudgetExceeded, or PanelError after two
+    unusable answers."""
+    img = img.convert("RGB")
+    return to_layout(_cached(img, tag), *img.size)
+
+
+def _iou(a, b) -> float:
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0])); iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union else 0.0
+
+
+def _fit(b, T: np.ndarray, w: int, h: int) -> tuple[int, int, int, int]:
+    """A panel box fitted to the gutters around it. T: pixels that are page and look like page. Trimmed first: an
+    edge line that is TRIM_LINE page moves in (a loose box took in gutter, or a vignette's bare ground), two passes.
+    Then snapped: an edge on art moves out to the first line that is GUTTER_LINE page, if one lies within SNAP of the
+    box's size (the image edge counts as a gutter); else it stays (touching panels, insets)."""
+    x0, y0, x1, y1 = b
+    row = lambda y, a, c: T[y, a:c].mean() if c > a else 0.0  # noqa: E731
+    col = lambda x, a, c: T[a:c, x].mean() if c > a else 0.0  # noqa: E731
+    for _ in range(2):
+        while y1 - y0 > MIN_SIDE and row(y0, x0, x1) >= TRIM_LINE:
+            y0 += 1
+        while y1 - y0 > MIN_SIDE and row(y1 - 1, x0, x1) >= TRIM_LINE:
+            y1 -= 1
+        while x1 - x0 > MIN_SIDE and col(x0, y0, y1) >= TRIM_LINE:
+            x0 += 1
+        while x1 - x0 > MIN_SIDE and col(x1 - 1, y0, y1) >= TRIM_LINE:
+            x1 -= 1
+    ry, rx = max(2, round(SNAP * h)), max(2, round(SNAP * w))
+
+    def out(edge, step, reach, limit, line):
+        if line(edge) >= GUTTER_LINE:
+            return edge
+        for d in range(1, reach + 1):
+            e = edge + step * d
+            if e == limit:  # the image's edge
+                return e
+            if line(e) >= GUTTER_LINE:
+                return e - step
+        return edge
+    y0n = out(y0, -1, ry, -1, lambda y: row(y, x0, x1))
+    y1n = out(y1 - 1, 1, ry, h, lambda y: row(y, x0, x1)) + 1
+    x0n = out(x0, -1, rx, -1, lambda x: col(x, y0, y1))
+    x1n = out(x1 - 1, 1, rx, w, lambda x: col(x, y0, y1)) + 1
+    return (max(0, x0n), max(0, y0n), min(w, x1n), min(h, y1n))
+
+
+@dataclass
+class Split:
+    """A box's frames: masks (exclusive; with the page they cover the box), which of them are flat (text, credits:
+    no backdrop relief; their characters are still cards), and the page they leave out."""
+    frames: list[np.ndarray]
+    flat: list[bool]
+    page: np.ndarray
+
+
+def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.ndarray | None = None) -> Split:
+    """The frames of one box from the model's layout (None: no answer, the box is one scene); letters: the lettering
+    masks' union (its parts past every panel join no frame). See the module doc."""
     import cv2
-    gl = page_mask | (a.min(axis=2) >= 240)
-    if page_mask.any():
-        lab = cv2.cvtColor(a.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
-        pc = np.median(lab[page_mask], axis=0)
-        gl |= np.linalg.norm(lab - pc, axis=-1) <= PAGE_TOL
-    return gl
-
-
-def _trim(gl, y0, y1, x0, x1):
-    sub = gl[y0:y1, x0:x1]
-    r = np.flatnonzero(sub.mean(axis=1) < GUT)
-    c = np.flatnonzero(sub.mean(axis=0) < GUT)
-    if not len(r) or not len(c):
-        return None
-    return int(y0 + r[0]), int(y0 + r[-1] + 1), int(x0 + c[0]), int(x0 + c[-1] + 1)
-
-
-def _cut(gl, page, art, y0, y1, x0, x1, memo) -> tuple[list, list]:
-    """(frames, rejected leaves) of one region. Each gutter band is tried; the first whose two sides both hold a frame
-    is the cut. Failing that the region is one frame if it passes the art test as a whole: a white bubble column
-    inside a frame (Pepper&Carrot 39 p8) or a bubble band across one (p9) is gutter-like, and cut there the frame
-    lost its other half to a rejected leaf. Failing that too, the first band with a frame on one side is the cut (ToG
-    228 p64: a hand under its bubbles, whose art share the bubbles dilute); else the region is a rejected leaf."""
-    t = _trim(gl, y0, y1, x0, x1)
-    if t is None:
-        return [], []
-    if t in memo:
-        return memo[t]
-    y0, y1, x0, x1 = t
-    sub, psub = gl[y0:y1, x0:x1], page[y0:y1, x0:x1]
-    res, half = None, None
-    for axis in (0, 1):  # 0: a horizontal gutter (rows), 1: a vertical one (columns)
-        # a gutter is gutter-like across GUT of the region and mostly real page: white art (ToG 228 p7's fur) is
-        # gutter-like but enclosed by the frame (page share 0.53 there, 0.92-1.0 across real gutters)
-        ok = (sub.mean(axis=1 - axis) >= GUT) & (psub.mean(axis=1 - axis) >= PAGE_BAND)
-        ok = np.concatenate([[False], ok, [False]]).astype(np.int8)
-        n = len(ok) - 2
-        d = np.diff(ok)
-        for a, b in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):  # maximal gutter-like runs [a, b)
-            if b - a >= BAND and a >= MIN_PART and n - b >= MIN_PART:
-                a, b = int(a), int(b)
-                if axis == 0:
-                    k1, d1 = _cut(gl, page, art, y0, y0 + a, x0, x1, memo)
-                    k2, d2 = _cut(gl, page, art, y0 + b, y1, x0, x1, memo)
-                else:
-                    k1, d1 = _cut(gl, page, art, y0, y1, x0, x0 + a, memo)
-                    k2, d2 = _cut(gl, page, art, y0, y1, x0 + b, x1, memo)
-                if k1 and k2:
-                    res = (k1 + k2, d1 + d2)
-                    break
-                if (k1 or k2) and half is None:
-                    half = (k1 + k2, d1 + d2)
-        if res:
-            break
-    if res is None:
-        area = (y1 - y0) * (x1 - x0)
-        n = int(art[y0:y1, x0:x1].sum())
-        big = y1 - y0 >= MIN_FRAME and x1 - x0 >= MIN_FRAME
-        if big and n >= ART_PX and n >= ART_SHARE * area and (~psub).mean() >= FILL:
-            res = ([t], [])
-        else:
-            res = half or ([], [t])
-    memo[t] = res
-    return res
-
-
-def leaves(img: Image.Image, page_mask: np.ndarray) -> tuple[list, list]:
-    """(frame rectangles, rejected leaf rectangles) as (y0, y1, x0, x1)."""
-    a = np.asarray(img.convert("RGB"))
-    gl = _gutter_like(a, page_mask)
-    art = ~gl & (a.max(axis=2) > 40) & (a.min(axis=2) < 215)
-    return _cut(gl, page_mask, art, 0, a.shape[0], 0, a.shape[1], {})
-
-
-PIECE_MIN = 0.02   # share of the art a piece between gutters must hold to be a frame of its own
-PIECE_MAX = 8      # more pieces than this is a page of text (credits: 16), not frames
-
-
-def by_gutter(page_mask: np.ndarray) -> list[np.ndarray]:
-    """The art's connected pieces between gutters that hold at least PIECE_MIN of it; [] when there are more than
-    PIECE_MAX of them (text pages)."""
-    from scipy.ndimage import label
-    art = ~page_mask
-    lab, n = label(art)
-    if not n:
-        return []
-    size = np.bincount(lab.ravel())[1:]
-    ids = [k + 1 for k in np.flatnonzero(size >= PIECE_MIN * art.sum())]
-    return [lab == k for k in ids] if len(ids) <= PIECE_MAX else []
-
-
-def frames(img: Image.Image, page_mask: np.ndarray) -> list[np.ndarray]:
-    """One mask per frame: its rectangle minus the page. With several frames, the art no rectangle holds (a rejected
-    leaf: a caption, a bubble cluster, an SFX in the gutter) joins the nearest frame, so the masks cover every non-page
-    pixel exactly once."""
     from scipy.ndimage import distance_transform_edt
-    keep, _ = leaves(img, page_mask)
-    lab = np.zeros(page_mask.shape, np.int32)
-    for k, (y0, y1, x0, x1) in enumerate(keep, 1):
-        lab[y0:y1, x0:x1] = k
-    if len(keep) > 1:
-        _, (iy, ix) = distance_transform_edt(lab == 0, return_indices=True)
-        lab = lab[iy, ix]
-    pieces = by_gutter(page_mask)
-    if len(pieces) > 1:
-        # the rectangle cuts need a straight gutter across the whole box: slanted gutters left a row of four insets as
-        # ONE frame, and the depth model saw them as one picture (P&C 39 p12); the art's pieces between gutters split
-        # them, and the rectangle cuts still split pieces that art drawn across a gutter joins (the hat inset's
-        # feather into the big panel below). A frame is a piece of one rectangle
-        plab = np.zeros(page_mask.shape, np.int32)
-        for k, p in enumerate(pieces, 1):
-            plab[p] = k
-        _, (iy, ix) = distance_transform_edt(plab == 0, return_indices=True)
-        both = np.where(page_mask, 0, lab * (len(pieces) + 1) + plab[iy, ix])
-        art = (~page_mask).sum()
-        ids, size = np.unique(both[both > 0], return_counts=True)
-        big = ids[size >= PIECE_MIN * art]
-        lab = np.zeros(page_mask.shape, np.int32)
-        for k, v in enumerate(big, 1):
-            lab[both == v] = k
-        _, (iy, ix) = distance_transform_edt(lab == 0, return_indices=True)  # crumbs join the nearest frame
-        lab = lab[iy, ix]
-        keep = list(big)
-    return [(lab == k) & ~page_mask for k in range(1, len(keep) + 1)]
+    import page as PG
+    img = img.convert("RGB")
+    w, h = img.size
+    rgb = np.asarray(img)
+    page = gutter.copy()
+    kind = lay.kind if lay is not None else "story"
+    panels = list(lay.panels) if lay is not None else []
+    corners = list(lay.corners) if lay is not None else []
+    flat = [False] * len(panels)
+    if not panels:  # no answer, or a region without story panels: the whole box, flat unless it is a story
+        panels, corners, flat = [(0, 0, w, h)], [None], [lay is not None and kind != "story"]
+    rect = np.zeros((h, w), bool)
+    for x0, y0, x1, y1 in panels:
+        rect[y0:y1, x0:x1] = True
+    # what looks like page: white, the page colour page.py finds, and a flat colour holding FLAT_SHARE of the pixels
+    # outside every panel (the dark grey page of P&C 36/38, missed by page.gutter: its gutters and margins sat inside
+    # the frames)
+    lab = PG.lab(img)
+    looks = rgb.min(axis=2) >= 245
+    pc = PG.page_colour(img)
+    if pc is not None:
+        looks |= np.linalg.norm(lab - pc, axis=-1) <= PG.PAGE_TOL
+    outside = ~rect & ~page
+    flatc = np.zeros((h, w), bool)
+    if lay is not None and lay.panels and outside.sum() >= FLAT_MIN:
+        vals, cnt = np.unique(np.round(lab[outside] / 2), axis=0, return_counts=True)
+        near = np.linalg.norm(lab - vals[cnt.argmax()] * 2, axis=-1) <= FLAT_TOL
+        if near[outside].mean() >= FLAT_SHARE:
+            flatc = near
+            page |= near & ~rect  # only outside the panels: inside, the same colour may be art
+    # gutter-like, for fitting the boxes: looks like page and is page (or lies outside every panel), or is the flat
+    # page colour (a loose box's edge in a grey gutter that page.gutter missed)
+    G = (looks & (page | ~rect)) | flatc
+    panels = [_fit(b, G, w, h) for b in panels]
+    masks, slanted = [], []
+    for (x0, y0, x1, y1), c in zip(panels, corners):
+        m = np.zeros((h, w), bool)
+        m[y0:y1, x0:x1] = True
+        poly = None
+        if c is not None:  # a slanted panel: its polygon, when it fills most of its box
+            poly = np.zeros((h, w), np.uint8)
+            cv2.fillPoly(poly, [np.round(c).astype(np.int32)], 1)
+            poly = poly.astype(bool)
+            poly = poly if poly.sum() >= POLY_MIN * m.sum() else None
+        masks.append(m if poly is None else poly)
+        slanted.append(poly is not None)
+    lab_ = np.zeros((h, w), np.int32)
+    for k in sorted(range(len(masks)), key=lambda k: -masks[k].sum()):  # largest first: a smaller one wins its pixels
+        lab_[masks[k]] = k + 1
+    text = np.zeros((h, w), bool)
+    for x0, y0, x1, y1 in (lay.text if lay is not None else []):
+        text[y0:y1, x0:x1] = True
+    text &= (lab_ == 0) & ~page  # the text blocks no panel holds
+    if text.sum() < TEXT_MIN:  # a scrap: it joins the nearest frame like any art outside the panels
+        text[:] = False
+    # art outside every panel joins the nearest frame (the text frame among them), one piece at a time (pixels within
+    # 2 * PIECE_GAP of each other, so a word or a text block is one piece), when the piece touches a frame (within
+    # TOUCH_PX): a leg past a loose box (38-p018), a close-up's art running past its box, a bubble crossing a border.
+    # A piece cut off from every frame by page is loose and goes to the text frame (created when there is none): the
+    # credits under a story's last panel grew it by 421 px (37-p016), an end page's scroll by 1525 px (36-p028)
+    from scipy.ndimage import binary_dilation, label as cc
+    n = len(masks)
+    if text.any():
+        lab_[text] = n + 1
+    lettering = letters if letters is not None else np.zeros((h, w), bool)
+    # lettering past every panel (a bubble breaking the border) is drawn by the lettering layer, unclipped: it joins
+    # no frame, or its overhang grew the frame into bumps (39-p008)
+    spill = (lab_ == 0) & ~page & ~lettering
+    if spill.any() and (lab_ > 0).any():
+        dist, (iy, ix) = distance_transform_edt(lab_ == 0, return_indices=True)
+        near = lab_[iy, ix]
+        pieces, npieces = cc(binary_dilation(spill, iterations=PIECE_GAP), structure=np.ones((3, 3)))
+        pieces = np.where(spill, pieces, 0)
+        mind = np.full(npieces + 1, np.inf)
+        np.minimum.at(mind, pieces[spill], dist[spill])
+        loose = spill & (mind[pieces] > TOUCH_PX)
+        size = np.bincount(pieces[loose], minlength=npieces + 1)
+        dust = loose & (size[pieces] < DUST_PX)  # a speck cut off from every frame: page (37-p016's credits: 38 px)
+        page |= dust
+        loose &= ~dust
+        lab_ = np.where(spill & ~loose & ~dust, near, lab_)
+        if loose.any():
+            lab_[loose] = n + 1
+    # each frame (but a slanted one) is the rectangle around its box and the art that joined it: the free pixels in
+    # that rectangle (page, lettering) join it, those of other frames stay theirs; smallest first. Without it a
+    # vignette's ground hung off its box as a blob (39-p027: the table's shading under the girl and the cat)
+    for k in sorted(range(n), key=lambda k: masks[k].sum()):
+        mk = lab_ == k + 1
+        if not mk.any() or flat[k] or slanted[k]:
+            continue
+        ys, xs = np.nonzero(mk)
+        sub = lab_[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+        sub[sub == 0] = k + 1
+    out = [(lab_ == k + 1, flat[k]) for k in range(n) if (lab_ == k + 1).any()]
+    if (lab_ == n + 1).any():
+        out.append((lab_ == n + 1, True))
+    return Split([m for m, _ in out], [f for _, f in out], page)
 
 
 def main() -> None:
-    import io
-    import json
+    """Frames per box per episode, from the gutter alone: without the lettering masks the pipeline gives
+    frames_step, a bubble touching the box edge can read as page, so counts may differ from the pipeline's."""
     import sys
-    import zipfile
     from pathlib import Path
-    import parallax as PX
+    import page as PG
+    from chapter import Chapter
     for zp in map(Path, sys.argv[1:]):
-        z = zipfile.ZipFile(zp)
-        counts = []
-        for p in json.loads(z.read("manifest.json"))["panels"]:
-            img = Image.open(io.BytesIO(z.read(p["layers"][0]["image"]))).convert("RGB")
-            counts.append(len(frames(img, PX.gutter(img))))
+        ch = Chapter(zp)
+        counts, flats = [], []
+        for i in range(len(ch)):
+            img = ch.image(i)
+            try:
+                lay = layout(img, f"panels:{ch.pid(i)}")
+            except (OR.BudgetExceeded, PanelError) as e:
+                print(f"p{i}: no answer ({e})")
+                lay = None
+            s = split(img, PG.gutter(img), lay)
+            counts.append(len(s.frames))
+            flats += [i] if any(s.flat) else []
         hist = {k: counts.count(k) for k in sorted(set(counts))}
-        print(f"{zp.stem}: {len(counts)} boxes, frames per box {hist}; multi: {[i for i, c in enumerate(counts) if c > 1]}")
+        print(f"{ch.stem}: {len(counts)} boxes, frames per box {hist}; multi: {[i for i, c in enumerate(counts) if c > 1]}; "
+              f"with a flat frame: {flats}")
 
 
 if __name__ == "__main__":

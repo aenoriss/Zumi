@@ -1,14 +1,17 @@
-"""Item 8: an episode processed by steps 2-6 (episode.py) written back into a .zumi the readers open.
+"""Item 8: an episode processed by episode.py written back into a .zumi the readers open.
 
 Per processed box the panel becomes renderMode "scene3d" with panels/<id>/scene.glb:
-  layers     one textured quad per flat layer (cards.py), far to near: the backdrop of each frame, then a card per
-             character and erased object, each RGBA (alpha from its mask) and blended
-             (LEGACY, legacy_mesh.py: the layered depth mesh and the characters' figure surface instead)
+  layers     one textured surface per flat layer (cards.py), far to near: each frame's window, the backdrop of each
+             frame, then a card per character and erased object, each RGBA (alpha from its mask) and blended; a quad,
+             or a grid bulging by its relief map
   camera     the panel's own camera: a perspective camera at the origin looking down -Z (glTF convention), vertical
-             field of view from the 55 deg assumed on the long side; units are the depth model's (relative)
+             field of view from the 55 deg assumed on the long side (view.py); units are shares of the reading
+             distance, the frames' windows at 1
 Unlit materials (KHR_materials_unlit): the art is already lit. Bubbles go into the manifest as the schema allows
-(id, text, kind, position = normalised centre); their measured style and placement (shape, colours, font size,
-depth: lettering_layer.py) go into panels/<id>/bubbles.style.json next to the scene, until the schema has them.
+(id, text, kind, position = normalised centre, speakerId from Understand's cast, which is added to the manifest's,
+anchor = Understand's point on the speaker); their measured style and placement (shape, colours, font size, depth:
+lettering_layer.py) go into panels/<id>/bubbles.style.json next to the scene, until the schema has them. The
+lettering is also in the scene, as cards of the original bubbles.
 The original flat layer stays as the panel's fallback.
 
     python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>
@@ -25,47 +28,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from boxstore import Box, load_understanding, pid_of
+from view import focal
+
 KIND = {"speech": "speech", "thought": "thought", "caption": "caption", "sfx": "shout", "shout": "shout"}
 
 
-def grid_mesh(D: np.ndarray, k: int, w: int, h: int, fov: float, jump: float | None):
-    """The viewer's surface(): a vertex every k px where D > 0, two triangles per cell, dropped across depth jumps."""
-    gh, gw = D.shape
-    f = max(w, h) / (2 * np.tan(np.radians(fov) / 2))
-    v, u = np.mgrid[0:gh, 0:gw].astype(np.float32) * k
-    pos = np.stack([(u - w / 2) * D / f, -(v - h / 2) * D / f, -D], -1).reshape(-1, 3)
-    uv = np.stack([(u + 0.5) / w, (v + 0.5) / h], -1).reshape(-1, 2)  # glTF: v down from the top
-    idx = np.arange(gh * gw).reshape(gh, gw)
-    tris = []
-    for a, b, c in (((0, 0), (1, 0), (0, 1)), ((0, 1), (1, 0), (1, 1))):
-        A = idx[a[0]:a[0] + gh - 1, a[1]:a[1] + gw - 1]
-        Bq = idx[b[0]:b[0] + gh - 1, b[1]:b[1] + gw - 1]
-        C = idx[c[0]:c[0] + gh - 1, c[1]:c[1] + gw - 1]
-        da, db, dc = D.ravel()[A], D.ravel()[Bq], D.ravel()[C]
-        ok = (da > 0) & (db > 0) & (dc > 0)
-        if jump:
-            mx, mn = np.maximum(np.maximum(da, db), dc), np.minimum(np.minimum(da, db), dc)
-            ok &= mx / np.where(mn > 0, mn, 1) <= jump
-        tris.append(np.stack([A[ok], Bq[ok], C[ok]], -1))
-    tri = np.concatenate(tris).reshape(-1)
-    used = np.unique(tri)
-    remap = np.full(gh * gw, -1, np.int64)
-    remap[used] = np.arange(len(used))
-    return pos[used].astype(np.float32), uv[used].astype(np.float32), remap[tri].astype(np.uint32)
-
-
-def read_ldi(path: Path):
-    buf = path.read_bytes()
-    nv, ni = struct.unpack("<II", buf[:8])
-    pos = np.frombuffer(buf, np.float32, nv * 3, 8).reshape(-1, 3)
-    uv = np.frombuffer(buf, np.float32, nv * 2, 8 + nv * 12).reshape(-1, 2).copy()
-    uv[:, 1] = 1 - uv[:, 1]  # three.js flips textures vertically; glTF does not
-    idx = np.frombuffer(buf, np.uint32, ni, 8 + nv * 20)
-    return pos, uv, idx
-
-
 def write_glb(path: Path, meshes: list[dict], yfov: float, aspect: float) -> None:
-    """meshes: [{"name", "pos", "uv", "idx", "png" (bytes), "blend" (bool)}] -> one GLB, each mesh unlit."""
+    """meshes: [{"name", "pos", "uv", "idx", "png" (bytes), "blend" (bool), optional "extras" (the node's glTF
+    extras)}] -> one GLB, each mesh unlit."""
     blob = bytearray()
     views, accessors, images, textures, materials, gmeshes, nodes = [], [], [], [], [], [], []
 
@@ -95,7 +66,7 @@ def write_glb(path: Path, meshes: list[dict], yfov: float, aspect: float) -> Non
         a0 = len(accessors) - 3
         gmeshes.append({"name": m["name"], "primitives": [{"attributes": {"POSITION": a0, "TEXCOORD_0": a0 + 1},
                                                            "indices": a0 + 2, "material": len(materials) - 1}]})
-        nodes.append({"name": m["name"], "mesh": len(gmeshes) - 1})
+        nodes.append({"name": m["name"], "mesh": len(gmeshes) - 1, **({"extras": m["extras"]} if m.get("extras") else {})})
     nodes.append({"name": "panel_camera", "camera": 0})
     while len(blob) % 4:  # the BIN chunk is 4-byte aligned, and buffers[0].byteLength must equal its length
         blob.append(0)
@@ -142,30 +113,40 @@ def card_surface(x0, y0, x1, y1, z, w, h, f, u0=0.0, v0=0.0, u1=1.0, v1=1.0, rel
     return pos, uv, idx
 
 
-def box_cards(pid: str, mesh_dir: Path, out_glb: Path) -> bool:
+def box_cards(box: Box, out_glb: Path) -> bool:
     """The box's flat layers (cards.py) far to near, each at its depth facing the camera: backdrops run past their frame
-    by the margin (edge pixels stretched), character and object cards bulge by their relief. Each mesh is named
-    "<kind>: <name>" and its frame index is in cards.json: the reader clips each frame's layers to a window of the
-    frame's shape in front of them (glTF cannot say that)."""
-    c = json.loads((mesh_dir / f"{pid}.cards.json").read_text())
+    by the margin (edge pixels stretched), character and object cards bulge by their relief. The reader clips each
+    frame's layers to a window of the frame's shape in front of them (glTF cannot say that), as the browser viewer
+    does, so the gutters between frames stay empty: each frame's window comes first, a mesh "window: frame <n>" at the
+    window depth textured with the frame's shape (alpha), then the layers. A clipped layer's name ends in
+    " [frame <n>]"; lettering has no frame and is never clipped. The same goes into each node's extras
+    ({"kind", "frame"})."""
+    c, mesh_dir = box.cards(), box.mesh
     w, h, fov = c["w"], c["h"], c["fov"]
-    f = max(w, h) / (2 * np.tan(np.radians(fov) / 2))
+    f = focal(w, h, fov)
     meshes = []
+    for L in c["layers"]:
+        if L.get("window"):
+            wx0, wy0, wx1, wy1 = L["window_bbox"]
+            pos, uv, idx = card_surface(wx0, wy0, wx1, wy1, L["window_z"], w, h, f)
+            meshes.append({"name": f"window: frame {L['frame']}", "pos": pos, "uv": uv, "idx": idx,
+                           "png": png_bytes(mesh_dir / L["window"]), "blend": True,
+                           "extras": {"kind": "window", "frame": L["frame"]}})
     for L in c["layers"]:
         x0, y0, x1, y1 = L["bbox"]
         relief = (np.asarray(Image.open(mesh_dir / L["relief"]).convert("L"), np.float32) / 255
                   if L.get("relief") else None)
         if L["kind"] == "backdrop":
-            m = round(c.get("margin", 0) * max(w, h))
-            bw, bh = x1 - x0, y1 - y0
-            pos, uv, idx = card_surface(x0 - m, y0 - m, x1 + m, y1 + m, L["z"], w, h, f, -m / bw, -m / bh,
-                                        1 + m / bw, 1 + m / bh, relief=relief, amp=L.get("relief_amp", 0), n=32,
-                                        cell=L.get("relief_cell", 0))
+            # the backdrop's box already runs past its frame by its margin (cards.backdrop_image)
+            pos, uv, idx = card_surface(x0, y0, x1, y1, L["z"], w, h, f, relief=relief, amp=L.get("relief_amp", 0),
+                                        n=32, cell=L.get("relief_cell", 0))
         else:
             pos, uv, idx = card_surface(x0, y0, x1, y1, L["z"], w, h, f, relief=relief, amp=L.get("relief_amp", 0),
                                         cell=L.get("relief_cell", 0))
-        meshes.append({"name": f"{L['kind']}: {L['name']}", "pos": pos, "uv": uv, "idx": idx,
-                       "png": png_bytes(mesh_dir / L["png"]), "blend": True})
+        clipped = isinstance(L.get("frame"), int) and L["kind"] != "lettering"
+        meshes.append({"name": f"{L['kind']}: {L['name']}" + (f" [frame {L['frame']}]" if clipped else ""),
+                       "pos": pos, "uv": uv, "idx": idx, "png": png_bytes(mesh_dir / L["png"]), "blend": True,
+                       "extras": {"kind": L["kind"], **({"frame": L["frame"]} if clipped else {})}})
     if not meshes:
         return False
     t = np.tan(np.radians(fov) / 2)
@@ -173,63 +154,31 @@ def box_cards(pid: str, mesh_dir: Path, out_glb: Path) -> bool:
     return True
 
 
-def box_scene(pid: str, mesh_dir: Path, out_glb: Path) -> bool:
-    if (mesh_dir / f"{pid}.cards.json").exists():
-        return box_cards(pid, mesh_dir, out_glb)
-    return box_scene_legacy(pid, mesh_dir, out_glb)
-
-
-def box_scene_legacy(pid: str, mesh_dir: Path, out_glb: Path) -> bool:
-    """LEGACY (legacy_mesh.py): the layered depth mesh, or the panel's own grid surface, plus the figure surface."""
-    m = json.loads((mesh_dir / f"{pid}.json").read_text())
-    w, h, k, fov, jump = m["w"], m["h"], m["stride"], m["fov"], m["jump"]
-    meshes = []
-    if (mesh_dir / f"{pid}.ldi.bin").exists():
-        pos, uv, idx = read_ldi(mesh_dir / f"{pid}.ldi.bin")
-        meshes.append({"name": "scene", "pos": pos, "uv": uv, "idx": idx, "png": png_bytes(mesh_dir / f"{pid}.ldi.png"),
-                       "blend": False})
-    else:  # no hidden layers: the panel's own surface
-        D = np.fromfile(mesh_dir / f"{pid}.f32", np.float32).reshape(m["gh"], m["gw"])
-        pos, uv, idx = grid_mesh(D, k, w, h, fov, jump)
-        meshes.append({"name": "scene", "pos": pos, "uv": uv, "idx": idx, "png": png_bytes(mesh_dir / f"{pid}.png"),
-                       "blend": False})
-    if (mesh_dir / f"{pid}.fig.f32").exists() and (mesh_dir / f"{pid}.fig.png").exists():
-        F = np.fromfile(mesh_dir / f"{pid}.fig.f32", np.float32).reshape(m["gh"], m["gw"])
-        if (F > 0).any():
-            pos, uv, idx = grid_mesh(F, k, w, h, fov, jump)
-            meshes.append({"name": "figure", "pos": pos, "uv": uv, "idx": idx,
-                           "png": png_bytes(mesh_dir / f"{pid}.fig.png"), "blend": True})
-    if not meshes or not len(meshes[0]["idx"]):
-        return False
-    t = np.tan(np.radians(fov) / 2)
-    yfov = 2 * np.arctan(t if h >= w else t * h / w)
-    write_glb(out_glb, meshes, float(yfov), w / h)
-    return True
-
-
 def main():
     src, ep_out, dst = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-    mesh_dir = ep_out / "parallax" / "mesh"
     zin = zipfile.ZipFile(src)
     man = json.loads(zin.read("manifest.json"))
     stem = src.stem
+    # Understand's cast, so the bubbles can name their speaker (speakerId: a cast id); the schema keeps id and name
+    known = {c.get("id") for c in man.setdefault("cast", [])}
+    man["cast"] += [{"id": c["id"], "name": c.get("name") or c["id"]} for c in load_understanding(ep_out)["cast"]
+                    if c.get("id") and c["id"] not in known]
     tmp = dst.parent / (dst.stem + "_build")
     tmp.mkdir(parents=True, exist_ok=True)
     added: dict[str, bytes] = {}
     done = 0
     for i, p in enumerate(man["panels"]):
-        pid = f"{stem}-p{i:03d}"
-        if not (mesh_dir / f"{pid}.json").exists():
+        box = Box(ep_out, pid_of(stem, i))
+        if box.cards() is None:
             continue
         glb = tmp / f"{p['id']}.glb"
-        if not box_scene(pid, mesh_dir, glb):
+        if not box_cards(box, glb):
             continue
         p["renderMode"] = "scene3d"
         p["scene"] = f"panels/{p['id']}/scene.glb"
         added[p["scene"]] = glb.read_bytes()
-        bfile = mesh_dir / f"{pid}.bubbles.json"
-        if bfile.exists():
-            bd = json.loads(bfile.read_text())
+        bd = box.bubbles()
+        if bd is not None:
             W, H = bd["w"], bd["h"]
             p["bubbles"] = []
             for b in bd["bubbles"]:
@@ -241,8 +190,10 @@ def main():
                 if b.get("speaker") and b.get("kind") not in ("caption", None) and any(
                         c.get("id") == b["speaker"] for c in man.get("cast", [])):
                     entry["speakerId"] = b["speaker"]
+                if b.get("anchor"):  # Understand's point on the speaker, 0..1 of the box
+                    entry["anchor"] = {"x": round(b["anchor"][0], 4), "y": round(b["anchor"][1], 4)}
                 p["bubbles"].append(entry)
-            added[f"panels/{p['id']}/bubbles.style.json"] = bfile.read_bytes()
+            added[f"panels/{p['id']}/bubbles.style.json"] = box.bubbles_file.read_bytes()
         done += 1
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():

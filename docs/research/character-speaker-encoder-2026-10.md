@@ -16,7 +16,7 @@ Measured on our data:
 | Approach | Result |
 |---|---|
 | Maverick, one panel at a time | Links speakers inside a panel well (pairwise P/R 0.92/0.85); loses identity across scenes (recall 0.42) |
-| Body-only DINOv2-large clustering, True Beauty episodes 4/5/7 (289 crops, `segment/cluster_body.py`) | Groups by shot scale, uniform and accessories, not identity. One 28-crop cluster is close-ups of mixed characters (judged by eye; not yet labelled) |
+| Body-only DINOv2-large clustering, True Beauty episodes 4/5/7 (289 crops, `segment/cluster_body.py`, deleted 2026-10-30: in the git history) | Groups by shot scale, uniform and accessories, not identity. One 28-crop cluster is close-ups of mixed characters (judged by eye; not yet labelled) |
 
 The literature points the same way:
 - Body is a weak identity cue alone: NMI 42.9 against 72.9 for face (MuHPC, TV).

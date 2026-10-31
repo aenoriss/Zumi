@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import speakers as SP  # noqa: E402
+from boxstore import Box  # noqa: E402
 
 TUNE = {"pepper-carrot-37", "pepper-carrot-39"}
 TEST = {"pepper-carrot-36", "pepper-carrot-38"}
@@ -33,13 +34,16 @@ def evaluate(root: Path, split: str = "tune", sheet: Path | None = None) -> dict
     for box in data["boxes"]:
         if box["episode"] not in eps:
             continue
-        got = SP.load_box(box["pid"], root / "dataset" / box["episode"] / "parallax" / "mesh")
+        got = SP.load_box(Box(root / "dataset" / box["episode"], box["pid"]))
         if got is None:
             continue
         cards, bubbles, frames, _ = got
         for b in bubbles:
             lab = labels.get(f"{box['pid']}#{b.id}")
             if not lab or lab.get("skip"):
+                continue
+            if lab["kind"] in ("missing", "off_panel"):  # no card to find (a segmentation miss, or a speaker not
+                by_kind[lab["kind"] + " (not scored)"][1] += 1  # drawn in the box; user 2026-10-29): not scored
                 continue
             a = SP.assign(b, cards, frames)
             # right: the kind matches and, for a card, the answer holds every labelled speaker and nothing outside

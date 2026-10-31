@@ -25,7 +25,7 @@ primary source. Line links are permalinks to the commits above.
    modular diffusers ([edit-plus blocks][MBP] vs [edit blocks L147][MBE]).
 5. **Our Lightning runs use the wrong scheduler.** The LoRA was distilled with shift 3 and no terminal stretch
    (`base_shift = max_shift = log 3`, `shift_terminal: None`, [generate_with_diffusers.py L56-L72][LG]);
-   `qwen_angles.py` keeps the 2509 default (`max_shift 0.9`, `shift_terminal 0.02`, [scheduler config][SC09]),
+   `qwen_angles.py` (pipeline/modal, deleted 2026-10-30, in the git history) keeps the 2509 default (`max_shift 0.9`, `shift_terminal 0.02`, [scheduler config][SC09]),
    which for 4028 tokens gives shift ≈ 2.0 instead of 3 [inference, from [L70-L81][P70] and [L655-L656][S655]].
 6. **Official prompt for hole filling is a fixed template:** "Perform inpainting on this image. The original
    caption is: " ([prompt_utils.py L225-L226][PU]). Images are labelled "Picture 1:", "Picture 2:" in the

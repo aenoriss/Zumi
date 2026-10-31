@@ -1,6 +1,6 @@
 """Score Understand results against hand-written labels.
 
-    uv run python score_understand.py <labels.json> <result.json> [<result.json> ...]
+    uv run python experiments/score_understand.py <labels.json> <result.json> [<result.json> ...]
 
 Labels: {"panels": {"<panel>": {"<element number>": {"keep": bool, "text": str, "speaker": str}}}}; speaker "?"
 means not scored. Per result file: keep accuracy (all labelled elements); text accuracy, 1 - character error rate

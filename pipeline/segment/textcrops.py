@@ -1,4 +1,5 @@
-"""Clean text crops: each dialogue mask cut out as black lettering on white, for the step that reads it.
+"""Clean text crops: each dialogue mask cut out as black lettering on white (bubbles.py's CLI saves them), and the
+letter count the lettering filters use (letter_count).
 
 For one bubble or caption mask:
 1. inner area = the mask shrunk past its outline (outline width scales with the bubble's size);

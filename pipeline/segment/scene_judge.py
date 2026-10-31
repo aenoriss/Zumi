@@ -1,18 +1,13 @@
-"""Two decisions per box a person made by eye, made by one small vision call each (Claude Haiku via openrouter.py):
+"""A decision per box a person made by eye, made by one small vision call (Claude Haiku via openrouter.py):
+choose_objects, before the erase: which objects to cut out of the backdrop (furniture, props, held items), each as
+a SAM text prompt and a point on it (the box is shown with a coordinate grid in box pixels, so the points can be
+read off it).
 
-  choose_objects  before the erase: which big foreground objects (furniture, vehicles, big props in front of floor or
-                  wall) to erase so the background behind them is revealed, each as a SAM text prompt and a point on it
-                  (the box is shown with a coordinate grid in box pixels, so the points can be read off it)
-  judge_tears     after the mesh: for each tear on tears.list_tears' contact sheet, "close" (the depth model split one
-                  surface) or "keep" (a real object edge)
-
-    python scene_judge.py objects <image.png>
-    python scene_judge.py tears <tears dir>          (tears_sheet.png + tears.json from tears.list_tears)
+    python scene_judge.py <image.png>
 """
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -20,26 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from openrouter import chat, image_part
+from openrouter import ask_json, image_part
 
 MODEL = "anthropic/claude-haiku-5.5"
 EFFORT = "high"
-REASONING_TOKENS = 4000  # reasoning spends from max_tokens (review_loop.py)
 MAX_SIDE = 1568          # the model's own downscale limit: a bigger image only costs upload
-
-
-def _json(text: str) -> dict:
-    m = re.search(r"\{.*\}", text or "", re.S)
-    try:
-        return json.loads(m.group(0)) if m else {}
-    except json.JSONDecodeError:
-        return {}
-
-
-def _ask(content: list, tag: str, max_tokens: int) -> tuple[dict, float]:
-    text, usage = chat(MODEL, [{"role": "user", "content": content}], max_tokens=max_tokens + REASONING_TOKENS,
-                       tag=tag, reasoning=EFFORT)
-    return _json(text), float(usage.get("cost", 0) or 0)
 
 
 def grid_image(img: Image.Image, step: int | None = None) -> Image.Image:
@@ -173,15 +153,17 @@ def choose_objects(img: Image.Image, chars: np.ndarray | None = None, tag: str =
     object in the scene, small ones included, each a layer of its own (cards.py), an item resting on another listed
     object joined to it, a held one to its holder. chars (optional, box-sized bool): a point on a character is moved to
     the nearest pixel off it within SNAP_PX, else dropped; an animal's point is never moved (on a character mask it IS
-    that character, already cut out)."""
+    that character, already cut out). Raises openrouter.Truncated (no answer) and BudgetExceeded: the caller must
+    not take either for "no objects"."""
     from scipy.ndimage import distance_transform_edt
     img = img.convert("RGB")
     w, h = img.size
     step = 100 if max(w, h) <= 2400 else 200
     prompt = OBJECTS_PROMPT.format(w=w, h=h, step=step)
-    # 3000: on a busy box (P&C 39 p12, ~27 objects) the answer ran into a 1500 + 4000 reasoning cap and came back cut
-    res, cost = _ask([{"type": "text", "text": prompt}, image_part(grid_image(img, step), max_side=MAX_SIDE)],
-                     f"scene_judge objects {tag}".strip(), 3000)
+    # 3000 for the answer (plus the gateway's reasoning allowance): on a busy box (P&C 39 p12, ~27 objects) a 1500
+    # answer budget cut it short
+    res, cost = ask_json(MODEL, [{"type": "text", "text": prompt}, image_part(grid_image(img, step), max_side=MAX_SIDE)],
+                         f"scene_judge objects {tag}".strip(), 3000, EFFORT)
     near = None
     if chars is not None and chars.any():
         dist, (iy, ix) = distance_transform_edt(chars, return_indices=True)
@@ -214,93 +196,11 @@ def choose_objects(img: Image.Image, chars: np.ndarray | None = None, tag: str =
         out.append({"name": name, "point": [x, y], "on": str(on).strip() if on else None, "held": o.get("held") is True,
                     "front": o.get("front") is True, "except": exc, "animal": animal})
     log(f"  objects {tag}: {[o['name'] for o in out] or 'none'} (room {res.get('room')}, {cost:.4f} USD)")
-    choose_objects.last_cost = cost
     return out
 
 
-choose_objects.last_cost = 0.0
-
-
-TEARS_PROMPT = """A comic panel was turned into a 3D surface from an estimated depth map. Where the depth jumps, the \
-surface is cut open (a "tear"). The image shows each tear in its own numbered tile: a crop of the panel with the tear \
-drawn in solid red. The tile title gives the tear's number, its size in grid cells (one cell = {stride} px) and its \
-depth ratio (how much farther one side is than the other: x1.04 = 4%).
-{stats}
-
-For each tear decide:
-- "close": there is NO real depth edge there; the depth model split ONE continuous surface. Typical: a line on a wall \
-(a pillar or panel line, a moulding, a seam), a straight line along the panel's top or bottom border, a crease or a \
-plank line on the floor, the edge of a cast shadow or of a patch of light on the floor or wall, the edge where a \
-character's own cast shadow meets the floor. Closing joins both sides into one surface.
-- "keep": the red line follows a REAL OBJECT'S OUTLINE against what is behind it: a table, desk or chair edge or leg \
-against the floor or wall, a vase or pot against the wall or table, a chair back against the floor, a hand or arm \
-resting on a table, any object standing in front of the background. Keeping leaves the cut, which is right there.
-Look at what lies on EACH side of the red line: two different things at different distances -> keep; the same \
-surface on both sides -> close.
-CHARACTERS ARE NOT PART OF THIS SURFACE: they are cut out and placed separately, so a character's outline is never a \
-reason to keep. A tear that runs along a character's outline (robe, sleeve, hair, shoes) is the depth model bleeding \
-the character's depth onto the floor or wall right next to it: judge only the scene beside it. If there is just \
-floor, shadow or wall there -> close. Keep it only if a real object (table, chair, desk) lies along the red line, e.g. \
-a hand resting ON a table's edge, a chair back behind a character.
-The depth ratio is evidence too: a wrongly split surface rarely jumps by more than about 10% (x1.10); a jump of 15% \
-or more (x1.15+) is almost always a real edge, so close one only if the picture plainly shows one surface.
-
-Answer with JSON only, one entry per tear:
-{{"tears": [{{"id": 1, "what": "<few words: what is on each side of the red line>", "decision": "close"}}]}}"""
-
-
-def _sheet_relayout(sheet: Image.Image, n: int, cols_in: int = 8, tw: int = 190, th: int = 205, cols: int = 4) -> Image.Image:
-    """list_tears' sheet (8 tiles of 190 x 205 per row) re-laid in 4 columns and enlarged to fill MAX_SIDE: each tear
-    gets about twice the pixels it had in the model's view."""
-    rows = (n + cols - 1) // cols
-    out = Image.new("RGB", (cols * tw, rows * th), "white")
-    for i in range(n):
-        tile = sheet.crop(((i % cols_in) * tw, (i // cols_in) * th, (i % cols_in + 1) * tw, (i // cols_in + 1) * th))
-        out.paste(tile, ((i % cols) * tw, (i // cols) * th))
-    s = min(MAX_SIDE / max(out.size), (1.15e6 / (out.width * out.height)) ** 0.5)
-    return out.resize((round(out.width * s), round(out.height * s)), Image.LANCZOS) if s > 1 else out
-
-
-def judge_tears(sheet_png, tears_json, stride: int = 2, tag: str = "", log=print) -> dict:
-    """{"close": [ids], "keep": [ids], "what": {id: description}}. A tear the model leaves out is kept (a wrong close
-    pulls a real object edge into a rubber sheet; a wrong keep only leaves a cut)."""
-    T = json.loads(Path(tears_json).read_text()) if not isinstance(tears_json, list) else tears_json
-    if not T:
-        return {"close": [], "keep": [], "what": {}}
-    sheet = Image.open(sheet_png).convert("RGB")
-    stats = "\n".join(f"#{t['id']}: {t['n']} cells, x{t['ratio']}" for t in T)
-    res, cost = _ask([{"type": "text", "text": TEARS_PROMPT.format(stride=stride, stats=stats)},
-                      image_part(_sheet_relayout(sheet, len(T)), max_side=MAX_SIDE)],
-                     f"scene_judge tears {tag}".strip(), 60 + 40 * len(T))
-    got = {}
-    for e in res.get("tears") or []:
-        try:
-            got[int(e["id"])] = e
-        except (KeyError, TypeError, ValueError):
-            continue
-    ids = [t["id"] for t in T]
-    close = [i for i in ids if str(got.get(i, {}).get("decision", "")).lower() == "close"]
-    keep = [i for i in ids if i not in close]
-    missing = [i for i in ids if i not in got]
-    if missing:
-        log(f"  tears {tag}: no decision for {missing}, kept")
-    log(f"  tears {tag}: close {close}, keep {keep} ({cost:.4f} USD)")
-    judge_tears.last_cost = cost
-    return {"close": close, "keep": keep, "what": {i: got.get(i, {}).get("what") for i in ids}}
-
-
-judge_tears.last_cost = 0.0
-
-
 def main():
-    cmd, path = sys.argv[1], Path(sys.argv[2])
-    if cmd == "objects":
-        print(json.dumps(choose_objects(Image.open(path)), indent=1))
-    elif cmd == "tears":
-        stride = json.loads(Path(sys.argv[3]).read_text())["stride"] if len(sys.argv) > 3 else 2
-        print(json.dumps(judge_tears(path / "tears_sheet.png", path / "tears.json", stride), indent=1))
-    else:
-        raise SystemExit(f"unknown command {cmd}")
+    print(json.dumps(choose_objects(Image.open(Path(sys.argv[1]))), indent=1))
 
 
 if __name__ == "__main__":

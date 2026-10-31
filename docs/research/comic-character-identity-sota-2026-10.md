@@ -9,7 +9,7 @@ How to read the evidence:
 - **[unverified]** marks an item taken only from a search snippet or from an abstract without numbers.
 - Every statement about webtoons is reasoning, not measurement. No webtoon identity dataset or paper exists.
 
-Zumi baseline, measured on 38 boxes and 65 lines (`compare_understand.py`, `score_understand.py`). Same-speaker pairs, precision / recall:
+Zumi baseline, measured on 38 boxes and 65 lines (`compare_understand.py`, deleted 2026-10-30 and in the git history; `experiments/score_understand.py`). Same-speaker pairs, precision / recall:
 
 | Pairs | Maverick, one box at a time with a text cast | Opus 5.5 (3.1 ¢/box) |
 |---|---|---|

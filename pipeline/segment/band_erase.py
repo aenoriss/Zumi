@@ -1,7 +1,8 @@
-"""Step 3, the erase, as settled with the user on 2026-10-27 (tests in experiments/prefill_*.py, erase_review/):
-what is behind every card is painted by FLUX Erase, from as much real background as the model can use.
+"""Step 3, the erase, as settled with the user on 2026-10-27 (the tests behind it, experiments/prefill_*.py, are in
+the git history; their outputs in .data/out/dataset/erase_review/): what is behind every card is painted by FLUX
+Erase (flux_erase.erase_image), from as much real background as the model can use.
 
-Per box, from its flat layers (mesh/<pid>.cards.json: the cards and the frames' windows):
+Per box, from its flat layers (its cards) and the frame step's frames (boxstore.Box):
 1. every card's interior is prefilled with the plain background colour of its own frame (membrane interpolation,
    no texture): the model then has no character left to continue (masking only a band left the figure visible and
    it painted it back), and no strokes to copy (a textured prefill came back as cracked plaster);
@@ -16,41 +17,40 @@ Per box, from its flat layers (mesh/<pid>.cards.json: the cards and the frames' 
    FLAT_MIN of the mask absent from the scene (the placeholder: green, khaki, teal, white; the old colour transform
    disguised it as a brown or grey field). On a hit the box is retried frame by frame: the failing boxes were frames
    of unrelated scenes side by side (P&C 39 p23, a warm tavern beside an icy battle), and each frame alone works;
-6. the model's colour cast removed (a per-channel fit on the background away from the cards), the tone matched at
-   every outline (seam_match).
+6. the model's colour cast removed (colour_transform, fitted on the background away from the cards), the tone
+   matched at every outline (seam_match).
 
 Writes plates/<pid>/band-plate.png (the whole box, the art outside the cards) and band-raw[-fK].npz (the paid
-outputs, keyed on the mask: a rerun with the same mask pays nothing); episode.layers_step uses band-plate.png as
-the backdrop when it exists.
+outputs, keyed on the mask: a rerun with the same mask pays nothing); cards.layers uses band-plate.png as the
+backdrop when it exists.
 
     uv run python band_erase.py <episode.zumi> <out dir> [--panels 3,7] [--dry]
 """
 from __future__ import annotations
 
 import hashlib
-import io
-import json
 import sys
 import threading
-import zipfile
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
 from scipy.ndimage import binary_dilation, distance_transform_edt as edt
 
 import flux_erase as FE
+from boxstore import Box
+from cards import BACKDROP_Z
+from chapter import Chapter
+from view import focal
 
 LEAN = 0.3 / 1.5     # the head move the band covers, in units of the reading distance (30 cm at 1.5 m)
 BAND_PAD = 6         # px past that shift
 MAX_SHARE = 0.55     # a frame's band grown while its masked share stays under this
 GROW_STEP = 8        # px per growth step
-WINDOW_GROW = 13     # a window is cut 12 px inside its frame (cards.INSET): grown back to the frame's edge
 MARGIN_PX = 10       # px each character and bubble is grown outward, in the mask and in what is replaced
 MARGIN_OBJ_PX = 16   # ...each object
 SEAM_GROW = 24       # px past that over which the model's output is blended into the art
-API_DILATE = 8       # px the erase API grows the mask itself (flux_erase.erase, dilate_pixels)
+API_DILATE = FE.DILATE  # px the erase API grows the mask itself
 WORKERS = 16         # boxes erased at once (BFL allows 24 requests in flight; a box's frame retries add to it)
 INPUT_VERSION = "white-page"  # part of the saved outputs' key: v1 sent the page as it was
 TEX_MIN = 0.12       # placeholder check: fill texture / real background texture (failures 0.00-0.12, fills 0.13+)
@@ -97,37 +97,26 @@ def membrane(img: np.ndarray, known: np.ndarray) -> np.ndarray:
     return fill
 
 
-def box_layers(cj: dict, mesh: Path) -> tuple[list[dict], list[np.ndarray]]:
-    """The box's cards ({mask, kind, shift}: shift = px a LEAN head move slides the card over its backdrop) and its
-    frames (each window grown back to the frame's edge)."""
+def sliding_cards(box: Box, cj: dict) -> list[dict]:
+    """The box's cards ({mask, kind, shift}: shift = px a LEAN head move slides the card over its backdrop)."""
     w, h = cj["w"], cj["h"]
-    f = max(w, h) / (2 * np.tan(np.radians(cj["fov"] / 2)))
+    f = focal(w, h, cj["fov"])
     back_z = {l["frame"]: l["z"] for l in cj["layers"] if l["kind"] == "backdrop"}
-    cards, frames = [], []
+    cards = []
     for l in cj["layers"]:
         if l["kind"] == "backdrop":
-            wa = np.asarray(Image.open(mesh / l["window"]))[..., 3] > 0
-            fa = np.zeros((h, w), bool)
-            x0, y0 = l["window_bbox"][:2]
-            fa[y0:y0 + wa.shape[0], x0:x0 + wa.shape[1]] = wa
-            frames.append(binary_dilation(fa, iterations=WINDOW_GROW))
             continue
-        a = np.asarray(Image.open(mesh / l["png"]).convert("RGBA"))[..., 3] > 127
-        x0, y0, x1, y1 = l["bbox"]
-        m = np.zeros((h, w), bool)
-        sx0, sy0, sx1, sy1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
-        m[sy0:sy1, sx0:sx1] = a[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0]
-        zb = back_z.get(l.get("frame"), max(back_z.values()) if back_z else 1.2)
+        zb = back_z.get(l.get("frame"), max(back_z.values()) if back_z else BACKDROP_Z)
         mid = l["z"] * (1 - l.get("relief_amp", 0) * 0.5)  # between the card's plane and its relief peak
-        cards.append({"mask": m, "kind": l["kind"], "shift": f * LEAN * (1 / mid - 1 / zb)})
-    return cards, frames
+        cards.append({"mask": box.layer_mask(l, (h, w)), "kind": l["kind"], "shift": f * LEAN * (1 / mid - 1 / zb)})
+    return cards
 
 
 def band_mask(cards: list[dict], frames: list[np.ndarray], art: np.ndarray) -> np.ndarray:
     """The erase mask: per card a band of its shift + BAND_PAD px, then grown per frame toward the interior while
     the frame's masked share stays under MAX_SHARE; the bubbles whole, past the frames too. A bubble clipped to its
     frame left its outer half in the image and the model completed its lettering into the fill (garbled text in
-    P&C 39 p6, p8, p14, p17); the old erase (hidden_layers.prepare) masked them whole and never showed it."""
+    P&C 39 p6, p8, p14, p17)."""
     foot = np.logical_or.reduce([c["mask"] for c in cards])
     d = edt(foot)
     band = np.zeros_like(foot)
@@ -151,8 +140,8 @@ def band_mask(cards: list[dict], frames: list[np.ndarray], art: np.ndarray) -> n
 
 def margin(cards: list[dict], sent: bool = False) -> np.ndarray:
     """The ring each card is grown by outward, MARGIN_PX (objects MARGIN_OBJ_PX): a figure's dark outline, glow and
-    anti-aliased fringe go with it (hidden_layers.prepare's GROW; at 8 px around objects the model kept a ghost of a
-    desk). Without it the outline stayed in the backdrop beside the sliding card. sent: the part of it the mask itself
+    anti-aliased fringe go with it (at 8 px around objects the model kept a ghost of a desk). Without it the outline
+    stayed in the backdrop beside the sliding card. sent: the part of it the mask itself
     carries, the API adding API_DILATE px (the full ring in the mask put boxes at 80-90% masked, where the model
     answers with its placeholder)."""
     out = np.zeros_like(cards[0]["mask"])
@@ -168,8 +157,7 @@ def margin(cards: list[dict], sent: bool = False) -> np.ndarray:
 
 def colour_transform(got: np.ndarray, ref: np.ndarray, same: np.ndarray) -> np.ndarray:
     """got brought to ref's colours by one 3x3 + offset transform (least squares in RGB), fitted where both show the
-    same scene: the model shifts the tone of its whole image, hue included, which a per-channel gain cannot undo
-    (hidden_layers.colour_transform)."""
+    same scene: the model shifts the tone of its whole image, hue included, which a per-channel gain cannot undo."""
     if same.sum() < 200:
         return got.astype(np.float32)
     X = np.c_[got[same].reshape(-1, 3).astype(np.float64), np.ones(int(same.sum()))]
@@ -227,18 +215,6 @@ def lettering_free(img: np.ndarray, lettering: np.ndarray, frames: list[np.ndarr
     return out
 
 
-def cast_fit(got: np.ndarray, ref: np.ndarray, m: np.ndarray) -> np.ndarray:
-    """Per channel, got -> ref by least squares on the pixels m (the model's colour cast)."""
-    out = got.astype(np.float32).copy()
-    if m.sum() < 200:
-        return out
-    for c in range(3):
-        A = np.c_[got[m][:, c], np.ones(int(m.sum()))]
-        k, *_ = np.linalg.lstsq(A, ref[m][:, c].astype(np.float64), rcond=None)
-        out[..., c] = got[..., c] * k[0] + k[1]
-    return out
-
-
 def seam_match(img, res, foot, page, reach, cap=30.0, sat_max=200, S=8.0):
     """res with the tone step at every card outline removed: (real background just outside) - (fill just inside),
     measured without bright or saturated accents, clipped to its 5-95% range and CAP levels, spread inward and faded
@@ -276,18 +252,22 @@ def _call(sent: np.ndarray, m: np.ndarray, cache: Path, dry: bool):
             return z["g"], "saved output"
     if dry:
         return None, "dry"
-    _, got, line = FE.erase_panel(sent.copy(), m)
+    got, line = FE.erase_image(sent.copy(), m)
     np.savez_compressed(cache, g=got.astype(np.uint8), key=key)
     return got, line
 
 
-def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = False, log=print) -> np.ndarray | None:
-    """The band-erase plate of one box (the art outside its cards), or None when it has no cards (or dry)."""
-    cards, frames = box_layers(cj, mesh)
+def erase_box(box: Box, img: np.ndarray, dry: bool = False, log=print) -> np.ndarray | None:
+    """The band-erase plate of one box (the art outside its cards), from its layers and the frame step's frames,
+    saved in its plates dir; None when it has no cards (or dry)."""
+    cj, fr = box.cards(), box.frames()
+    cards = sliding_cards(box, cj) if cj else []
+    frames = fr.masks if fr else []
     if not cards or not frames:
         return None
-    # the page is what lies outside every frame: a near-white test took the bubbles' white interiors for page, so
-    # they were neither masked nor painted and each bubble stayed in its plate (a ghost behind the bubble card)
+    # what lies outside every frame (the page, and lettering past the frames) is not erased and goes to the model
+    # white: a near-white test took the bubbles' white interiors for page, so they were neither masked nor painted and
+    # each bubble stayed in its plate (a ghost behind the bubble card)
     art = np.logical_or.reduce(frames)
     page = ~art
     foot = np.logical_or.reduce([c["mask"] for c in cards])
@@ -298,8 +278,7 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
     pre[page] = 255
     ys, xs = np.nonzero(art)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-    out.mkdir(parents=True, exist_ok=True)
-    got, line = _call(pre[y0:y1, x0:x1], mask[y0:y1, x0:x1], out / "band-raw.npz", dry)
+    got, line = _call(pre[y0:y1, x0:x1], mask[y0:y1, x0:x1], box.erase_output_file(), dry)
     log(f"  mask {mask[art].mean():.0%} of the art; {line}")
     if got is None:
         return None
@@ -318,7 +297,7 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
         if not why:
             continue
         log(f"  frame {k}: placeholder ({why}): retry this frame alone")
-        got_k, line_k = _call(pre[sl], fm, out / f"band-raw-f{k}.npz", dry)
+        got_k, line_k = _call(pre[sl], fm, box.erase_output_file(k), dry)
         if got_k is None:
             return None
         why_k = placeholder(got_k, fm, img[sl], fa[sl])
@@ -326,33 +305,32 @@ def erase_box(img: np.ndarray, cj: dict, mesh: Path, out: Path, dry: bool = Fals
         g[sl] = np.where(fa[sl][..., None], got_k, g[sl])
     g = colour_transform(g, img, art & ~binary_dilation(mask, iterations=8))
     # the model's pixels under the cards and their margin (outline, glow), then blended into the art over SEAM_GROW px
-    # past it: a hard switch left a visible seam around each patch (hidden_layers.plates_for)
+    # past it: a hard switch left a visible seam around each patch
     under = (foot | margin(cards)) & art
     res = np.where(under[..., None], g, img.astype(np.float32))
     reach = max(abs(c["shift"]) + BAND_PAD for c in cards)
     res = seam_match(img, res, under, page, reach)
     a = np.clip(1 - edt(~under) / SEAM_GROW, 0, 1) * art
     res = (res * a[..., None] + img.astype(np.float32) * (1 - a[..., None])).clip(0, 255).astype(np.uint8)
-    Image.fromarray(res).save(out / "band-plate.png")
+    box.save_plate(res)
     return res
 
 
-def erase_boxes(jobs: list[tuple], dry: bool = False, workers: int = WORKERS, log=print) -> None:
-    """erase_box on every (pid, img, cards.json dict, mesh dir, plates dir), WORKERS boxes at a time: a call is 5-9 s
-    of waiting on BFL, so in sequence 29 boxes took ~4 min. Each box's lines are printed together when it is done.
-    The daily cap (flux_erase reserves every call in flight) stops the boxes not yet sent; a refused box (BFL
-    moderation) skips only itself."""
+def erase_boxes(jobs: list[tuple[Box, np.ndarray]], dry: bool = False, workers: int = WORKERS, log=print) -> None:
+    """erase_box on every (box, image), WORKERS boxes at a time: a call is 5-9 s of waiting on BFL, so in sequence 29
+    boxes took ~4 min. Each box's lines are printed together when it is done. The daily cap (flux_erase reserves
+    every call in flight) stops the boxes not yet sent; a refused box (BFL moderation) skips only itself."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     stop = threading.Event()
 
     def one(job):
-        pid, img, cj, mesh, out = job
-        lines = [pid]
+        box, img = job
+        lines = [box.pid]
         if stop.is_set():
             return lines + ["  not sent: the daily budget was reached"]
         try:
-            erase_box(img, cj, mesh, out, dry, log=lines.append)
-        except SystemExit as e:
+            erase_box(box, img, dry, log=lines.append)
+        except FE.BudgetExceeded as e:
             stop.set()
             lines.append(f"  STOP: {e}")
         except Exception as e:
@@ -367,21 +345,17 @@ def erase_boxes(jobs: list[tuple], dry: bool = False, workers: int = WORKERS, lo
 def main():
     zumi, out = Path(sys.argv[1]), Path(sys.argv[2])
     dry = "--dry" in sys.argv
-    z = zipfile.ZipFile(zumi)
-    panels = json.loads(z.read("manifest.json"))["panels"]
-    picks = range(len(panels))
+    ch = Chapter(zumi)
+    picks = range(len(ch))
     if "--panels" in sys.argv:
         picks = [int(v) for v in sys.argv[sys.argv.index("--panels") + 1].split(",")]
-    mesh = out / "parallax" / "mesh"
     jobs = []
     for i in picks:
-        pid = f"{zumi.stem}-p{i:03d}"
-        cjp = mesh / f"{pid}.cards.json"
-        if cjp.exists():
-            img = np.asarray(Image.open(io.BytesIO(z.read(panels[i]["layers"][0]["image"]))).convert("RGB"))
-            jobs.append((pid, img, json.loads(cjp.read_text()), mesh, out / "parallax" / "plates" / pid))
+        box = Box(out, ch.pid(i))
+        if box.cards() is not None:
+            jobs.append((box, np.asarray(ch.image(i))))
     erase_boxes(jobs, dry)
-    print(f"BFL spend today {FE.spent_today():.2f} USD")
+    print(f"spent today {FE.spent_today('bfl'):.2f} USD on erases, {FE.spent_today():.2f} in all")
 
 
 if __name__ == "__main__":

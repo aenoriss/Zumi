@@ -127,7 +127,7 @@ Zumi's 30-55 px bands sit at the border between the second and third groups.
 ## 6. Local run: boxes 9, 20, 24 of P&C 39 **[measured]**
 
 **Setup.**
-- 2D lean simulation (`experiments/shadow_fill.py` `lean`) at t/d = 0.2, both directions. Card shifts were 33-40 px (p9), 7-45 px (p20) and 24-54 px (p24).
+- 2D lean simulation (`experiments/shadow_fill.py` `lean`, deleted 2026-10-30: in the git history) at t/d = 0.2, both directions. Card shifts were 33-40 px (p9), 7-45 px (p20) and 24-54 px (p24).
 - The cards cover 67-74 % of each box, including bubbles: all three are "crowded" boxes.
 - Scripts are in a temp folder, not in the repo: `C:/Users/Usuario/AppData/Local/Temp/zumi-disocc/` (`proto.py`, `crop.py`, `metrics.py`, `membrane_only.py`).
 

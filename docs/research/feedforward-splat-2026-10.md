@@ -2,7 +2,7 @@
 
 Research date: 2026-10-25. Method: arXiv papers, GitHub READMEs and source, HF model cards, GitHub API (licence, last push). Nothing was downloaded or run, so **no claim below is a measurement on our panels**. **[unverified]** = secondary source or not confirmed; **[inference]** = my reasoning.
 
-Zumi context: a panel is 700 px wide and up to ~2000 px tall, cel-shaded, and is viewed on Quest 3 with 2-20 cm of head motion. Today it becomes an LDI mesh (`pipeline/segment/ldi_mesh.py`): DA3 depth, FLUX-Erase hidden layers behind objects, textured from the full-resolution art.
+Zumi context: a panel is 700 px wide and up to ~2000 px tall, cel-shaded, and is viewed on Quest 3 with 2-20 cm of head motion. When this was written it became an LDI mesh (`pipeline/segment/ldi_mesh.py`, since replaced by flat layers and deleted 2026-10-30): DA3 depth, FLUX-Erase hidden layers behind objects, textured from the full-resolution art.
 
 ## Answer
 
@@ -30,7 +30,7 @@ Zumi context: a panel is 700 px wide and up to ~2000 px tall, cel-shaded, and is
 Other options:
 
 - **Hosted SHARP.** [Replicate `kfarr/sharp-ml`](https://replicate.com/kfarr/sharp-ml) costs ~$0.0039 per run on a T4, ~18 s including cold load. That is $0.20 for 50 panels. The weight licence still applies.
-- **Modal.** On our existing `pipeline/modal`, an A10G costs about $1.1/h, so 1-2 s per panel is fractions of a cent **[unverified price]**.
+- **Modal.** On `pipeline/modal` (deleted 2026-10-30, in the git history), an A10G costs about $1.1/h, so 1-2 s per panel is fractions of a cent **[unverified price]**.
 - **Quest 3 budget.** The only concrete number I found is ~400 k Gaussians at a stable 72 fps, from an unmaintained Unity fork ([ninjamode](https://github.com/ninjamode/Unity-VR-Gaussian-Splatting)). So one SHARP panel (1.18 M) needs about 3× pruning, and several panels in view need more **[inference]**.
 
 ## Recommendation

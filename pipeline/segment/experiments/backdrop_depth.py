@@ -3,17 +3,15 @@ on the frame normalised over the whole frame (what orders the cards), and the ba
 passes cards.back_range_ok the relief map the backdrop gets (DA3MONO on the erased backdrop, white = near), for one
 that fails the frame's depth on the background alone (the frame minus the cards, grown a few px) normalised over its
 own 2-98th percentiles, cards red. Prints the background's share of the frame and its spread as a share of the
-frame's. Runs the normal layers step (--from-masks) and records what cards.order and cards.backdrop_relief see.
-Writes one sheet per box and overview.png (every frame, one tile each).
+frame's. Runs the layers step once per box (episode.layers_step: the saved masks, frames and plate, the depth model;
+no objects picked, no erase, no paid call) and records what cards.order and cards.backdrop_relief see. Boxes without
+current frames are skipped. Writes one sheet per box and overview.png (every frame, one tile each).
 
     uv run python experiments/backdrop_depth.py <episode.zumi> <out dir> <sheet dir> --panels 2,8,13,24 | all
 """
 from __future__ import annotations
 
-import io
-import json
 import sys
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +19,10 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cards as CD  # noqa: E402
+import depth as DP  # noqa: E402
 import episode  # noqa: E402
+from boxstore import Episode  # noqa: E402
+from chapter import Chapter  # noqa: E402
 
 GROW = 4     # px the cards are grown before the background is taken: their feathered outlines are not background
 TILE_H = 170  # px, height of a frame's tile in the overview
@@ -45,33 +46,38 @@ def label(im: Image.Image, text: str, ok: bool) -> Image.Image:
 
 def main():
     from scipy.ndimage import binary_dilation
-    zumi, out, sheets = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-    z = zipfile.ZipFile(zumi)
-    panels = json.loads(z.read("manifest.json"))["panels"]
+    ch, out, sheets = Chapter(Path(sys.argv[1])), Path(sys.argv[2]), Path(sys.argv[3])
+    ep = Episode(out, ch.stem)
     arg = sys.argv[sys.argv.index("--panels") + 1]
-    picks = range(len(panels)) if arg == "all" else [int(v) for v in arg.split(",")]
+    picks = range(len(ch)) if arg == "all" else [int(v) for v in arg.split(",")]
+    mono = DP.load()
+    und = ep.understanding()["panels"]
     seen = []
     order, relief = CD.order, CD.backdrop_relief
 
-    def spy_order(M, masks, area, behind=(), Mo=None):
+    def spy_order(M, masks, area, behind=()):
         cov = np.logical_or.reduce(masks) if masks else np.zeros_like(area)
-        seen.append({"M": (M if Mo is None else Mo).copy(), "area": area.copy(), "cov": cov, "relief": None})
-        return order(M, masks, area, behind, Mo)
+        seen.append({"M": M.copy(), "area": area.copy(), "cov": cov, "relief": None})
+        return order(M, masks, area, behind)
 
-    def spy_relief(area, Mb, eb, *rest):
-        im = relief(area, Mb, eb, *rest)
-        seen[-1]["relief"], seen[-1]["eb"] = (im[0] * 255).astype(np.uint8), eb
+    def spy_relief(area, Mb, eb):
+        im = relief(area, Mb, eb)
+        seen[-1]["relief"], seen[-1]["eb"] = (im * 255).astype(np.uint8), eb
         return im
 
     CD.order, CD.backdrop_relief = spy_order, spy_relief
-    stem = zumi.stem
     sheets.mkdir(parents=True, exist_ok=True)
     tiles = []
     for p in picks:
         seen.clear()
-        sys.argv = ["episode.py", str(zumi), str(out), "--from-masks", "--panels", str(p)]
-        episode.main()
-        img = np.asarray(Image.open(io.BytesIO(z.read(panels[p]["layers"][0]["image"]))).convert("RGB"))
+        box = ep.box(p)
+        letters, chars, fr = box.letters(), box.characters(), box.frames()
+        if letters is None or chars is None or not (fr and fr.current):
+            print(f"p{p}: no saved masks or no current frames, skipped")
+            continue
+        episode.layers_step(ep, {p: ch.image(p)}, {p: letters}, {p: chars}, und,
+                            lambda rgb: DP.frame_infer(mono, rgb), objects=box.plate() is not None)
+        img = np.asarray(ch.image(p))
         rows = []
         for k, s in enumerate(seen):
             M, area, cov = s["M"], s["area"], s["cov"]
@@ -107,7 +113,7 @@ def main():
             for r in rows:
                 sheet.paste(r, (0, y))
                 y += r.height + 6
-            sheet.save(sheets / f"{stem}-p{p:03d}-backdrop-depth.png")
+            sheet.save(sheets / f"{ch.pid(p)}-backdrop-depth.png")
     if len(tiles) > 1:  # every frame, packed left to right in rows
         W, gap, lines, line, x = 2400, 6, [], [], 0
         for t in tiles:

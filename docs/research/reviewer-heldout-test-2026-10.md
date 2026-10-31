@@ -78,3 +78,20 @@ which is a gross-error judgement VLMs make well.
 Keep the reviewer for both tasks: net major benefit is positive and fixes outnumber introduced errors 8:1 or more for
 lettering and 6:1 or more for characters, well above the 3:1 rule, at under 0.1 c per panel. Next levers: decide the
 spec for in-world text the reader must read (sticky notes); add an in-world check before adding a sound effect.
+
+## Follow-up 2026-10-30: one Sonnet 5.5 call instead of the Haiku loop
+
+Same held-out inputs; the Sonnet arm made ONE proposal call per panel (high reasoning), its changes carried out by
+SAM and the segmentation gates with no single-mask checks. One blind judge (Opus), on the panels where the versions
+differed. Objects: the picker and SAM run once on ToG 228 and TB4, 24 boxes with objects. Characters were stopped
+after 3 panels.
+
+| | Lettering (41 panels, 10 differ) | Objects (24 panels, 11 differ) |
+|---|---|---|
+| Major errors before / Haiku / Sonnet | 9 / 2 / 2 | 16 / 14 / 12 |
+| Panels Sonnet better / same / Haiku better | 1 / 8 / 1 | 4 / 2 / 5 |
+| Cost per panel, Haiku / Sonnet | 0.09 c / 0.60 c | 0.13 c / 0.64 c |
+
+Decision (user): keep Haiku. No quality gain at 5-7x the cost; the test code was removed. Side finding: the object
+review took about 7 min per panel (Haiku) on the RTX 3060, nearly all of it waiting for SAM, which every review
+thread shares.

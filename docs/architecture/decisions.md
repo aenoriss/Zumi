@@ -8,10 +8,11 @@ Demo thesis: **"Read comics together in XR."** Presence and sync are first-class
 
 Research backing the model choices: `docs/research/*.md`.
 
-## 0. Non-negotiable rule
+## 0. Model choice
 
-Always prioritise Meta models and Meta platform features. Non-Meta only where Meta has nothing, and every such pick is named and justified. As of 2026-10-15 the Meta stack is: Muse Image (generation), Muse Glimmer 30B (open LLM), SAM 3.1 (segmentation), Muse Wonder/Spark (vision, modality to be verified), Meta XR SDK, Meta Platform SDK.
-Documented non-Meta picks: depth, inpainting, TTS, ambient audio, 360 panoramas, networking transport.
+Amendment 2026-10-30 (user decision): the "Meta models first" rule is dropped. Each task uses the best model for it, chosen on measured accuracy, cost and speed (`docs/research/*.md`). The platform stays Meta: Quest 3, the Meta XR SDK and the Meta Platform SDK.
+
+Superseded rule (2026-10-15): always prioritise Meta models and Meta platform features; non-Meta only where Meta has nothing, each pick named and justified.
 
 ## 0b. Audience
 

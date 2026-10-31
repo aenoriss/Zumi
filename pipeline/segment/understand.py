@@ -1,32 +1,30 @@
-"""Step 2c, Understand: a vision model reads, checks and attributes every segmented element of a panel.
+"""Step 5, Understand: a vision model reads, checks and attributes every segmented element of a panel.
 
-    uv run python understand.py <episode.zumi> <masks dir> <out dir> --panels 1,2,3 [--models a,b]
+    reader = Reader(); result, picture = reader.read(img, masks, kinds, panel, tag, previous)   # box by box, in order
+    uv run python understand.py <episode.zumi> <episode out dir> <out dir> --panels 1,2,3 [--models a,b]
 
-Panels are processed in reading order and carry context: the running cast (ids, names, looks) and the last
-lines of dialogue, so names said earlier and off-panel speakers resolve. Per panel, one call with two images:
+Panels are processed in reading order and carry context (the Reader): the running cast (ids, names, looks) and the
+last lines of dialogue, so names said earlier and off-panel speakers resolve. Per panel, one call with two images:
 the panel with each element outlined, numbered and, for bubbles, an arrow along the tail; and each element
 cropped at full resolution with its outline drawn and everything outside it dimmed, so the model can judge the
 mask itself. Tail tips are computed from the masks and also passed as numbers, so the model only has to say
 who is at the tip. Per element the model returns keep (one whole bubble, caption or sound effect and nothing
 else), the text inside that outline, the kind, the speaker (cast id, narrator, environment or unknown), a
-confidence and an anchor on the speaker. Paid calls go through openrouter.chat (2 USD/day cap).
+confidence and an anchor on the speaker. Paid calls go through openrouter.ask_json (2 USD/day cap); a reply cut
+off at its budget, or with no JSON in it, gives an empty result marked "error".
 """
 
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import re
-import zipfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt, label
 
-from bubbles import load_masks
-from openrouter import BudgetExceeded, chat, image_part, spent_today
+from openrouter import BudgetExceeded, Truncated, ask_json, image_part, spent_today
 
 MODELS = ["meta-llama/llama-4-maverick"]
 REASONING = {"meta/muse-spark-1.3": "low", "google/gemini-3.8-flash": "low"}  # reasoning models only
@@ -197,24 +195,8 @@ def crops_sheet(img: Image.Image, masks: list[np.ndarray], width: int = 1024) ->
     y = 0
     for r in rows:
         sheet.paste(r, (0, y))
-        y += r.height + 0
+        y += r.height
     return sheet
-
-
-def parse(text: str) -> dict:
-    """JSON from a model reply; a stray closing bracket (Muse Spark wrote "}}]" once) is dropped and retried."""
-    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M)
-    a, b = text.find("{"), text.rfind("}")
-    text = text[a : b + 1]
-    for _ in range(5):
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            if e.pos < len(text) and text[e.pos] in "}]":
-                text = text[: e.pos] + text[e.pos + 1 :]
-                continue
-            raise
-    return json.loads(text)
 
 
 def hints_text(masks: list[np.ndarray], kinds: list[str], tails: list, w: int, h: int) -> str:
@@ -244,7 +226,8 @@ def normalise(result: dict, w: int, h: int) -> dict:
 
 
 def understand(model: str, img: Image.Image, masks: list[np.ndarray], kinds: list[str], cast: list[dict],
-               transcript: list[str], panel: int, tag: str, previous: Image.Image | None = None) -> tuple[dict, dict, list]:
+               transcript: list[str], panel: int, tag: str, previous: Image.Image | None = None) -> tuple[dict, float, list]:
+    """One panel read with the given context: (result, cost in USD, the tails drawn for it)."""
     tails = [tail(m) if kind != "sfx" else None for m, kind in zip(masks, kinds)]
     overlay = numbered_overlay(img, masks, tails)
     prompt = INSTRUCTIONS.format(
@@ -255,13 +238,48 @@ def understand(model: str, img: Image.Image, masks: list[np.ndarray], kinds: lis
     content = [{"type": "text", "text": prompt}, image_part(overlay), image_part(crops_sheet(img, masks))]
     if previous is not None:
         content.append(image_part(previous, max_side=640, quality=80))
-    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]
-    text, usage = chat(model, messages, max_tokens=6000 if model in REASONING else 2500, tag=tag, reasoning=REASONING.get(model))
+    empty = {"elements": [], "new_cast": [], "names": [], "mood": ""}
     try:
-        result = parse(text)
-    except (ValueError, json.JSONDecodeError):
-        result = {"elements": [], "new_cast": [], "names": [], "mood": "", "error": text[:500]}
-    return enforce(normalise(result, img.width, img.height), kinds), usage, tails
+        result, cost = ask_json(model, content, tag, 2500, REASONING.get(model), system=SYSTEM, brief=False)
+        if not result:  # no JSON in the reply: marked, not read as a panel with nothing to say
+            result = {**empty, "error": "no JSON in the reply"}
+    except Truncated as e:
+        result, cost = {**empty, "error": "truncated: the reply spent its whole token budget"}, e.cost
+    return enforce(normalise(result, img.width, img.height), kinds), cost, tails
+
+
+class Reader:
+    """Understand over the boxes of one episode, in reading order: the cast and the transcript one box leaves are
+    the context the next is read with."""
+
+    def __init__(self, model: str = MODELS[0]):
+        self.model = model
+        self.cast: list[dict] = []
+        self.transcript: list[str] = []
+        self.cost = 0.0
+
+    def read(self, img: Image.Image, masks: list[np.ndarray], kinds: list[str], panel: int, tag: str,
+             previous: Image.Image | None = None) -> tuple[dict, Image.Image]:
+        """(the box's result, its report picture). Raises BudgetExceeded before a call the daily cap forbids."""
+        result, cost, tails = understand(self.model, img, masks, kinds, self.cast, self.transcript, panel, tag, previous)
+        self.cost += cost
+        update_context(result, self.cast, self.transcript, panel)
+        return result, report(img, masks, tails, result, tag)
+
+
+def update_context(result: dict, cast: list[dict], transcript: list[str], panel: int) -> None:
+    """The running cast (new characters, names learned) and transcript (kept dialogue lines) after one panel's
+    result, in place: the context the next panel is read with."""
+    known = {c["id"] for c in cast}
+    cast += [c for c in result.get("new_cast", []) if c.get("id") and c["id"] not in known]
+    for upd in result.get("names", []):
+        for c in cast:
+            if c["id"] == upd.get("id") and upd.get("name"):
+                c["name"] = upd["name"]
+    names = {c["id"]: c.get("name") or c["id"] for c in cast}
+    for e in result.get("elements", []):
+        if e.get("keep") and e.get("text") and e.get("kind") != "sfx":
+            transcript.append(f'p{panel} {names.get(e.get("speaker"), e.get("speaker"))}: {e["text"]}')
 
 
 def enforce(result: dict, kinds: list[str]) -> dict:
@@ -313,44 +331,34 @@ def report(img: Image.Image, masks: list[np.ndarray], tails: list, result: dict,
     return out
 
 
-def run(model: str, zumi: Path, masks_dir: Path, out: Path, picks: list[int]) -> dict:
-    z = zipfile.ZipFile(zumi)
-    panels = json.loads(z.read("manifest.json"))["panels"]
+def run(model: str, zumi: Path, episode_out: Path, out: Path, picks: list[int]) -> dict:
+    """The CLI's comparison run: `model` on the boxes of a chapter, from the lettering an episode run saved
+    (episode_out, boxstore), a report image per box and one json per model under out/."""
+    from boxstore import Box
+    from chapter import Chapter
+    ch = Chapter(zumi)
     slug = model.replace("/", "_")
-    cast: list[dict] = []
-    transcript: list[str] = []
-    results = {}
+    reader, results = Reader(model), {}
     for i in picks:
-        path = masks_dir / f"{zumi.stem}-p{i:03d}.npz"
-        found = load_masks(path) if path.exists() else []
+        found = Box(episode_out, ch.pid(i)).letters() or []
         if not found:
             continue
-        img = Image.open(io.BytesIO(z.read(panels[i]["layers"][0]["image"]))).convert("RGB")
-        prev = Image.open(io.BytesIO(z.read(panels[i - 1]["layers"][0]["image"]))).convert("RGB") if i > 0 else None
-        result, usage, tails = understand(model, img, [f.mask for f in found], [f.kind for f in found], cast, transcript, i,
-                                          f"{zumi.stem} p{i}", previous=prev)
-        known = {c["id"] for c in cast}
-        cast += [c for c in result.get("new_cast", []) if c.get("id") and c["id"] not in known]
-        for upd in result.get("names", []):
-            for c in cast:
-                if c["id"] == upd.get("id") and upd.get("name"):
-                    c["name"] = upd["name"]
-        names = {c["id"]: c.get("name") or c["id"] for c in cast}
-        for e in result.get("elements", []):
-            if e.get("keep") and e.get("text") and e.get("kind") != "sfx":
-                transcript.append(f'p{i} {names.get(e.get("speaker"), e.get("speaker"))}: {e["text"]}')
+        cost0 = reader.cost
+        result, picture = reader.read(ch.image(i), [f.mask for f in found], [f.kind for f in found], i,
+                                      f"{ch.stem} p{i}", ch.image(i - 1) if i > 0 else None)
         results[i] = result
         (out / slug).mkdir(parents=True, exist_ok=True)
-        report(img, [f.mask for f in found], tails, result, f"{model}  {zumi.stem} p{i}").save(out / slug / f"{zumi.stem}-p{i:03d}.png")
-        print(f"{model:32s} p{i:3d}: {len(result.get('elements', []))} elements, cost {usage.get('cost', 0):.4f} USD, today {spent_today():.3f}")
-    (out / slug / f"{zumi.stem}.json").write_text(json.dumps({"cast": cast, "panels": results}, indent=1, ensure_ascii=False))
+        picture.save(out / slug / f"{ch.pid(i)}.png")
+        print(f"{model:32s} p{i:3d}: {len(result.get('elements', []))} elements, cost {reader.cost - cost0:.4f} USD, today {spent_today():.3f}")
+    (out / slug / f"{ch.stem}.json").write_text(json.dumps({"cast": reader.cast, "panels": results}, indent=1,
+                                                           ensure_ascii=False))
     return results
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("zumi", type=Path)
-    ap.add_argument("masks", type=Path)
+    ap.add_argument("episode_out", type=Path, help="an episode run's out dir: its saved lettering is read")
     ap.add_argument("out", type=Path)
     ap.add_argument("--panels", required=True)
     ap.add_argument("--models", default=",".join(MODELS))
@@ -358,7 +366,7 @@ def main() -> None:
     picks = [int(x) for x in a.panels.split(",")]
     for model in a.models.split(","):
         try:
-            run(model, a.zumi, a.masks, a.out, picks)
+            run(model, a.zumi, a.episode_out, a.out, picks)
         except BudgetExceeded as e:
             print(f"STOP: {e}")
             return

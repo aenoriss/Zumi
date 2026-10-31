@@ -1,6 +1,6 @@
-"""Lettering masks with SAM 3.1 (stage 2b, local GPU test): speech bubbles, caption boxes, confident sound effects.
+"""Lettering masks with SAM 3.1 (step 2a): speech bubbles, caption boxes, confident sound effects.
 
-    uv run python bubbles.py <episode.zumi> <out dir> [--panels 3,7,12]
+    uv run python bubbles.py <episode.zumi> <out dir> [--panels 3,7,12]   (masks saved as an episode run's, boxstore)
 
 Dialogue is always masked: the reader redraws bubbles and captions as live text, so they are erased and the art
 behind them inpainted. A sound effect is masked only when its segmentation is confident; otherwise it stays
@@ -31,32 +31,28 @@ captions (0.78) but not black cards (0.14-0.24); card exemplars find a missed bl
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import time
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_dilation, binary_fill_holes, label
 
-from sam3 import build_sam3_image_model
-from sam3.model.sam3_image_processor import Sam3Processor
-from masks import Found, load_masks  # noqa: F401 (re-exported: other modules import them from here)
+from boxstore import Box
+from chapter import Chapter
+from masks import Found, top_order
+from sam import SIDE as CANVAS, Segmenter, tiles
 from textcrops import clean_crop, letter_count
 
 ROOT = Path(__file__).resolve().parent.parent
-CKPT = ROOT / ".models/sam3/official/sam3.1_multiplex.pt"
 BANK = ROOT / ".data/exemplars/bank.json"
-CANVAS, TILE = 1008, 756  # composite side, tile side inside it
+TILE = 756  # the tile's side inside an exemplar canvas (CANVAS, SAM's input side)
 # Exemplar canvases: (groups sharing one canvas, margin cell side, examples per group). A 252 px cell gives 7
 # margin cells, a 126 px cell 28. Dialogue examples keep their hits at 126 px; sound-effect examples lost hits
 # on busy art when shrunk to 126 px (Tower of God 223 p79: GMHHH and AKREEE missed), so they keep full cells.
 LAYOUT = [(("card", "burst"), 126, 7), (("sfx",), 252, 7), (("sfx_outline",), 252, 7)]
-BATCH = 4  # images per image-encoder call
 KIND_COLOUR = {"bubble": (255, 70, 70), "caption": (60, 140, 255), "sfx": (255, 0, 220)}
 KIND_RANK = {"bubble": 2, "caption": 2, "sfx": 1}  # same shape found as two kinds: the container wins
 DIALOGUE = ("bubble", "caption")
@@ -117,14 +113,6 @@ def area(f: Found) -> int:
     return int(f.mask[y0:y1, x0:x1].sum())
 
 
-def tiles(h: int, w: int, overlap: float = 0.25) -> list[int]:
-    """Top rows of square tiles covering a panel of height h and width w."""
-    if h <= w:
-        return [0]
-    step = max(1, int(w * (1 - overlap)))
-    return sorted(set(list(range(0, h - w, step)) + [h - w]))
-
-
 class Bank:
     """Example crops by group, loaded from the .zumi files they were picked from."""
 
@@ -135,9 +123,7 @@ class Bank:
             if group.startswith("_"):
                 continue
             for ep, panel, box in items:
-                z = zipfile.ZipFile(episodes / f"{ep}.zumi")
-                image = json.loads(z.read("manifest.json"))["panels"][panel]["layers"][0]["image"]
-                crop = Image.open(io.BytesIO(z.read(image))).convert("RGB").crop(box)
+                crop = Chapter(episodes / f"{ep}.zumi").image(panel).crop(box)
                 self.crops.setdefault(group, []).append((ep, panel, crop))
 
     def pick(self, group: str, episode: str, panel: int, n: int = 7) -> list[Image.Image]:
@@ -169,37 +155,7 @@ def composite(tile: Image.Image, groups: dict[str, list[Image.Image]], cell: int
     return canvas, boxes
 
 
-def _slice(x, i: int, n: int):
-    """Image i of a batched backbone output (tensors with the batch on dim 0)."""
-    if torch.is_tensor(x):
-        return x[i : i + 1] if x.dim() and x.shape[0] == n else x
-    if isinstance(x, dict):
-        return {k: _slice(v, i, n) for k, v in x.items()}
-    if isinstance(x, (list, tuple)):
-        return type(x)(_slice(v, i, n) for v in x)
-    return x
-
-
-def encode(proc: Sam3Processor, images: list[Image.Image]) -> list[dict]:
-    """One state per image; the image encoder runs on batches of BATCH images instead of one call each."""
-    states = []
-    for s in range(0, len(images), BATCH):
-        chunk = images[s : s + BATCH]
-        out = proc.set_image_batch(chunk)["backbone_out"]
-        for i, im in enumerate(chunk):
-            states.append({"original_height": im.height, "original_width": im.width, "backbone_out": _slice(out, i, len(chunk))})
-    return states
-
-
-def text(proc: Sam3Processor, prompt: str) -> dict:
-    """Text encoder output for a prompt, computed once per run."""
-    cache = proc.__dict__.setdefault("_text_cache", {})
-    if prompt not in cache:
-        cache[prompt] = proc.model.backbone.forward_text([prompt], device=proc.device)
-    return cache[prompt]
-
-
-def lettering(m: np.ndarray) -> bool:
+def letter_shaped(m: np.ndarray) -> bool:
     """Could this sound-effect mask be letters rather than a piece of art or a panel-edge band?"""
     share = m.mean()
     if share == 0 or share > MAX_SFX_SHARE:
@@ -219,24 +175,15 @@ def stability(prob: np.ndarray) -> float:
     return float((prob > 0.7).sum() / max(1, (prob > 0.3).sum()))
 
 
-def run_pass(proc: Sam3Processor, state: dict, tile: Image.Image, ps: Pass, boxes: list[list[float]] | None) -> list[tuple[np.ndarray, float]]:
+def run_pass(seg: Segmenter, state: dict, tile: Image.Image, ps: Pass, boxes: list[list[float]] | None) -> list[tuple[np.ndarray, float]]:
     """(tile-size mask, score) for one pass on one tile. `state` holds the encoded tile (text passes) or the
     encoded canvas (exemplar passes, with this group's example boxes)."""
-    state["backbone_out"].update(text(proc, ps.prompt))
-    state["geometric_prompt"] = proc.model._get_dummy_prompt()
-    if ps.exemplars is None:
-        crop = None
-    else:
-        if not boxes:
-            return []
-        # all example boxes in one call: add_geometric_prompt reruns the detection head once per box
-        b = torch.tensor(boxes, device=proc.device, dtype=torch.float32).view(-1, 1, 4)
-        state["geometric_prompt"].append_boxes(b, torch.ones((len(boxes), 1), device=proc.device, dtype=torch.bool))
-        crop = TILE
-    state = proc._forward_grounding(state)
-    probs = state["masks_logits"][:, 0].float().cpu().numpy()  # sigmoid probabilities
+    if ps.exemplars is not None and not boxes:
+        return []
+    crop = None if ps.exemplars is None else TILE
+    probs, scores = seg.ground(state, ps.prompt, boxes if ps.exemplars is not None else None)  # sigmoid probabilities
     out = []
-    for p, s in zip(probs, state["scores"].float().cpu().numpy()):
+    for p, s in zip(probs, scores):
         if s < ps.min_score:
             continue
         m = p > 0.5
@@ -248,7 +195,7 @@ def run_pass(proc: Sam3Processor, state: dict, tile: Image.Image, ps: Pass, boxe
         if ps.min_stability and stability(p) < ps.min_stability:
             continue
         m = binary_fill_holes(m)
-        if ps.kind == "sfx" and not lettering(m):
+        if ps.kind == "sfx" and not letter_shaped(m):
             continue
         if ps.kind in DIALOGUE and not dialogue_like(np.asarray(tile), m, ps.kind, float(s)):
             continue
@@ -341,7 +288,7 @@ def group_letters(found: list[Found], reach: int) -> list[Found]:
     return [f for f in found if f.kind != "sfx"] + grouped
 
 
-def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, panel: int) -> list[Found]:
+def segment(seg: Segmenter, img: Image.Image, bank: Bank, episode: str, panel: int) -> list[Found]:
     w, h = img.size
     tops = tiles(h, w)
     tile_imgs = [img.crop((0, top, w, min(h, top + w))) for top in tops]
@@ -354,36 +301,20 @@ def segment(proc: Sam3Processor, img: Image.Image, bank: Bank, episode: str, pan
             for g in names:
                 where[(k, g)] = (len(images), boxes.get(g))
             images.append(canvas)
-    states = encode(proc, images)
+    states = seg.encode(images)
     found: list[Found] = []
     for k, (top, tile) in enumerate(zip(tops, tile_imgs)):
         for ps in PASSES:
             if ps.exemplars is None:
-                hits = run_pass(proc, states[k], tile, ps, None)
+                hits = run_pass(seg, states[k], tile, ps, None)
             else:
                 i, boxes = where[(k, ps.exemplars)]
-                hits = run_pass(proc, states[i], tile, ps, boxes)
+                hits = run_pass(seg, states[i], tile, ps, boxes)
             for m, s in hits:
                 full = np.zeros((h, w), bool)
                 full[top : top + m.shape[0]] = m
                 add(found, Found(full, s, ps.kind))
     return group_letters(drop_inner_text(found), reach=max(8, w // 40))
-
-
-def save_masks(path: Path, found: list[Found]) -> None:
-    """Masks in top-to-bottom order, bit-packed, with their kinds and scores, for the Understand step."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    found = sorted(found, key=lambda f: (np.nonzero(f.mask)[0].min(), np.nonzero(f.mask)[1].min()))
-    shape = found[0].mask.shape if found else (0, 0)
-    np.savez_compressed(
-        path,
-        masks=np.packbits(np.stack([f.mask for f in found]), axis=-1) if found else np.zeros((0, 0, 0), np.uint8),
-        shape=np.array(shape),
-        kinds=np.array([f.kind for f in found]),
-        scores=np.array([f.score for f in found]),
-    )
-
-
 
 
 def overlay(img: Image.Image, found: list[Found]) -> Image.Image:
@@ -407,31 +338,27 @@ def main() -> None:
     a = ap.parse_args()
 
     t0 = time.perf_counter()
-    model = build_sam3_image_model(checkpoint_path=str(CKPT), load_from_HF=False)
-    proc = Sam3Processor(model, confidence_threshold=min(p.min_score for p in PASSES))
+    seg = Segmenter(min(p.min_score for p in PASSES))
     bank = Bank(BANK, a.zumi.parent)
     print(f"model and bank loaded in {time.perf_counter() - t0:.1f}s")
 
-    z = zipfile.ZipFile(a.zumi)
-    panels = json.loads(z.read("manifest.json"))["panels"]
-    pick = [int(i) for i in a.panels.split(",") if i] or list(range(len(panels)))
+    ch = Chapter(a.zumi)
+    pick = [int(i) for i in a.panels.split(",") if i] or list(range(len(ch)))
     a.out.mkdir(parents=True, exist_ok=True)
     for i in pick:
-        img = Image.open(io.BytesIO(z.read(panels[i]["layers"][0]["image"]))).convert("RGB")
+        img = ch.image(i)
         t = time.perf_counter()
-        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):  # mixed precision, as in Meta's examples
-            found = segment(proc, img, bank, a.zumi.stem, i)
-        overlay(img, found).save(a.out / f"{a.zumi.stem}-p{i:03d}.png")
-        save_masks(a.out / "masks" / f"{a.zumi.stem}-p{i:03d}.npz", found)
+        found = segment(seg, img, bank, ch.stem, i)
+        overlay(img, found).save(a.out / f"{ch.pid(i)}.png")
+        Box(a.out, ch.pid(i)).save_letters(found)
         pixels = np.asarray(img)
-        dialogue = [f for f in found if f.kind in DIALOGUE]  # text crops are for reading dialogue
-        for k, f in enumerate(sorted(dialogue, key=lambda f: np.nonzero(f.mask)[0].min())):  # top to bottom
+        dialogue = top_order([f for f in found if f.kind in DIALOGUE])  # text crops are for reading dialogue
+        for k, f in enumerate(dialogue):
             if (crop := clean_crop(pixels, f.mask)) is not None:
                 (a.out / "text").mkdir(exist_ok=True)
-                crop.save(a.out / "text" / f"{a.zumi.stem}-p{i:03d}-{k:02d}-{f.kind}.png")
-        kinds = {k: sum(f.kind == k for f in found) for k in KIND_COLOUR}
+                crop.save(a.out / "text" / f"{ch.pid(i)}-{k:02d}-{f.kind}.png")
+        kinds = {k: sum(f.kind == k for f in found) for k in ("bubble", "caption", "sfx")}
         print(f"panel {i:3d} {img.width}x{img.height}: {kinds}, {time.perf_counter() - t:.2f}s")
-    print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
 
 
 if __name__ == "__main__":

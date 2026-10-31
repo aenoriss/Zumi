@@ -5,82 +5,196 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Speaker labels</title>
 <style>
-  :root { --bg: #16161a; --panel: #202026; --ink: #e8e8ee; --dim: #8a8a96; --bubble: #ffd84a; --pick: #3ddc84; --prop: #4aa3ff; }
+  :root {
+    --bg: #131317; --panel: #1c1c22; --raise: #26262e; --line: #34343e; --ink: #ececf1; --dim: #8b8b97;
+    --bubble: #ffd84a; --pick: #3ddc84; --pick-ink: #06301a; --prop: #ff5a5a; --danger: #ff7a7a;  /* green = your answer, red = the rule's pick */
+  }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; display: flex; height: 100vh; }
-  #stage { flex: 1; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-  canvas { max-width: 100%; max-height: 100%; cursor: pointer; }
-  #side { width: 340px; background: var(--panel); padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-  h1 { font-size: 15px; margin: 0; }
-  .text { font-size: 16px; background: #2b2b33; padding: 10px; border-radius: 6px; min-height: 48px; }
-  .row { display: flex; gap: 6px; flex-wrap: wrap; }
-  button { background: #2f2f39; color: var(--ink); border: 1px solid #44444f; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
-  button.on { background: var(--pick); color: #0b2; border-color: var(--pick); color: #052; }
-  .muted { color: var(--dim); font-size: 12px; }
-  .bar { height: 6px; background: #2b2b33; border-radius: 3px; overflow: hidden; }
-  .bar > div { height: 100%; background: var(--pick); }
-  kbd { background: #33333d; border-radius: 3px; padding: 0 4px; font-size: 12px; }
-  #status { font-size: 12px; color: var(--pick); min-height: 16px; }
-  select { background: #2f2f39; color: var(--ink); border: 1px solid #44444f; border-radius: 6px; padding: 4px; }
+  #stage { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 12px; }
+  canvas { max-width: 100%; max-height: 100%; cursor: pointer; border-radius: 4px; }
+
+  /* the panel: every block a fixed height, so nothing moves from one bubble to the next */
+  #side { width: 360px; flex: none; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .block { padding: 14px 16px; border-bottom: 1px solid var(--line); flex: none; }
+  .head { display: flex; align-items: center; gap: 8px; }
+  .head select { flex: 1; min-width: 0; }
+  .count { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .bar { height: 4px; background: var(--raise); border-radius: 2px; overflow: hidden; margin-top: 10px; }
+  .bar > div { height: 100%; background: var(--pick); transition: width .2s; }
+
+  .chips { display: flex; gap: 6px; height: 22px; overflow: hidden; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 11px; background: var(--raise); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip.prop { color: var(--prop); }
+  .chip.done { color: var(--pick); }
+  .text { font-size: 17px; line-height: 1.35; height: 92px; overflow-y: auto; margin-top: 10px; }
+  .text.empty { color: var(--dim); font-style: italic; font-size: 14px; }
+
+  h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); margin: 0 0 10px; }
+  .cards { display: grid; grid-template-columns: repeat(6, 1fr); grid-auto-rows: 40px; gap: 6px; height: 86px; overflow-y: auto; }
+  .card { border: 2px solid var(--c); background: transparent; color: var(--c); border-radius: 8px; font: 700 16px system-ui; cursor: pointer; padding: 0; }
+  .card:hover { background: color-mix(in srgb, var(--c) 15%, transparent); }
+  .card.on { background: var(--pick); border-color: var(--pick); color: var(--pick-ink); }
+  .card.prop:not(.on) { box-shadow: 0 0 0 2px var(--prop); }
+
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { background: var(--raise); color: var(--ink); border: 0; border-right: 1px solid var(--line); padding: 8px 2px 6px; cursor: pointer;
+                display: flex; flex-direction: column; align-items: center; gap: 3px; font: 11px system-ui; }
+  .seg button:last-child { border-right: 0; }
+  .seg button:hover { background: #2e2e37; }
+  .seg button.on { background: var(--pick); color: var(--pick-ink); }
+  svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  .answer { height: 22px; margin-top: 12px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .answer b { color: var(--pick); }
+
+  .actions { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 8px; padding: 10px; cursor: pointer; font: 600 14px system-ui; border: 1px solid var(--line); background: var(--raise); color: var(--ink); }
+  .btn.primary { background: var(--pick); border-color: var(--pick); color: var(--pick-ink); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.quiet:hover { background: #2e2e37; }
+  .sub { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; height: 24px; }
+  .link { background: none; border: 0; color: var(--dim); font: 12px system-ui; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; padding: 0; }
+  .link:hover { color: var(--danger); }
+  .link.on { color: var(--danger); font-weight: 600; }
+  .link svg { width: 14px; height: 14px; }
+  #status { font-size: 12px; color: var(--dim); }
+  #status.ok { color: var(--pick); }
+  #status.err { color: var(--danger); }
+
+  kbd { font: 11px ui-monospace, monospace; background: rgba(255,255,255,.08); border-radius: 3px; padding: 0 4px; color: inherit; opacity: .8; }
+  details { padding: 12px 16px; color: var(--dim); font-size: 12px; margin-top: auto; }
+  summary { cursor: pointer; }
+  details p { margin: 8px 0 0; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  select { background: var(--raise); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px; font: inherit; }
+  label.check { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); white-space: nowrap; }
 </style>
 </head>
 <body>
 <div id="stage"><canvas id="cv"></canvas></div>
-<div id="side">
-  <h1>Who says this bubble?</h1>
-  <div class="row"><select id="ep"></select><label class="muted"><input type="checkbox" id="todo"> unlabelled only</label></div>
-  <div class="bar"><div id="prog"></div></div>
-  <div class="muted" id="where"></div>
-  <div class="text" id="text"></div>
-  <div class="muted" id="prop"></div>
-  <div><div class="muted">Speaker card(s) — click on the image or press its number (several for a chorus)</div>
-    <div class="row" id="cards"></div></div>
-  <div class="row">
-    <button id="k-off">off-panel <kbd>O</kbd></button>
-    <button id="k-nar">narrator / caption <kbd>N</kbd></button>
-    <button id="k-sfx">sound effect <kbd>S</kbd></button>
-    <button id="k-skip">not a bubble <kbd>X</kbd></button>
+<aside id="side">
+  <div class="block">
+    <div class="head">
+      <select id="ep" title="episode"></select>
+      <label class="check"><input type="checkbox" id="todo"> to do</label>
+      <label class="check" id="revwrap" style="display:none"><input type="checkbox" id="rev"> review</label>
+      <label class="check" title="Show the frame breakdown: each frame outlined and numbered, characters and bubble hidden"><input type="checkbox" id="frm"> frames</label>
+      <select id="fm" title="Which method's frames to draw (bakeoff.json)" style="display:none"><option value="">frames.py (current)</option></select>
+      <label class="check" id="tlwrap" style="display:none" title="Show what the tail finder saw (tails.json): the bubble's body, the parts it strips (magenta: can be a tail, grey: too small), the tail's direction and the cards it aims at"><input type="checkbox" id="tl" checked> tail</label>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="bar"><div id="prog"></div></div>
   </div>
-  <div class="row"><button id="prev">← back</button><button id="next">save &amp; next <kbd>Enter</kbd></button></div>
-  <div id="status"></div>
-  <div class="muted">Yellow: the bubble (its tail tip a dot). Blue: the proposal. Green: your pick. Numbers: character cards. Enter accepts what is selected (it starts as the proposal).</div>
-</div>
+
+  <div class="block">
+    <div class="chips"><span class="chip" id="where"></span><span class="chip prop" id="prop"></span><span class="chip done" id="done"></span></div>
+    <div class="text" id="text"></div>
+    <div class="text" id="note" style="display:none;margin-top:8px;font-size:13px;color:var(--dim)"></div>
+    <div class="text" id="tailinfo" style="display:none;margin-top:8px;font-size:13px;color:var(--dim)"></div>
+  </div>
+
+  <div class="block">
+    <h2>Who says it? <span style="text-transform:none;letter-spacing:0">· click the image or press 1–9 · several for a chorus</span></h2>
+    <div class="cards" id="cards"></div>
+  </div>
+
+  <div class="block">
+    <h2>No speaker card</h2>
+    <div class="seg">
+      <button id="k-off" title="Off-panel: the speaker is not drawn anywhere in this box (O)"><svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>off-panel <kbd>O</kbd></button>
+      <button id="k-nar" title="Narrator or caption (N)"><svg viewBox="0 0 24 24"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></svg>narrator <kbd>N</kbd></button>
+      <button id="k-sfx" title="Sound effect (S)"><svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>sfx <kbd>S</kbd></button>
+      <button id="k-miss" title="The speaker is drawn but was not segmented: no number on them (M)"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m17 8 5 5"/><path d="m22 8-5 5"/></svg>no card <kbd>M</kbd></button>
+    </div>
+    <div class="answer" id="answer"></div>
+  </div>
+
+  <div class="block">
+    <div class="actions">
+      <button class="btn quiet" id="prev" title="Previous bubble (←)"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>Back</button>
+      <button class="btn primary" id="next" title="Save this answer and go to the next bubble (Enter)"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Save <kbd>Enter</kbd></button>
+    </div>
+    <div class="sub">
+      <button class="link" id="k-skip" title="Not a bubble (a segmentation error): left out of the score (X)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>Not a bubble, skip it <kbd>X</kbd></button>
+      <span id="status"></span>
+    </div>
+  </div>
+
+  <details>
+    <summary>Legend and keys</summary>
+    <p><span class="sw" style="background:var(--bubble)"></span>the bubble, its tail tip a dot ·
+       <span class="sw" style="background:var(--prop)"></span>the rule's pick (red) ·
+       <span class="sw" style="background:var(--pick)"></span>your answer (green; it starts as the rule's pick)</p>
+    <p>Tail view: the bubble's body (blue), the parts the tail finder strips from it (magenta: can be a tail, grey:
+       too small), the tail's direction (arrow from the tip), the cards it aims at (dashed yellow).</p>
+    <p>Speaker in another frame of this box: pick their card. Not drawn in this box at all: off-panel. Drawn but without a number: no card.</p>
+    <p><kbd>1</kbd>–<kbd>9</kbd> card · <kbd>O</kbd> <kbd>N</kbd> <kbd>S</kbd> <kbd>M</kbd> no card · <kbd>X</kbd> skip · <kbd>Enter</kbd> save · <kbd>←</kbd> <kbd>→</kbd> move</p>
+  </details>
+</aside>
 <script>
 const $ = id => document.getElementById(id);
-let data, labels, items = [], idx = 0, cur = null, img = new Image();
+let data, labels, review = null, items = [], idx = 0, cur = null, img = new Image();  // review: {key: note}, from review.json when it exists
+let bakeoff = null;  // {methods: {name: {pid: [{rings, score}]}}}, from bakeoff.json when it exists
+let tails = null;  // {key: {r, body, parts: [{outline, px, reach, kept}], aims: {card: aim}}}, from tails.json when it exists
 const cv = $("cv"), g = cv.getContext("2d");
-const hue = i => `hsl(${(i * 67) % 360} 80% 60%)`;
+const hue = i => `hsl(${(i * 67) % 360} 80% 62%)`;
+const KIND = { off_panel: "off-panel", narrator: "narrator", sfx: "sound effect", missing: "speaker without a card", card: "" };
 
 function key(b, x) { return `${b.pid}#${x.id}`; }
 
 async function load() {
   data = await (await fetch("dataset.json")).json();
   labels = await (await fetch("labels.json")).json();
+  // a review list (review.json, {key: note}) adds a "review" filter: only those bubbles, each with its note
+  const r = await fetch("review.json");
+  if (r.ok) { review = await r.json(); $("revwrap").style.display = ""; $("rev").checked = true; }
   const eps = [...new Set(data.boxes.map(b => b.episode))];
-  $("ep").innerHTML = `<option value="">all episodes</option>` + eps.map(e => `<option>${e}</option>`).join("");
-  $("ep").onchange = $("todo").onchange = () => { rebuild(); show(0); };
-  rebuild(); show(Math.max(0, items.findIndex(it => !labels[it.k])));
+  $("ep").innerHTML = `<option value="">All episodes</option>` + eps.map(e => `<option value="${e}">${e}</option>`).join("");
+  $("ep").onchange = $("todo").onchange = $("rev").onchange = () => { rebuild(); show(0); };
+  $("frm").onchange = () => { $("fm").style.display = $("frm").checked && bakeoff ? "" : "none"; draw(); };
+  const bk = await fetch("bakeoff.json");
+  if (bk.ok) {
+    bakeoff = await bk.json();
+    $("fm").innerHTML += Object.keys(bakeoff.methods).map(m => `<option value="${m}">${m}</option>`).join("");
+  }
+  $("fm").onchange = () => draw();
+  const tj = await fetch("tails.json");
+  if (tj.ok) { tails = await tj.json(); $("tlwrap").style.display = ""; }
+  $("tl").onchange = () => { tailInfo(); draw(); };
+  if (new URLSearchParams(location.search).has("frames")) { $("frm").checked = true; if (bakeoff) $("fm").style.display = ""; }
+  const fmq = new URLSearchParams(location.search).get("fm");  // ?fm=<method>: that method's frames preselected
+  if (fmq && bakeoff && bakeoff.methods[fmq]) $("fm").value = fmq;
+  rebuild(); show(review ? 0 : Math.max(0, items.findIndex(it => !labels[it.k])));
 }
 function rebuild() {
-  const ep = $("ep").value, todo = $("todo").checked;
+  const ep = $("ep").value, todo = $("todo").checked, rev = review && $("rev").checked;
   items = [];
   for (const b of data.boxes) if (!ep || b.episode === ep)
-    for (const x of b.bubbles) { const k = key(b, x); if (!todo || !labels[k]) items.push({ box: b, bub: x, k }); }
-  const done = data.boxes.flatMap(b => b.bubbles.map(x => key(b, x))).filter(k => labels[k]).length;
-  const all = data.boxes.reduce((s, b) => s + b.bubbles.length, 0);
-  $("prog").style.width = `${100 * done / all}%`;
-  $("status").textContent = `${done} / ${all} labelled`;
+    for (const x of b.bubbles) { const k = key(b, x); if ((!todo || !labels[k]) && (!rev || k in review)) items.push({ box: b, bub: x, k }); }
+  if (rev) items.sort((a, b) => Object.keys(review).indexOf(a.k) - Object.keys(review).indexOf(b.k));
+  const pool = data.boxes.filter(b => !ep || b.episode === ep).flatMap(b => b.bubbles.map(x => key(b, x)));
+  const done = pool.filter(k => labels[k]).length;
+  $("prog").style.width = `${100 * done / Math.max(1, pool.length)}%`;
+  $("count").textContent = `${done} / ${pool.length}`;
 }
 function show(i) {
-  if (!items.length) { $("text").textContent = "nothing to label here"; return; }
+  if (!items.length) { $("text").textContent = "Nothing left to label here."; $("text").className = "text empty"; return; }
   idx = Math.max(0, Math.min(items.length - 1, i));
   const it = items[idx], p = it.bub.proposal, l = labels[it.k];
-  cur = l ? { speakers: [...l.speakers], kind: l.kind, skip: !!l.skip }
+  cur = l ? { speakers: [...l.speakers], kind: l.kind === "skip" ? "card" : l.kind, skip: !!l.skip }
           : { speakers: [...p.speakers], kind: p.speaker_kind, skip: false };
-  $("where").textContent = `${it.box.pid} · bubble ${it.bub.id} · ${it.bub.kind || "?"} · ${idx + 1}/${items.length}` + (l ? " · labelled" : "");
+  $("where").textContent = `${it.box.pid.replace("pepper-carrot-", "ep")} · #${it.bub.id} · ${idx + 1}/${items.length}`;
+  $("prop").textContent = `rule: ${p.rule} ${Math.round(100 * p.confidence)}%`;
+  $("done").textContent = l ? "labelled" : "";
+  $("done").style.display = l ? "" : "none";
   $("text").textContent = it.bub.text || "(no text read)";
-  $("prop").textContent = `proposal: ${p.speaker_kind} ${p.speakers.join(",")} (${p.rule}, ${p.confidence})`;
-  $("cards").innerHTML = it.box.cards.map(c => `<button data-i="${c.i}" style="border-color:${hue(c.i)}">${c.i + 1}</button>`).join("");
+  $("text").className = it.bub.text ? "text" : "text empty";
+  $("note").style.display = review && review[it.k] ? "" : "none";
+  $("note").textContent = review && review[it.k] ? `review: ${review[it.k]}` : "";
+  tailInfo();
+  $("cards").innerHTML = it.box.cards.map(c =>
+    `<button class="card" data-i="${c.i}" style="--c:${hue(c.i)}" title="card ${c.i + 1}">${c.i + 1}</button>`).join("");
   for (const btn of $("cards").children) btn.onclick = () => toggle(+btn.dataset.i);
   if (img.dataset.src !== it.box.img) { img = new Image(); img.dataset.src = it.box.img; img.onload = draw; img.src = it.box.img; } else draw();
   paint();
@@ -93,17 +207,88 @@ function toggle(i) {
 }
 function setKind(k) { cur.kind = k; cur.speakers = []; cur.skip = false; paint(); draw(); }
 function paint() {
-  for (const b of $("cards").children) b.classList.toggle("on", cur.speakers.includes(+b.dataset.i));
-  $("k-off").classList.toggle("on", cur.kind === "off_panel" && !cur.skip);
-  $("k-nar").classList.toggle("on", cur.kind === "narrator");
-  $("k-sfx").classList.toggle("on", cur.kind === "sfx");
+  const it = items[idx];
+  for (const b of $("cards").children) {
+    b.classList.toggle("on", cur.speakers.includes(+b.dataset.i));
+    b.classList.toggle("prop", it.bub.proposal.speakers.includes(+b.dataset.i));
+  }
+  const noCard = !cur.skip && !cur.speakers.length;
+  $("k-off").classList.toggle("on", noCard && cur.kind === "off_panel");
+  $("k-nar").classList.toggle("on", noCard && cur.kind === "narrator");
+  $("k-sfx").classList.toggle("on", noCard && cur.kind === "sfx");
+  $("k-miss").classList.toggle("on", noCard && cur.kind === "missing");
   $("k-skip").classList.toggle("on", cur.skip);
+  $("answer").innerHTML = cur.skip ? "Answer: <b>skip, not a bubble</b>"
+    : cur.speakers.length ? `Answer: <b>card ${[...cur.speakers].sort((a, b) => a - b).map(s => s + 1).join(" + ")}</b>`
+    : `Answer: <b>${KIND[cur.kind] || cur.kind}</b>`;
+}
+function tailInfo() {  // the tail finder's numbers under the text
+  const it = items[idx], t = tails && $("tl").checked && it ? tails[it.k] : null;
+  $("tailinfo").style.display = t ? "" : "none";
+  if (!t) return;
+  const parts = [...t.parts].sort((a, b) => b.reach - a.reach).slice(0, 5)
+    .map(p => `${p.px} px reaching ${p.reach} px${p.kept ? "" : " (dropped)"}`).join(", ");
+  const aims = Object.entries(t.aims).map(([c, a]) => `${+c + 1} (${a})`).join(", ");
+  $("tailinfo").textContent = `tail: ${it.bub.tail_tip ? "found" : "none"} · opening r=${t.r} px · ` +
+    `stripped parts: ${parts || "none"} · aims at cards: ${aims || "none"}`;
+}
+function drawTail(it) {  // body (blue), stripped parts (magenta kept, grey dropped), direction, aimed cards dashed
+  const t = tails && tails[it.k]; if (!t) return;
+  g.fillStyle = "rgba(0,160,255,0.35)";
+  for (const p of t.body) { poly(p); g.fill(); }
+  for (const part of t.parts) for (const p of part.outline) {
+    poly(p); g.fillStyle = part.kept ? "rgba(255,0,220,0.85)" : "rgba(170,170,170,0.85)"; g.fill();
+  }
+  g.setLineDash([10, 8]); g.lineWidth = 4; g.strokeStyle = "#ffd84a";
+  for (const c of it.box.cards) if (c.i in t.aims) for (const p of c.outline) { poly(p); g.stroke(); }
+  g.setLineDash([]);
+  if (it.bub.tail_tip && it.bub.tail_dir) {
+    const [x, y] = it.bub.tail_tip, [dx, dy] = it.bub.tail_dir, L = Math.max(it.box.w, it.box.h) / 5;
+    g.lineWidth = 5; g.strokeStyle = "#000"; g.beginPath(); g.moveTo(x, y); g.lineTo(x + dx * L, y + dy * L); g.stroke();
+    g.lineWidth = 3; g.strokeStyle = "#ffd84a"; g.stroke();
+    const a = Math.atan2(dy, dx), hx = x + dx * L, hy = y + dy * L;
+    g.fillStyle = "#ffd84a"; g.beginPath(); g.moveTo(hx, hy);
+    g.lineTo(hx - 18 * Math.cos(a - 0.4), hy - 18 * Math.sin(a - 0.4)); g.lineTo(hx - 18 * Math.cos(a + 0.4), hy - 18 * Math.sin(a + 0.4));
+    g.closePath(); g.fill();
+  }
 }
 function poly(pts) { g.beginPath(); pts.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); }
 function draw() {
   const it = items[idx]; if (!it || !img.complete) return;
   const b = it.box; cv.width = b.w; cv.height = b.h;
   g.drawImage(img, 0, 0);
+  if ($("frm").checked) {  // the frame breakdown alone: the art dimmed, each frame tinted in its own strong colour,
+    // a thick outline with a dark halo, numbered F1.. in box order. Sizes scale with the box: the canvas is shown
+    // smaller than its pixels, so a fixed 6 px line came out hair-thin
+    const u = Math.max(b.w, b.h) / 100;
+    g.fillStyle = "rgba(0,0,0,0.55)"; g.fillRect(0, 0, b.w, b.h);
+    // white: the card masks use every hue (hue(i)) plus green, red and yellow, so frames take the one colour they never do
+    const m = $("fm").value;
+    const shown = m && bakeoff ? (bakeoff.methods[m][b.pid] || []) : b.frames.map(f => ({ rings: f, score: null }));
+    shown.forEach(({ rings: f, score }, k) => {
+      const col = "#ffffff";
+      for (const p of f) {
+        poly(p); g.globalAlpha = 0.12; g.fillStyle = col; g.fill(); g.globalAlpha = 1;
+        g.lineJoin = "round"; g.lineWidth = 1.6 * u; g.strokeStyle = "#000"; g.stroke();   // halo
+        g.lineWidth = 0.8 * u; g.strokeStyle = col; g.stroke();
+      }
+      const xs = f.flat().map(p => p[0]), ys = f.flat().map(p => p[1]);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const r = 4 * u;
+      g.fillStyle = "#000"; g.beginPath(); g.arc(cx, cy, r + 0.6 * u, 0, 7); g.fill();
+      g.fillStyle = col; g.beginPath(); g.arc(cx, cy, r, 0, 7); g.fill();
+      g.fillStyle = "#000"; g.font = `bold ${4.2 * u}px system-ui`; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(`F${k + 1}`, cx, cy + 0.2 * u);
+      if (score != null) {  // the model's confidence under the number, or a word ("flat")
+        g.font = `bold ${2.6 * u}px system-ui`; g.fillStyle = "#000"; g.fillRect(cx - 4 * u, cy + r + 0.8 * u, 8 * u, 3.4 * u);
+        g.fillStyle = "#fff"; g.fillText(typeof score === "number" ? score.toFixed(2) : score, cx, cy + r + 2.5 * u);
+      }
+    });
+    const label = `${m || "frames.py"}: ${shown.length} frame${shown.length === 1 ? "" : "s"}`;
+    g.font = `bold ${3.6 * u}px system-ui`; const tw = g.measureText(label).width;
+    g.fillStyle = "#000"; g.fillRect(0, 0, tw + 3 * u, 6 * u);
+    g.fillStyle = "#fff"; g.textAlign = "left"; g.textBaseline = "middle"; g.fillText(label, 1.5 * u, 3 * u);
+    return;
+  }
   g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(0, 0, b.w, b.h);
   g.lineWidth = 2;
   for (const f of b.frames) for (const p of f) { poly(p); g.strokeStyle = "rgba(255,255,255,0.25)"; g.stroke(); }
@@ -113,23 +298,25 @@ function draw() {
       poly(p);
       if (picked) { g.fillStyle = "rgba(61,220,132,0.25)"; g.fill(); }
       g.lineWidth = picked ? 4 : prop ? 3 : 1.5;
-      g.strokeStyle = picked ? "#3ddc84" : prop ? "#4aa3ff" : hue(c.i); g.stroke();
+      g.strokeStyle = picked ? "#3ddc84" : prop ? "#ff5a5a" : hue(c.i); g.stroke();
     }
     const xs = c.outline.flat().map(p => p[0]), ys = c.outline.flat().map(p => p[1]);
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = Math.min(...ys) + 22;
     g.fillStyle = "#000c"; g.beginPath(); g.arc(cx, cy, 16, 0, 7); g.fill();
-    g.fillStyle = picked ? "#3ddc84" : hue(c.i); g.font = "bold 20px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillStyle = picked ? "#3ddc84" : prop ? "#ff5a5a" : hue(c.i); g.font = "bold 20px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
     g.fillText(String(c.i + 1), cx, cy + 1);
   }
   g.lineWidth = 4; g.strokeStyle = "#ffd84a";
   for (const p of it.bub.outline) { poly(p); g.stroke(); }
+  if ($("tl").checked) drawTail(it);
   if (it.bub.tail_tip) { g.fillStyle = "#ffd84a"; g.beginPath(); g.arc(it.bub.tail_tip[0], it.bub.tail_tip[1], 6, 0, 7); g.fill(); }
 }
 async function save(step) {
   const it = items[idx]; if (!it) return;
-  labels[it.k] = { speakers: cur.speakers, kind: cur.skip ? "skip" : cur.kind, skip: cur.skip };
+  labels[it.k] = { speakers: cur.speakers, kind: cur.skip ? "skip" : cur.speakers.length ? "card" : cur.kind, skip: cur.skip };
   const r = await fetch("save", { method: "POST", body: JSON.stringify(labels) });
-  $("status").textContent = r.ok ? "saved" : "SAVE FAILED";
+  $("status").textContent = r.ok ? "Saved" : "Save failed";
+  $("status").className = r.ok ? "ok" : "err";
   const todo = $("todo").checked;
   rebuild();
   show(todo ? idx : idx + step);
@@ -142,6 +329,7 @@ cv.onclick = e => {
 $("k-off").onclick = () => setKind("off_panel");
 $("k-nar").onclick = () => setKind("narrator");
 $("k-sfx").onclick = () => setKind("sfx");
+$("k-miss").onclick = () => setKind("missing");
 $("k-skip").onclick = () => { cur.skip = !cur.skip; cur.speakers = []; paint(); draw(); };
 $("next").onclick = () => save(1);
 $("prev").onclick = () => show(idx - 1);
@@ -154,6 +342,7 @@ addEventListener("keydown", e => {
   else if (e.key === "o") setKind("off_panel");
   else if (e.key === "n") setKind("narrator");
   else if (e.key === "s") setKind("sfx");
+  else if (e.key === "m") setKind("missing");
   else if (e.key === "x") $("k-skip").click();
 });
 load();

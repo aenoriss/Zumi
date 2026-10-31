@@ -17,17 +17,14 @@ dependencies = [
     "pycocotools",  # imported by sam3's image processor
     "psutil",  # imported by sam3 at package import
     "scipy",  # hole filling in masks
-]
-
-[dependency-groups]
-# Magiv3 (Florence-2, trust_remote_code): its config records transformers 4.45.2; newer versions break that code
-magi = [
-    "transformers==4.45.2",
-    "timm",
-    "pytorch-metric-learning",
-    "shapely",
-    "networkx",
-    "matplotlib",
+    "opencv-python==4.11.0.86",  # page, frames, cards, erase, lettering (it came in only through a research group)
+    "requests==2.34.2",  # the FLUX Erase API (flux_erase.py)
+    # Depth Anything 3, imported from pipeline/.vendor (depth.py): what its model loading imports
+    "omegaconf",
+    "addict",
+    "imageio",
+    "huggingface_hub",
+    "tqdm",
 ]
 
 [tool.uv]

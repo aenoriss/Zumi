@@ -1,4 +1,4 @@
-"""Step 2b, sound-effect refinement: tighten each sound-effect mask to its letters with a zoomed SAM 3.1 pass.
+"""Step 2a, sound-effect refinement: tighten each sound-effect mask to its letters with a zoomed SAM 3.1 pass.
 
 The first pass (bubbles.py) finds sound effects on a whole tile, so their masks are loose (art between letters, a
 whisper's "per" beside "whis"). Per mask: SAM re-runs "letters" on a crop of the mask enlarged to 1008 px and keeps
@@ -7,7 +7,7 @@ the effect unless the old mask is stroke-shaped (an isolated letter SAM will not
 the old mask lacked are looked for around it and kept only if SAM confirms them. Then pieces of one word are grouped
 (only a fragment of 1-2 letters joins a neighbour) and the whole word is re-segmented; a word with a gap still wider
 than 2.2 letter spacings loses its fragments. Tuned on Tower of God 223 / 228, True Beauty 5, Pepper&Carrot 39
-(scratch "iterate.py", variant v9, 2026-10-23).
+(variant v9 of a scratch script, 2026-10-23).
 """
 
 from __future__ import annotations
@@ -16,29 +16,20 @@ import numpy as np
 from PIL import Image
 from scipy.ndimage import binary_dilation, label
 
-from bubbles import Found
+from masks import Found
 
-SIDE = 1008
 C = dict(prompts=["letters"], prompts2=["letters", "text"], rescue=["text"], pad=16, fallback=0.35, margin=1, thr=0.45,
          missing_frac=0.3)
 
 
-def zoom_masks(proc, img, box, region, prompts, thr):
-    x0, y0, x1, y1 = box
-    crop = img.crop(box)
-    s = SIDE / max(crop.size)
-    big = crop.resize((max(1, round(crop.width * s)), max(1, round(crop.height * s))), Image.LANCZOS)
-    canvas = Image.new("RGB", (SIDE, SIDE), (255, 255, 255))
-    canvas.paste(big, (0, 0))
-    base = proc.set_image(canvas)
+def zoom_masks(seg, img, box, region, prompts, thr):
+    """Every instance SAM finds on the zoomed box (sam.Segmenter.zoom) that lies mostly inside `region`, united."""
     keep = np.zeros(region.shape, bool)
-    for prompt in prompts:
-        state = proc.set_text_prompt(prompt, base)
-        for p in state["masks_logits"][:, 0].float().cpu().numpy():
-            # downsample the probabilities, then threshold: smooth edges, thin strokes survive
-            mm = np.asarray(Image.fromarray(p[: big.height, : big.width].astype(np.float32)).resize(crop.size, Image.BILINEAR)) > thr
-            if mm.sum() and (mm & region).sum() >= 0.7 * mm.sum():
-                keep |= mm
+    for prob, _, _ in seg.zoom(img, box, prompts):
+        # downsampled probabilities, then thresholded: smooth edges, thin strokes survive
+        mm = prob > thr
+        if mm.sum() and (mm & region).sum() >= 0.7 * mm.sum():
+            keep |= mm
     return keep & region
 
 
@@ -52,16 +43,16 @@ def colour_codes(pixels):
     return q[..., 0] * 256 + q[..., 1] * 16 + q[..., 2]
 
 
-def refine(proc, img, m):
+def refine(seg, img, m):
     """One sound-effect mask -> (tightened mask, status); an empty mask means the effect is dropped."""
     c = C
     h, w = m.shape
     region = binary_dilation(m, iterations=3)
     out = np.zeros_like(m)
     x0, y0, x1, y1 = bbox(m, c["pad"], h, w)
-    out[y0:y1, x0:x1] = zoom_masks(proc, img, (x0, y0, x1, y1), region[y0:y1, x0:x1], c["prompts"], c["thr"])
+    out[y0:y1, x0:x1] = zoom_masks(seg, img, (x0, y0, x1, y1), region[y0:y1, x0:x1], c["prompts"], c["thr"])
     if out.sum() < c["fallback"] * m.sum():  # e.g. white outlined letters on white
-        out[y0:y1, x0:x1] |= zoom_masks(proc, img, (x0, y0, x1, y1), region[y0:y1, x0:x1], c["rescue"], c["thr"])
+        out[y0:y1, x0:x1] |= zoom_masks(seg, img, (x0, y0, x1, y1), region[y0:y1, x0:x1], c["rescue"], c["thr"])
     rest = m & ~binary_dilation(out, iterations=6)
     lab, n = label(rest)
     for k in range(1, n + 1):
@@ -69,7 +60,7 @@ def refine(proc, img, m):
         if part.sum() < 0.03 * m.sum() or part.sum() < 150:
             continue
         bx = bbox(part, c["pad"], h, w)
-        out[bx[1]:bx[3], bx[0]:bx[2]] |= zoom_masks(proc, img, bx, binary_dilation(part, iterations=3)[bx[1]:bx[3], bx[0]:bx[2]],
+        out[bx[1]:bx[3], bx[0]:bx[2]] |= zoom_masks(seg, img, bx, binary_dilation(part, iterations=3)[bx[1]:bx[3], bx[0]:bx[2]],
                                                     c["prompts2"], c["thr"])
     if out.sum() < c["fallback"] * m.sum():
         # SAM would not re-find it zoomed, but the original mask looks like strokes, not a flat region: an isolated
@@ -84,7 +75,7 @@ def refine(proc, img, m):
     out, status = complete(np.asarray(img), m, out)
     if status == "partial":
         return np.zeros_like(m), "dropped-partial"
-    out, st2 = extend(proc, img, out)
+    out, st2 = extend(seg, img, out)
     if st2 != "ok":
         status = st2 if status == "ok" else status + "+" + st2
     region = region | binary_dilation(out, iterations=3)
@@ -108,7 +99,7 @@ def complete(pixels, orig, out):
     lab, n = label(cand)
     if not n:
         return out, "ok"
-    letter_lab, nl = label(out)
+    letter_lab, _ = label(out)
     areas = np.bincount(letter_lab.ravel())[1:]
     typical = float(np.median(areas)) if len(areas) else 0
     sizes = np.bincount(lab.ravel())
@@ -124,7 +115,7 @@ def complete(pixels, orig, out):
     return new, "recaptured"
 
 
-def extend(proc, img, out):
+def extend(seg, img, out):
     """A letter the original mask never had: a blob near the captured letters with their colours and size, in line
     with the word. Added only if SAM confirms it on a zoomed crop; an unconfirmed candidate is ignored (Tower of God
     223: all 4 effects dropped on an unconfirmed candidate were complete words)."""
@@ -169,7 +160,7 @@ def extend(proc, img, out):
         if abs(d[0] * axis[1] - d[1] * axis[0]) > H:  # not in line with the word
             continue
         bx = bbox(blob, C["pad"], h, w)
-        got = zoom_masks(proc, img, bx, binary_dilation(blob, iterations=4)[bx[1]:bx[3], bx[0]:bx[2]], C["prompts"], C["thr"])
+        got = zoom_masks(seg, img, bx, binary_dilation(blob, iterations=4)[bx[1]:bx[3], bx[0]:bx[2]], C["prompts"], C["thr"])
         if got.sum() >= 0.5 * blob.sum():
             out[bx[1]:bx[3], bx[0]:bx[2]] |= got
             status = "extended"
@@ -261,17 +252,17 @@ def widest_gap(m, H):
     return float(gaps.max() / max(unit, 1.0))
 
 
-def word_check(proc, img, pieces):
+def word_check(seg, img, pieces):
     """Pieces judged to be one word (or one short fragment alone) -> (mask, or per-piece list, or None; status)."""
     union = np.logical_or.reduce(pieces)
-    n_letters, H = letter_stats(union)
+    _, H = letter_stats(union)
     h, w = union.shape
     if len(pieces) > 1:
         # zoom SAM on the whole word to capture letters between the pieces, then require even spacing
         if not H or H < 8:
             return union, "word-joined"
         bx = bbox(union, int(0.5 * H), h, w)
-        got = zoom_masks(proc, img, bx, np.ones((bx[3] - bx[1], bx[2] - bx[0]), bool), C["prompts"], C["thr"])
+        got = zoom_masks(seg, img, bx, np.ones((bx[3] - bx[1], bx[2] - bx[0]), bool), C["prompts"], C["thr"])
         grown = union.copy()
         grown[bx[1]:bx[3], bx[0]:bx[2]] |= got
         before, after = widest_gap(union, H), widest_gap(grown, H)
@@ -289,7 +280,7 @@ def word_check(proc, img, pieces):
     if not missing.any():
         return union, "ok"
     bx = bbox(union | missing, C["pad"], h, w)
-    got = zoom_masks(proc, img, bx, binary_dilation(union | missing, iterations=6)[bx[1]:bx[3], bx[0]:bx[2]], C["prompts"], C["thr"])
+    got = zoom_masks(seg, img, bx, binary_dilation(union | missing, iterations=6)[bx[1]:bx[3], bx[0]:bx[2]], C["prompts"], C["thr"])
     grown = union.copy()
     grown[bx[1]:bx[3], bx[0]:bx[2]] |= got
     left = missing & ~binary_dilation(grown, iterations=2)
@@ -298,7 +289,7 @@ def word_check(proc, img, pieces):
     return None, "dropped-fragment"
 
 
-def refine_panel(proc, img: Image.Image, found: list[Found]) -> list[Found]:
+def refine_panel(seg, img: Image.Image, found: list[Found]) -> list[Found]:
     """All sound effects of a panel refined and grouped into words; bubbles and captions pass through unchanged."""
     items, seen = [], set()
     for f in found:
@@ -308,7 +299,7 @@ def refine_panel(proc, img: Image.Image, found: list[Found]) -> list[Found]:
         if k in seen:
             continue
         seen.add(k)
-        r, _ = refine(proc, img, f.mask)
+        r, _ = refine(seg, img, f.mask)
         items.append([f, r])
     code = colour_codes(np.asarray(img))
     live = [k for k, it in enumerate(items) if it[1].any()]
@@ -332,7 +323,7 @@ def refine_panel(proc, img: Image.Image, found: list[Found]) -> list[Found]:
     for ks in groups.values():
         if len(ks) == 1 and letters[ks[0]] > 2:
             continue  # a word of 3+ letters on its own: nothing to check
-        res, _ = word_check(proc, img, [items[k][1] for k in ks])
+        res, _ = word_check(seg, img, [items[k][1] for k in ks])
         for n_, k in enumerate(ks):
             if isinstance(res, list):
                 items[k][1] = res[n_] if res[n_] is not None else np.zeros_like(items[k][1])

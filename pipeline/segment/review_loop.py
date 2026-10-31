@@ -1,8 +1,12 @@
 """Reasoning layer over SAM 3.1: a vision LLM reviews a panel's masks and the segmenter carries out its fixes.
 
-One loop for both tasks: "characters" (one mask per character, crowds merged) and "lettering" (speech bubbles,
-captions, sound effects). Design from the literature review (docs/research, 2026-10-24) and our own failures:
-- the model acts by mask number (set-of-mark), never by drawing: same, split, improve, drop, crowd, missing;
+    review(seg, img, masks, task, tag, judge=None) -> (masks, log)
+
+One loop for three tasks: "characters" (one mask per character, crowds merged), "lettering" (speech bubbles,
+captions, sound effects) and "objects" (the picker's objects). Design from the literature review (docs/research,
+2026-10-24) and our own failures:
+- the model acts by mask number (set-of-mark), never by drawing, with the actions its task offers (TASK[task]
+  "actions"): same, split, improve, extend, drop, crowd, missing;
 - every change to pixels is made by SAM 3.1 on a zoomed crop (missing, improve, split) and kept only if SAM
   confirms it; boxes from the model are prompts, never output;
 - every destructive action (drop, merge) is checked again on that one mask, rendered alone with a zoomed crop
@@ -18,19 +22,21 @@ captions, sound effects). Design from the literature review (docs/research, 2026
 
 from __future__ import annotations
 
-import json
-import re
-import threading
 from dataclasses import dataclass, field
 
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_dilation, binary_fill_holes
 
-from openrouter import chat, image_part
+from bubbles import dialogue_like, letter_shaped
+from characters import clean
+from masks import Found
+from openrouter import BudgetExceeded, Truncated, ask_json, image_part
+from sam import THRESHOLD
+from understand import font
 
+REVIEW_MODEL, REVIEW_EFFORT = "anthropic/claude-haiku-5.5", "high"
 SMALL_FIGURE, DENSE = 0.02, 8  # 8+ character masks under 2% of the panel each: judged together as possible background
-SAM_LOCK = threading.Lock()  # SAM runs on one GPU; LLM calls may run in parallel threads
 COLOURS = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48), (145, 30, 180), (70, 200, 200), (240, 50, 230),
            (150, 190, 30), (0, 128, 128), (170, 110, 40), (128, 0, 0), (0, 0, 128)]
 LABEL = {"bubble": "speech bubble", "caption": "caption box", "sfx": "sound effect", "character": "character", "crowd": "crowd"}
@@ -148,51 +154,53 @@ TASK["objects"] = {
              'fixed to a wall or ceiling? Reply with JSON only: {"yes": true}',
     "prompts": ("furniture", "object", "item"),
 }
+ACTIONS = ("same", "split", "improve", "extend", "drop", "crowd", "missing")
+for _t in TASK.values():  # the actions a task offers the reviewer (its reply template): no other is carried out
+    _t["allowed"] = tuple(k for k in ACTIONS if f'"{k}"' in _t["empty"])
 PROMPT_KIND = {"speech bubble": "bubble", "caption box": "caption", "letters": "sfx", "word": "sfx",
                "character": "character", "person": "character", "creature": "character",
                "furniture": "object", "object": "object", "item": "object"}
 
 
 @dataclass
-class El:
-    mask: np.ndarray
-    kind: str
-    score: float
-    touched: bool = False
-
-
-@dataclass
 class Log:
     calls: int = 0
     cost: float = 0.0
-    proposed: dict = field(default_factory=dict)
     applied: list = field(default_factory=list)
     rejected: list = field(default_factory=list)
+    truncated: list = field(default_factory=list)  # calls that spent the whole budget: no answer, taken as no change
+    stopped: list = field(default_factory=list)    # calls the daily cap refused: nothing sent, taken as no change
 
 
-def _json(text: str) -> dict:
-    m = re.search(r"\{.*\}", text or "", re.S)
-    try:
-        return json.loads(m.group(0)) if m else {}
-    except json.JSONDecodeError:
-        return {}
+@dataclass
+class Judge:
+    """The reviewer: a vision model asked for a JSON reply (openrouter.ask_json). A review is a proposal, so a reply
+    cut off at its budget, or a call the daily cap refuses, counts as no change (the masks stay as segmented) and is
+    logged; the pipeline goes on. Another object with the same ask() can stand in for it (a scripted reviewer)."""
+    model: str = REVIEW_MODEL
+    effort: str | None = REVIEW_EFFORT
+
+    def ask(self, content: list, tag: str, log: Log, max_tokens: int = 500) -> dict:
+        log.calls += 1
+        try:
+            v, cost = ask_json(self.model, content, tag, max_tokens, self.effort)
+        except Truncated as e:
+            log.cost += e.cost
+            log.truncated.append(tag)
+            return {}
+        except BudgetExceeded:
+            log.stopped.append(tag)
+            return {}
+        log.cost += cost
+        return v
 
 
-def _ask(model: str, effort: str | None, content: list, tag: str, log: Log, max_tokens: int = 500) -> dict:
-    text, usage = chat(model, [{"role": "user", "content": content}], max_tokens=max_tokens + (4000 if effort else 0),
-                       tag=tag, reasoning=effort)
-    log.calls += 1
-    log.cost += float(usage.get("cost", 0) or 0)
-    return _json(text)
-
-
-def marked(img: Image.Image, els: list[El]) -> Image.Image:
+def marked(img: Image.Image, els: list[Found]) -> Image.Image:
     base = np.asarray(img).astype(np.float32)
     for k, e in enumerate(els):
         base[e.mask] = base[e.mask] * 0.5 + np.array(COLOURS[k % len(COLOURS)]) * 0.5
     out = Image.fromarray(base.astype(np.uint8))
     d = ImageDraw.Draw(out)
-    from understand import font
     size = max(18, img.width // 24)
     for k, e in enumerate(els):
         ys, xs = np.nonzero(e.mask)
@@ -215,31 +223,22 @@ def single(img: Image.Image, m: np.ndarray) -> list:
     return [image_part(full, max_side=1024), image_part(full.crop(box), max_side=768)]
 
 
-def zoom(proc, img: Image.Image, box, prompts) -> list[tuple[np.ndarray, float, str]]:
-    """SAM 3.1 on a crop of `box` enlarged to fill its input: (panel-size mask, score, kind) per instance."""
+def zoom(seg, img: Image.Image, box, prompts) -> list[tuple[np.ndarray, float, str]]:
+    """SAM 3.1 on a crop of `box` enlarged to fill its input (sam.Segmenter.zoom): (panel-size mask, score, kind)
+    per instance."""
     x0, y0, x1, y1 = box
-    crop = img.crop(box)
-    s = 1008 / max(crop.size)
-    big = crop.resize((max(1, round(crop.width * s)), max(1, round(crop.height * s))), Image.LANCZOS)
-    canvas = Image.new("RGB", (1008, 1008), (255, 255, 255))
-    canvas.paste(big, (0, 0))
     out = []
-    with SAM_LOCK:
-        base = proc.set_image(canvas)
-        for prompt in prompts:
-            st = proc.set_text_prompt(prompt, base)
-            for p, sc in zip(st["masks_logits"][:, 0].float().cpu().numpy(), st["scores"].float().cpu().numpy()):
-                if sc < 0.3:
-                    continue
-                mm = np.asarray(Image.fromarray(p[: big.height, : big.width].astype(np.float32)).resize(crop.size, Image.BILINEAR)) > 0.5
-                if not mm.any() or mm.mean() > 0.8:  # fills the crop: SAM marked the box, not an object
-                    continue
-                full = np.zeros((img.height, img.width), bool)
-                full[y0:y1, x0:x1] = binary_fill_holes(mm)
-                if PROMPT_KIND.get(prompt) == "character":
-                    from characters import clean
-                    full = clean(full)
-                out.append((full, float(sc), PROMPT_KIND.get(prompt, "character")))
+    for prob, sc, prompt in seg.zoom(img, box, prompts):
+        if sc < THRESHOLD:
+            continue
+        mm = prob > 0.5
+        if not mm.any() or mm.mean() > 0.8:  # fills the crop: SAM marked the box, not an object
+            continue
+        full = np.zeros((img.height, img.width), bool)
+        full[y0:y1, x0:x1] = binary_fill_holes(mm)
+        if PROMPT_KIND.get(prompt) == "character":
+            full = clean(full)
+        out.append((full, float(sc), PROMPT_KIND.get(prompt, "character")))
     return out
 
 
@@ -255,8 +254,7 @@ def _ids(v, n):
 
 def _passes_gates(img: Image.Image, cand) -> bool:
     """An added mask must pass the same rules as the segmentation pass: bubbles and captions hold letters
-    (bubbles.py), sound effects have a lettering shape, a character does not fill its box (characters.confirm)."""
-    from bubbles import dialogue_like, lettering
+    (bubbles.py), sound effects have a lettering shape, a character does not fill its box."""
     m, score, kind = cand
     if kind == "object":  # no shape rule of its own; the single-mask check (add_q, whole_q) judges it
         return int(m.sum()) >= 150
@@ -264,55 +262,72 @@ def _passes_gates(img: Image.Image, cand) -> bool:
         ys, xs = np.nonzero(m)
         return len(ys) >= 200 and m.sum() <= 0.8 * (ys.ptp() + 1) * (xs.ptp() + 1)
     if kind == "sfx":
-        return lettering(m)
+        return letter_shaped(m)
     return dialogue_like(np.asarray(img), m, kind, score)
 
 
-def needs_review(els: list[El], task: str) -> list[str]:
-    """Reasons to review a panel; an empty list means skip it. Selective review: the model is only asked where the
-    segmenter left doubt (every lettering fix on the 12 bench panels was on a sound effect or a touching pair)."""
-    reasons = []
-    if task == "lettering":
-        if any(e.kind == "sfx" for e in els):
-            reasons.append("sound effect")
-        if any(e.kind in ("bubble", "caption") and e.score < 0.8 for e in els):
-            reasons.append("low score")
-    else:
-        if els:
-            reasons.append("characters present")
-    for a in range(len(els)):
-        grown = binary_dilation(els[a].mask, iterations=3)
-        if any(np.logical_and(grown, els[b].mask).any() for b in range(a + 1, len(els))):
-            reasons.append("touching masks")
-            break
-    return reasons
+def _label(e: Found) -> str:
+    """How a mask is listed to the reviewer: an object by its name, the rest by kind."""
+    return e.name or LABEL.get(e.kind, e.kind)
 
 
-def _signature(els: list[El]) -> tuple:
+def _signature(els: list[Found]) -> tuple:
     """Coarse fingerprint of a mask set, to stop when a round returns to an earlier state."""
-    return tuple(sorted((e.kind, int(e.mask.sum()) // 200) for e in els))
+    return tuple(sorted((e.name or e.kind, int(e.mask.sum()) // 200) for e in els))
 
 
-def _check(model, effort, question, img, m, tag, log) -> bool:
+def _check(judge, question, img, m, tag, log) -> bool:
     """Single-mask check. The model describes what it sees before deciding: asked for a bare yes/no, Haiku rejected
     a correct AKREEE mask three times out of three; asked to describe first, it accepted it."""
     q = question.split("Reply with JSON only")[0].strip()
     q += (' First say in one sentence what the highlighted region contains, then decide. Reply with JSON only: '
           '{"seen": "<one sentence>", "yes": true or false}')
-    return bool(_ask(model, effort, [{"type": "text", "text": q}] + single(img, m), tag, log, max_tokens=300).get("yes"))
+    return bool(judge.ask([{"type": "text", "text": q}] + single(img, m), tag, log, max_tokens=300).get("yes"))
 
 
-def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort: str | None, tag: str,
-           rounds: int = 3) -> tuple[list[El], Log]:
-    """Up to `rounds` rounds; a round runs only when the previous one changed pixels, any mask may be acted on again,
-    and the loop stops if a round brings back a mask set seen before."""
+def parse_verdict(v: dict, n: int, size: tuple[int, int], allowed=ACTIONS) -> dict:
+    """The reviewer's reply as actions on n masks: only the `allowed` ones (the task's), mask numbers 0-based and in
+    range, "missing" boxes in pixels of an image of `size` (each with the reply's own box beside it, for the log,
+    and dropped when under 12 px)."""
+    v = {k: x for k, x in v.items() if k in allowed}
+
+    def lst(key):
+        x = v.get(key, [])
+        return x if isinstance(x, list) else []
+    out = {"same": [_ids(g, n) for g in lst("same")]}
+    for key in ("drop", "crowd", "improve", "split", "extend"):
+        out[key] = _ids(v.get(key, []), n)
+    miss = v.get("missing", [])
+    if isinstance(miss, list) and len(miss) == 4 and all(isinstance(x, (int, float)) for x in miss):
+        miss = [miss]
+    w, h = size
+    out["missing"] = []
+    for b in miss if isinstance(miss, list) else []:
+        if not (isinstance(b, list) and len(b) == 4 and all(isinstance(x, (int, float)) for x in b)):
+            continue
+        x0, y0, x1, y1 = [int(min(100, max(0, float(q))) / 100 * s) for q, s in zip(b, (w, h, w, h))]
+        if x1 - x0 < 12 or y1 - y0 < 12:
+            continue
+        pad = int(0.1 * max(x1 - x0, y1 - y0))
+        out["missing"].append((b, (max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad))))
+    return out
+
+
+def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: Judge | None = None,
+           rounds: int = 3) -> tuple[list[Found], Log]:
+    """The masks of one panel reviewed for `task` ("lettering", "characters", "objects"): seg, the run's
+    sam.Segmenter, carries out the fixes; judge (default Judge(): Haiku 5.5, high reasoning) proposes and checks them.
+    Up to `rounds` rounds; a round runs only when the previous one changed pixels, any mask may be acted on again,
+    and the loop stops if a round brings back a mask set seen before. An object's name rides along on its mask
+    (Found.name), on merges and splits too."""
+    judge = judge or Judge()
     t = TASK[task]
     log = Log()
     if task == "characters":
         small = [k for k, e in enumerate(els) if e.kind == "character" and e.mask.mean() < SMALL_FIGURE]
         if len(small) >= DENSE:
             union = np.logical_or.reduce([els[k].mask for k in small])
-            if _check(model, effort, t["background_q"], img, union, f"{tag} background", log):
+            if _check(judge, t["background_q"], img, union, f"{tag} background", log):
                 els = [e for k, e in enumerate(els) if k not in set(small)]
                 log.applied.append(("background", len(small)))
             else:
@@ -323,7 +338,7 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
         if not els:
             break
         n = len(els)
-        listing = "\n".join(f"{k + 1}: {LABEL.get(e.kind, e.kind)}" for k, e in enumerate(els))
+        listing = "\n".join(f"{k + 1}: {_label(e)}" for k, e in enumerate(els))
         head = ("Image 1: a comic panel with every candidate mask filled in a colour and numbered. Image 2: the same "
                 "panel without marks.") if rnd == 0 else (
                 "Image 1: the comic panel after your previous fixes, every mask filled in a colour and renumbered. "
@@ -333,22 +348,20 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
         content = [{"type": "text", "text": prompt}, image_part(marked(img, els))]
         if rnd == 0:  # later rounds: the marked image alone, to save tokens
             content.append(image_part(img, max_side=1024))
-        v = _ask(model, effort, content, f"{tag} r{rnd}", log)
-        log.proposed[f"r{rnd}"] = v
+        act = parse_verdict(judge.ask(content, f"{tag} r{rnd}", log), n, img.size, t["allowed"])
         changes = []
-        free = lambda i: True
         changed = False
         new = list(els)
         gone: set[int] = set()
         # merges: verified on the merged mask alone
-        for grp in v.get("same", []) if isinstance(v.get("same"), list) else []:
-            g = [i for i in _ids(grp, n) if free(i) and i not in gone]
+        for grp in act["same"]:
+            g = [i for i in grp if i not in gone]
             if len(g) < 2:
                 continue
             m = np.logical_or.reduce([els[i].mask for i in g])
-            ok = _check(model, effort, t["same_q"], img, m, f"{tag} same", log)
+            ok = _check(judge, t["same_q"], img, m, f"{tag} same", log)
             if ok:
-                new.append(El(m, els[g[0]].kind, max(els[i].score for i in g), True))
+                new.append(Found(m, max(els[i].score for i in g), els[g[0]].kind, els[g[0]].name))
                 gone |= set(g)
                 log.applied.append(("same", [i + 1 for i in g]))
                 changes.append(f"merged {', '.join(str(i + 1) for i in g)}")
@@ -356,10 +369,10 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
             else:
                 log.rejected.append(("same", [i + 1 for i in g]))
         # drops: verified on the mask alone
-        for i in _ids(v.get("drop", []), n):
-            if i in gone or not free(i):
+        for i in act["drop"]:
+            if i in gone:
                 continue
-            keep = _check(model, effort, t["drop_q"], img, els[i].mask, f"{tag} drop", log)
+            keep = _check(judge, t["drop_q"], img, els[i].mask, f"{tag} drop", log)
             if keep:
                 log.rejected.append(("drop", i + 1))
             else:
@@ -367,18 +380,18 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
                 log.applied.append(("drop", i + 1))
                 changes.append(f"dropped {i + 1}")
         # crowd (characters): label only, no pixels change
-        crowd = [i for i in _ids(v.get("crowd", []), n) if i not in gone and free(i)]
+        crowd = [i for i in act["crowd"] if i not in gone]
         if crowd:
             m = np.logical_or.reduce([els[i].mask for i in crowd])
-            new.append(El(m, "crowd", max(els[i].score for i in crowd), True))
+            new.append(Found(m, max(els[i].score for i in crowd), "crowd"))
             gone |= set(crowd)
             log.applied.append(("crowd", [i + 1 for i in crowd]))
         # improve: SAM on a zoomed box around the mask; kept if it grows the mask and still holds it
-        for i in _ids(v.get("improve", []), n):
-            if i in gone or not free(i):
+        for i in act["improve"]:
+            if i in gone:
                 continue
             m = els[i].mask
-            cands = [c for c in zoom(proc, img, _box(m, 0.35, img), t["prompts"]) if np.logical_and(c[0], m).sum() >= 0.7 * m.sum()]
+            cands = [c for c in zoom(seg, img, _box(m, 0.35, img), t["prompts"]) if np.logical_and(c[0], m).sum() >= 0.7 * m.sum()]
             # a missing body part lies outside the outline; holes inside it are what covers the character (ToG 223 p48:
             # the "SHUT YOUR MOUTH" bubble on his chest, filled in by SAM's hole filling)
             holes = binary_fill_holes(m) & ~m
@@ -395,20 +408,20 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
             if cands:
                 best = max(cands, key=lambda c: c[1])
                 grown = m | best[0]
-                if _check(model, effort, t["whole_q"], img, grown, f"{tag} improve", log):
-                    new[i] = El(grown, els[i].kind, els[i].score, True)
+                if _check(judge, t["whole_q"], img, grown, f"{tag} improve", log):
+                    new[i] = Found(grown, els[i].score, els[i].kind, els[i].name)
                     log.applied.append(("improve", i + 1))
                     changes.append(f"enlarged {i + 1}")
                     changed = True
                     continue
             log.rejected.append(("improve", i + 1))
         # split: SAM must return two or more instances inside the mask that cover most of it
-        for i in _ids(v.get("split", []), n):
-            if i in gone or not free(i):
+        for i in act["split"]:
+            if i in gone:
                 continue
             m = els[i].mask
             region = binary_dilation(m, iterations=4)
-            parts = [c for c in zoom(proc, img, _box(m, 0.1, img), t["prompts"])
+            parts = [c for c in zoom(seg, img, _box(m, 0.1, img), t["prompts"])
                      if np.logical_and(c[0], region).sum() >= 0.8 * c[0].sum() and c[0].sum() >= 0.15 * m.sum()]
             uniq = []
             for c in sorted(parts, key=lambda c: -c[1]):
@@ -417,7 +430,7 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
             if len(uniq) >= 2 and np.logical_or.reduce([u[0] for u in uniq]).__and__(m).sum() >= 0.7 * m.sum():
                 gone.add(i)
                 kind = {"sfx": None, "crowd": "character"}.get(els[i].kind, els[i].kind)  # a split crowd is characters
-                new += [El(u[0] & region, kind or u[2], u[1], True) for u in uniq]
+                new += [Found(u[0] & region, u[1], kind or u[2], els[i].name) for u in uniq]
                 log.applied.append(("split", i + 1, len(uniq)))
                 changes.append(f"split {i + 1} into {len(uniq)}")
                 changed = True
@@ -425,7 +438,7 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
                 log.rejected.append(("split", i + 1))
         # extend (lettering): letters of the same word next to its mask; SAM looks around it, only letter-shaped pieces
         # that touch no other element are added, and the grown word is checked alone
-        for i in _ids(v.get("extend", []), n):
+        for i in act["extend"]:
             if i in gone or els[i].kind != "sfx":
                 continue
             m = els[i].mask
@@ -435,7 +448,7 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
             others = [e.mask for k, e in enumerate(els) if k != i]
             taken = binary_dilation(np.logical_or.reduce(others), iterations=3) if others else np.zeros_like(m)
             pieces, whole = [], False
-            for c in zoom(proc, img, _box(m, 0.6, img), ("letters", "word")):
+            for c in zoom(seg, img, _box(m, 0.6, img), ("letters", "word")):
                 if (c[0] & ~m).sum() < 0.05 * m.sum():
                     continue
                 if np.logical_and(c[0], m).sum() >= 0.5 * m.sum():
@@ -446,33 +459,22 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
                         not any(np.logical_and(c[0] & ~m, o).sum() > 0.1 * o.sum() for o in others):
                     pieces.append(c[0])
             grown = m | np.logical_or.reduce(pieces) if pieces else m
-            from bubbles import lettering as letter_shape
             # SAM's whole-word mask, letter-shaped and clear of neighbours, needs no LLM check: the check was flaky on
             # exactly this case (refused AKREEE in the loop, accepted it when asked alone); loose pieces still need it
-            if pieces and grown.sum() >= 1.05 * m.sum() and letter_shape(grown) and \
-                    (whole or _check(model, effort, t["extend_q"], img, grown, f"{tag} extend", log)):
-                new[i] = El(grown, "sfx", els[i].score, True)
+            if pieces and grown.sum() >= 1.05 * m.sum() and letter_shaped(grown) and \
+                    (whole or _check(judge, t["extend_q"], img, grown, f"{tag} extend", log)):
+                new[i] = Found(grown, els[i].score, "sfx")
                 log.applied.append(("extend", i + 1))
                 changes.append(f"extended {i + 1}")
                 changed = True
             else:
                 log.rejected.append(("extend", i + 1, "no letters found beside it" if not pieces else "failed shape or check"))
         # missing: SAM on the box must find an object that is not already masked
-        miss = v.get("missing", [])
-        if isinstance(miss, list) and len(miss) == 4 and all(isinstance(x, (int, float)) for x in miss):
-            miss = [miss]
         w, h = img.size
-        for b in miss if isinstance(miss, list) else []:
-            if not (isinstance(b, list) and len(b) == 4 and all(isinstance(x, (int, float)) for x in b)):
-                continue
-            x0, y0, x1, y1 = [int(min(100, max(0, float(q))) / 100 * s) for q, s in zip(b, (w, h, w, h))]
-            if x1 - x0 < 12 or y1 - y0 < 12:
-                continue
-            pad = int(0.1 * max(x1 - x0, y1 - y0))
-            box = (max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad))
+        for b, box in act["missing"]:
             inside = np.zeros((h, w), bool)
             inside[box[1]:box[3], box[0]:box[2]] = True
-            found = zoom(proc, img, box, t["prompts"])
+            found = zoom(seg, img, box, t["prompts"])
             cands = [c for c in found if np.logical_and(c[0], inside).sum() >= 0.6 * c[0].sum() and c[0].sum() >= 150]
             fresh = [c for c in cands if not any(np.logical_and(c[0], e.mask).sum() > 0.5 * c[0].sum() for e in new)]
             gated = [c for c in fresh if _passes_gates(img, c)]  # free: catches letterless "bubbles", boxy figures
@@ -489,8 +491,8 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
                              and np.logical_and(best[0], e.mask).sum() >= 0.2 * best[0].sum()), None)
                 if host is not None:
                     grown = new[host].mask | best[0]
-                    if _check(model, effort, t["whole_q"], img, grown, f"{tag} join", log):
-                        new[host] = El(grown, "character", new[host].score, True)
+                    if _check(judge, t["whole_q"], img, grown, f"{tag} join", log):
+                        new[host] = Found(grown, new[host].score, "character")
                         log.applied.append(("joined", b, host + 1))
                         changes.append(f"enlarged {host + 1}")
                         changed = True
@@ -498,8 +500,8 @@ def review(proc, img: Image.Image, els: list[El], task: str, model: str, effort:
                     log.rejected.append(("missing", b, "part of a masked character, check said no"))
                     continue
                 # additions are checked alone too (Haiku added two small "bubbles" on art: ToG 223 p11, TB 5 p57)
-                if _check(model, effort, t["add_q"], img, best[0], f"{tag} add", log):
-                    new.append(El(best[0], best[2], best[1], True))
+                if _check(judge, t["add_q"], img, best[0], f"{tag} add", log):
+                    new.append(Found(best[0], best[1], best[2]))
                     log.applied.append(("missing", b))
                     changes.append("added a mask")
                     changed = True

@@ -4,23 +4,23 @@ labelling page (speaker_label.html), served by `serve` on localhost with a save 
 labels.json, {"<pid>#<bubble>": {"speakers": [card index], "kind": "card|off_panel|narrator|sfx", "skip": bool}}.
 
     uv run python experiments/speaker_dataset.py build <out root> <episode.zumi>...   (writes <out root>/speakers/)
+    uv run python experiments/speaker_dataset.py tails <out root>                     (the page's tail view)
     uv run python experiments/speaker_dataset.py serve <out root> [port]              (default 8766)
 """
 from __future__ import annotations
 
-import io
 import json
 import sys
-import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import speakers as SP  # noqa: E402
+from boxstore import Box  # noqa: E402
+from chapter import Chapter  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 
@@ -35,18 +35,16 @@ def build(root: Path, zumis: list[Path]) -> None:
     (out / "boxes").mkdir(parents=True, exist_ok=True)
     boxes = []
     for zp in zumis:
-        z = zipfile.ZipFile(zp)
-        panels = json.loads(z.read("manifest.json"))["panels"]
-        mesh = root / "dataset" / zp.stem / "parallax" / "mesh"
-        for i, p in enumerate(panels):
-            pid = f"{zp.stem}-p{i:03d}"
-            got = SP.load_box(pid, mesh)
+        ch = Chapter(zp)
+        for i in range(len(ch)):
+            pid = ch.pid(i)
+            got = SP.load_box(Box(root / "dataset" / ch.stem, pid))
             if got is None:
                 continue
             cards, bubbles, frames, (w, h) = got
             if not bubbles:
                 continue
-            Image.open(io.BytesIO(z.read(p["layers"][0]["image"]))).convert("RGB").save(out / "boxes" / f"{pid}.jpg", quality=90)
+            ch.image(i).save(out / "boxes" / f"{pid}.jpg", quality=90)
             recs = []
             for b in sorted(bubbles, key=lambda b: b.order):
                 a = SP.assign(b, cards, frames)
@@ -63,6 +61,31 @@ def build(root: Path, zumis: list[Path]) -> None:
     if not (out / "labels.json").exists():
         (out / "labels.json").write_text("{}")
     print(f"{sum(len(b['bubbles']) for b in boxes)} bubbles in {len(boxes)} boxes -> {out}")
+
+
+def tails(root: Path) -> None:
+    """speakers/tails.json, the page's tail view: per bubble what speakers.tail saw (the opening radius, the body,
+    each stripped part, kept or not) and the cards its tail aims at past the tail rule's 0.85."""
+    out = root / "speakers"
+    res = {}
+    for box in json.loads((out / "dataset.json").read_text())["boxes"]:
+        got = SP.load_box(Box(root / "dataset" / box["episode"], box["pid"]))
+        if got is None:
+            continue
+        cards, bubbles, frames, _ = got
+        for b in bubbles:
+            t = SP.tail_parts(b.mask)
+            if t is None:
+                continue
+            shift = lambda rings: [[[x + t["x0"], y + t["y0"]] for x, y in ring] for ring in rings]
+            aims = {f["card"]: round(f["aim"], 2) for f in SP.features(b, cards) if f.get("aim", -1) > 0.85}
+            res[f"{box['pid']}#{b.id}"] = {
+                "r": t["r"], "body": shift(outline(t["body"])),
+                "parts": [{"outline": shift(outline(p["mask"], 0.5)), "px": p["px"], "reach": round(p["reach"]),
+                           "kept": p["kept"]} for p in t["parts"]],
+                "aims": aims}
+    (out / "tails.json").write_text(json.dumps(res))
+    print(f"tails: {len(res)} bubbles -> {out / 'tails.json'}")
 
 
 def serve(root: Path, port: int) -> None:
@@ -95,5 +118,7 @@ if __name__ == "__main__":
     cmd, root = sys.argv[1], Path(sys.argv[2])
     if cmd == "build":
         build(root, [Path(p) for p in sys.argv[3:]])
+    elif cmd == "tails":
+        tails(root)
     else:
         serve(root, int(sys.argv[3]) if len(sys.argv) > 3 else 8766)
