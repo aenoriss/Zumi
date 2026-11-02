@@ -63,7 +63,7 @@ NARRATION = {"caption"}
 SFX = {"sfx"}
 TURN_TAKING = True    # tail rule: a cross-frame tail at the previous line's speaker goes to the other aimed card
 STACK_TAIL = True     # a tail-less balloon takes the speaker of the one tail in its chain of touching balloons
-NO_TAIL_RULES ={"single_in_frame", "nearest_in_frame", "nearest_other_frame", "no_cards"}
+NO_TAIL_RULES = {"single_in_frame", "nearest_in_frame", "nearest_other_frame", "no_cards"}
 
 
 @dataclass
@@ -317,13 +317,20 @@ def order_bubbles(bubbles: list[Bubble], frames: list[np.ndarray]) -> list[str]:
     # touching joins a stack only between balloons: a sound effect is read where it sits, and nothing as big as STACK_MAX
     # of the box is a balloon (36-p012: a 387k px "caption" over a whole panel touched a bubble of the next frame and
     # pulled it to the front). A container (it holds 90 % of the other) always joins its parts (38-p009: 18 % of a box).
+    # Balloons homed in two different frames never stack: 36-p009 "We were so close..." touched a balloon of the frame
+    # below across the gutter and was read after the next two frames (user's order labels, 2026-11-02: dialogue pairs
+    # 522 -> 526 of 529, nothing lost).
     area = [int(b.mask.sum()) for b in bubbles]
     stackable = [b.kind != "sfx" and a < STACK_MAX * b.mask.size for b, a in zip(bubbles, area)]
     grown = [binary_dilation(b.mask, iterations=CLUSTER_PX) for b in bubbles]
+    for b in bubbles:  # each bubble's own frame, by home_frame on itself: the speaker rules' "same frame" too
+        b.frame = home_frame(b.mask, [b.tail_tip], frames, rank, nearest=False)
     for i in range(n):
         for j in range(i + 1, n):
             inner = (bubbles[i].mask & bubbles[j].mask).sum() >= 0.9 * min(area[i], area[j])
-            if inner or (stackable[i] and stackable[j] and (grown[i] & bubbles[j].mask).any()):
+            fi, fj = bubbles[i].frame, bubbles[j].frame
+            apart = fi is not None and fj is not None and fi != fj
+            if inner or (stackable[i] and stackable[j] and not apart and (grown[i] & bubbles[j].mask).any()):
                 parent[root(i)] = root(j)
     clusters: dict[int, list[int]] = {}
     for i in range(n):
@@ -334,23 +341,31 @@ def order_bubbles(bubbles: list[Bubble], frames: list[np.ndarray]) -> list[str]:
     by_frame: dict[int, list[int]] = {}
     for k, (u, m) in enumerate(zip(units, masks)):
         f = home_frame(m, [bubbles[i].tail_tip for i in u], frames, rank, flags, f"bubble {bubbles[u[0]].id}")
-        for i in u:  # each bubble's own frame, by the same rule on itself: the speaker rules' "same frame"
-            bubbles[i].frame = home_frame(bubbles[i].mask, [bubbles[i].tail_tip], frames, rank, nearest=False)
         by_frame.setdefault(rank[f] if f is not None else 0, []).append(k)
     k = 0
     for fr in sorted(by_frame):
         idx = by_frame[fr]
         for q in reading_order([masks[c] for c in idx], flags):
             u = units[idx[q]]
-            # a stack segmented once more as a whole (a container: 22 of 81 boxes) would span all its parts;
-            # read the parts, the container just before its first
+            # a stack segmented once more as a whole (a container: 22 of 81 boxes) would span all its parts; read the
+            # parts, and the container where what its parts leave of it is read: before its first part when that
+            # remainder reads first (a balloon of its own merged with the next, 38-p006 "What do you think..."), else
+            # right after its last (a duplicate of the stack). User's order labels, 2026-11-02: 15 of 15 containers
+            # (one more read between its parts); always before its first part was 4 of 15, always after 11
             area = {i: int(bubbles[i].mask.sum()) for i in u}
             holds = {i: [j for j in u if j != i and area[i] > area[j]
                          and (bubbles[i].mask & bubbles[j].mask).sum() >= 0.9 * area[j]] for i in u}
             parts = [i for i in u if not holds[i]]
+            first = {}
+            for i in u:
+                if holds[i]:
+                    inside = np.logical_or.reduce([bubbles[j].mask for j in holds[i]])
+                    first[i] = reading_order([bubbles[i].mask & ~inside, inside])[0] == 0
             seq: list[int] = []
             for q2 in reading_order([bubbles[i].mask for i in parts], flags):
-                seq += [i for i in u if parts[q2] in holds[i] and i not in seq] + [parts[q2]]
+                seq += [i for i in u if first.get(i) and parts[q2] in holds[i] and i not in seq] + [parts[q2]]
+                seq += [i for i in u if i not in seq and i in first and not first[i]
+                        and all(j in seq for j in holds[i] if j in parts)]
             for i in seq + [i for i in u if i not in seq]:
                 bubbles[i].order = k
                 k += 1
@@ -397,12 +412,23 @@ def reading_order(masks: list[np.ndarray], flags: list[str] | None = None, inset
                     else:
                         break
                 else:
-                    if a and b:
+                    if a and b and not (cum is cols and not insets and raised(a, b)):
                         return a, b
         return None
 
+    def raised(a: list[int], b: list[int]) -> bool:
+        """The right side of a vertical cut starts above the left side by more than half the shorter item's height:
+        read top first, not left first (P&C 39-p020: "AND HOW DO YOU THINK..." over the leopard's lower-left reply).
+        Items only, in the cut and in the pairwise ranking. User's order labels, 2026-11-02: dialogue pairs 526 -> 527
+        of 529, nothing lost; with sound effects +3 boxes (39-p020, CPC p036, LO p018) -2 pairs (sound effects)."""
+        top = lambda s: min(int(np.searchsorted(rows[i], 1)) for i in s)  # noqa: E731
+        tall = min(int(np.count_nonzero(masks[i].any(1))) for i in a + b)
+        return top(b) < top(a) - 0.5 * tall
+
     def first(a: int, b: int) -> bool:
         A, B = masks[a], masks[b]
+        if not insets and raised([b], [a]) != raised([a], [b]):
+            return raised([b], [a])  # one starts higher by more than half the shorter's height: it reads first
         ca, ra = A.any(0) & B.any(0), A.any(1) & B.any(1)
         sc = ca.sum() / max(1, min(A.any(0).sum(), B.any(0).sum()))
         sr = ra.sum() / max(1, min(A.any(1).sum(), B.any(1).sum()))
