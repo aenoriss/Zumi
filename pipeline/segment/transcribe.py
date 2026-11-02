@@ -2,7 +2,8 @@
 whether the element is lettering at all. It does not say who speaks (user, 2026-10-31): speakers.py decides that from
 the cards, and identity across boxes is a step of its own.
 
-    result, picture = read(img, masks, kinds, tag)   # boxes are independent: episode.transcribe_step runs them in parallel
+    result, picture = read(img, masks, kinds, tag)   # one box
+    results, pictures = read_boxes({i: (img, masks, kinds, tag)})   # many, in parallel (spend.paid_map)
     uv run python transcribe.py <episode.zumi> <episode out dir> <out dir> --panels 1,2,3 [--models a,b]
 
 One call per box with two images: the box with each element outlined and numbered, and each element cropped at full
@@ -17,19 +18,21 @@ from __future__ import annotations
 
 import argparse
 import json
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_erosion
 
-from openrouter import BudgetExceeded, Truncated, ask_json, image_part, spent_today
+from openrouter import Truncated, ask_json, image_part
+from spend import paid_map, spent_today
 
-MODEL = "meta-llama/llama-4-maverick"
+# Claude Haiku 5.5 (2026-11-01): on the 670 labelled lines of P&C 36-39 its kinds matched the speaker labels 650 times,
+# Llama 4 Maverick's 598 (old prompt) to 619; Maverick also left elements out. Both about 0.0007 USD a box.
+MODEL = "anthropic/claude-haiku-5.5"
 REASONING = {"meta/muse-spark-1.3": "low", "google/gemini-3.8-flash": "low"}  # reasoning models only
+MAX_TOKENS = 4000  # the answer's budget: Haiku 5.5 spent all of 2500 on boxes of 14+ elements (P&C 38 p18, 36 p12)
 COLOURS = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48), (145, 30, 180), (240, 50, 230), (0, 128, 128), (170, 110, 40)]
-WORKERS = 8
 
 SYSTEM = """You transcribe the lettering of webtoon panels for a reading app that erases the original lettering and \
 redraws each bubble as live text. You are precise and never invent text."""
@@ -38,7 +41,7 @@ INSTRUCTIONS = """Image 1 is a webtoon panel. Each element found by an automatic
 numbered. Image 2 shows each element cropped at full resolution with its outline drawn; everything outside the \
 outline is faded.
 
-Elements, with what the segmenter measured:
+Elements, with where each lies in the panel:
 {hints}
 
 For every numbered element decide:
@@ -53,7 +56,19 @@ an arrow or lines pointing at a character (IGNORED, SHY, BLUSH, STARE): keep, ki
 computer screen, a chat or social-media interface, a sign or poster, a letter, book or printed page, text on \
 clothing or objects. false for every speech bubble, thought bubble, caption and sound effect.
 - "issue": when keep is false or in_world is true, a few words saying why; otherwise null.
-- "kind": one of "speech", "thought", "shout", "caption", "sfx".
+- "kind": who the words belong to, read from the words and from what surrounds them in image 2:
+  - "speech": words a character says, in a balloon (a drawn shape with an outline around the letters, often with \
+a tail toward the speaker). Its shape can be round, rectangular or dark: a rectangular or dark box holding a \
+character's own words ("Oh, my...") is speech, not a caption. Song lyrics in a balloon (often with music notes) are \
+speech. A single word that sounds like a noise is speech when it sits in a balloon: "Oh?!", "Tsk!", "GRRR...!".
+  - "shout": a character's words in a spiky or jagged balloon, or in large bold letters.
+  - "thought": a character's unspoken words: a cloud-shaped balloon, a balloon joined by small circles, or words \
+floating near a character with no balloon at all.
+  - "caption": the narrator's words, not a character's: time, place, or story told from outside ("Meanwhile...", \
+"North of the city..."), usually in a rectangular box at the edge of the panel with no tail.
+  - "sfx": the sound of something happening, drawn straight on the art with no balloon: usually one or a few \
+stylised, coloured or slanted words ("CREEEE", "Dzing", "TING-A-LING!", "BOOM"), or a comic annotation. A sentence \
+("Agh... It didn't work on them.") is never sfx, and nothing inside a balloon is.
 - "text": exactly the words inside this element's own coloured outline in image 2, line breaks as single spaces, \
 keeping punctuation. Faded words in image 2 lie outside the outline and belong to another element: never include them.
 
@@ -108,22 +123,24 @@ def crops_sheet(img: Image.Image, masks: list[np.ndarray], width: int = 1024) ->
     return sheet
 
 
-def hints_text(masks: list[np.ndarray], kinds: list[str], w: int, h: int) -> str:
+def hints_text(masks: list[np.ndarray], w: int, h: int) -> str:
+    """Each element's box in the panel (shares of its size). The segmenter's kind is not passed: on P&C 37-39 it
+    called free sound-effect words "bubble", and the model followed it some of the time (2026-11-01)."""
     lines = []
-    for k, (m, kind) in enumerate(zip(masks, kinds)):
+    for k, m in enumerate(masks):
         ys, xs = np.nonzero(m)
-        lines.append(f"{k + 1}: looks like {kind}, box ({xs.min() / w:.2f},{ys.min() / h:.2f})-({xs.max() / w:.2f},{ys.max() / h:.2f})")
+        lines.append(f"{k + 1}: box ({xs.min() / w:.2f},{ys.min() / h:.2f})-({xs.max() / w:.2f},{ys.max() / h:.2f})")
     return "\n".join(lines)
 
 
 def transcribe(img: Image.Image, masks: list[np.ndarray], kinds: list[str], tag: str,
                model: str = MODEL) -> tuple[dict, float]:
     """One box read: (result, cost in USD). Raises BudgetExceeded before a call the daily cap forbids."""
-    prompt = INSTRUCTIONS.format(hints=hints_text(masks, kinds, img.width, img.height))
+    prompt = INSTRUCTIONS.format(hints=hints_text(masks, img.width, img.height))
     content = [{"type": "text", "text": prompt}, image_part(numbered_overlay(img, masks)), image_part(crops_sheet(img, masks))]
     empty = {"elements": []}
     try:
-        result, cost = ask_json(model, content, tag, 2500, REASONING.get(model), system=SYSTEM, brief=False)
+        result, cost = ask_json(model, content, tag, MAX_TOKENS, REASONING.get(model), system=SYSTEM, brief=False)
         if not result:  # no JSON in the reply: marked, not read as a box with nothing to say
             result = {**empty, "error": "no JSON in the reply"}
     except Truncated as e:
@@ -140,21 +157,10 @@ def read(img: Image.Image, masks: list[np.ndarray], kinds: list[str], tag: str,
 
 def read_boxes(jobs: dict[int, tuple[Image.Image, list[np.ndarray], list[str], str]],
                model: str = MODEL) -> tuple[dict[int, dict], dict[int, Image.Image]]:
-    """read() on many boxes at once, {box index: (img, masks, kinds, tag)} -> (results, pictures). A box the daily cap
-    refuses is left out and a line printed; the others still run."""
-    def one(item):
-        i, (img, masks, kinds, tag) = item
-        try:
-            return i, read(img, masks, kinds, tag, model)
-        except BudgetExceeded as e:
-            print(f"STOP {tag}: {e}")
-            return i, None
-    results, pictures = {}, {}
-    with ThreadPoolExecutor(WORKERS) as ex:
-        for i, got in ex.map(one, jobs.items()):
-            if got is not None:
-                results[i], pictures[i] = got
-    return results, pictures
+    """read() on many boxes at once (spend.paid_map), {box index: (img, masks, kinds, tag)} -> (results, pictures).
+    The boxes the daily cap stops are left out, for the next run to read."""
+    done, _ = paid_map(lambda i: read(*jobs[i], model), list(jobs))
+    return {i: r for i, (r, _) in done.items()}, {i: p for i, (_, p) in done.items()}
 
 
 def enforce(result: dict, kinds: list[str]) -> dict:

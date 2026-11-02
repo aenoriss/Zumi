@@ -17,6 +17,7 @@ from PIL import Image
 from scipy.ndimage import binary_dilation, label
 
 from masks import Found
+from shape import letter_stats, uniformity
 
 C = dict(prompts=["letters"], prompts2=["letters", "text"], rescue=["text"], pad=16, fallback=0.35, margin=1, thr=0.45,
          missing_frac=0.3)
@@ -67,9 +68,7 @@ def refine(seg, img, m):
         # letter (ToG 223: K, R, H, E, PAT were wrongly dropped; hair, cape, skin were flat or solid)
         ys, xs = np.nonzero(m)
         fill = m.sum() / ((ys.ptp() + 1) * (xs.ptp() + 1))
-        vals = np.asarray(img)[m].astype(int)
-        uni = (np.abs(vals - np.median(vals, 0)).max(1) <= 30).mean()
-        if fill <= 0.55 and uni <= 0.45:
+        if fill <= 0.55 and uniformity(np.asarray(img), m) <= 0.45:
             return m, "kept-original"
         return np.zeros_like(m), "dropped"
     out, status = complete(np.asarray(img), m, out)
@@ -165,30 +164,6 @@ def extend(seg, img, out):
             out[bx[1]:bx[3], bx[0]:bx[2]] |= got
             status = "extended"
     return out, status
-
-
-def letter_stats(m):
-    """(letter count, letter height) of a word mask."""
-    lab, n = label(m)
-    if not n:
-        return 0, 0.0
-    hs = []
-    for j in range(1, n + 1):
-        ys = np.nonzero(lab == j)[0]
-        hs.append(ys.max() - ys.min() + 1)
-    big = [h for h in hs if h >= 0.4 * max(hs)]
-    H = float(np.median(big))
-    # touching letters (SCRITCH) form one blob: also estimate the count from the word's length along its axis,
-    # with the letter height taken as the word's thickness across that axis
-    ys, xs = np.nonzero(m)
-    pts = np.stack([xs, ys], 1).astype(float)
-    if len(pts) > 2000:
-        pts = pts[:: len(pts) // 2000]
-    vt = np.linalg.svd(pts - pts.mean(0), full_matrices=False)[2]
-    along, across = (pts - pts.mean(0)) @ vt[0], (pts - pts.mean(0)) @ vt[1]
-    thick = np.percentile(across, 97) - np.percentile(across, 3)
-    by_length = int(round((along.max() - along.min()) / max(thick, 1.0)))
-    return max(len(big), by_length), H
 
 
 def same_word(code, a, b):
@@ -289,8 +264,10 @@ def word_check(seg, img, pieces):
     return None, "dropped-fragment"
 
 
-def refine_panel(seg, img: Image.Image, found: list[Found]) -> list[Found]:
-    """All sound effects of a panel refined and grouped into words; bubbles and captions pass through unchanged."""
+def refine_panel(seg, img: Image.Image, found: list[Found], log: list[str] | None = None) -> list[Found]:
+    """All sound effects of a panel refined and grouped into words; bubbles and captions pass through unchanged.
+    log: gets each effect's refine status and each word check's ("dropped-partial", "word-captured", ...)."""
+    log = [] if log is None else log
     items, seen = [], set()
     for f in found:
         if f.kind != "sfx":
@@ -299,7 +276,8 @@ def refine_panel(seg, img: Image.Image, found: list[Found]) -> list[Found]:
         if k in seen:
             continue
         seen.add(k)
-        r, _ = refine(seg, img, f.mask)
+        r, status = refine(seg, img, f.mask)
+        log.append(status)
         items.append([f, r])
     code = colour_codes(np.asarray(img))
     live = [k for k, it in enumerate(items) if it[1].any()]
@@ -323,7 +301,8 @@ def refine_panel(seg, img: Image.Image, found: list[Found]) -> list[Found]:
     for ks in groups.values():
         if len(ks) == 1 and letters[ks[0]] > 2:
             continue  # a word of 3+ letters on its own: nothing to check
-        res, _ = word_check(seg, img, [items[k][1] for k in ks])
+        res, status = word_check(seg, img, [items[k][1] for k in ks])
+        log.append(status)
         for n_, k in enumerate(ks):
             if isinstance(res, list):
                 items[k][1] = res[n_] if res[n_] is not None else np.zeros_like(items[k][1])

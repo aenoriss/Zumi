@@ -30,6 +30,7 @@ from PIL import Image
 
 from boxstore import Box, pid_of
 from view import focal
+from workers import pmap
 
 KIND = {"speech": "speech", "thought": "thought", "caption": "caption", "sfx": "shout", "shout": "shout"}
 
@@ -85,9 +86,9 @@ def write_glb(path: Path, meshes: list[dict], yfov: float, aspect: float) -> Non
     path.write_bytes(out)
 
 
-def png_bytes(path: Path) -> bytes:
+def png_bytes(image: Image.Image) -> bytes:
     b = io.BytesIO()
-    Image.open(path).save(b, format="PNG", optimize=True)
+    image.save(b, format="PNG", optimize=True)
     return b.getvalue()
 
 
@@ -121,37 +122,36 @@ def box_cards(box: Box, out_glb: Path) -> bool:
     window depth textured with the frame's shape (alpha), then the layers. A clipped layer's name ends in
     " [frame <n>]"; lettering has no frame and is never clipped. The same goes into each node's extras
     ({"kind", "frame"})."""
-    c, mesh_dir = box.cards(), box.mesh
-    w, h, fov = c["w"], c["h"], c["fov"]
-    f = focal(w, h, fov)
+    sc = box.scene()
+    w, h = sc.w, sc.h
+    f = focal(w, h, sc.fov)
     meshes = []
-    for L in c["layers"]:
-        if L.get("window"):
-            wx0, wy0, wx1, wy1 = L["window_bbox"]
-            pos, uv, idx = card_surface(wx0, wy0, wx1, wy1, L["window_z"], w, h, f)
-            meshes.append({"name": f"window: frame {L['frame']}", "pos": pos, "uv": uv, "idx": idx,
-                           "png": png_bytes(mesh_dir / L["window"]), "blend": True,
-                           "extras": {"kind": "window", "frame": L["frame"]}})
-    for L in c["layers"]:
-        x0, y0, x1, y1 = L["bbox"]
-        relief = (np.asarray(Image.open(mesh_dir / L["relief"]).convert("L"), np.float32) / 255
-                  if L.get("relief") else None)
-        if L["kind"] == "backdrop":
-            # the backdrop's box already runs past its frame by its margin (cards.backdrop_image)
-            pos, uv, idx = card_surface(x0, y0, x1, y1, L["z"], w, h, f, relief=relief, amp=L.get("relief_amp", 0),
-                                        n=32, cell=L.get("relief_cell", 0))
-        else:
-            pos, uv, idx = card_surface(x0, y0, x1, y1, L["z"], w, h, f, relief=relief, amp=L.get("relief_amp", 0),
-                                        cell=L.get("relief_cell", 0))
-        clipped = isinstance(L.get("frame"), int) and L["kind"] != "lettering"
-        meshes.append({"name": f"{L['kind']}: {L['name']}" + (f" [frame {L['frame']}]" if clipped else ""),
-                       "pos": pos, "uv": uv, "idx": idx, "png": png_bytes(mesh_dir / L["png"]), "blend": True,
-                       "extras": {"kind": L["kind"], **({"frame": L["frame"]} if clipped else {})}})
+    for L in sc.layers:
+        win = L.window()
+        if win is not None:
+            wx0, wy0, wx1, wy1 = L.window_bbox
+            pos, uv, idx = card_surface(wx0, wy0, wx1, wy1, L.window_z, w, h, f)
+            meshes.append({"name": f"window: frame {L.frame}", "pos": pos, "uv": uv, "idx": idx,
+                           "png": png_bytes(win), "blend": True, "extras": {"kind": "window", "frame": L.frame}})
+    for L in sc.layers:
+        x0, y0, x1, y1 = L.bbox
+        # a backdrop's box already runs past its frame by its margin (cards.backdrop_image)
+        pos, uv, idx = card_surface(x0, y0, x1, y1, L.z, w, h, f, relief=L.relief(), amp=L.amp,
+                                    n=32 if L.kind == "backdrop" else 24, cell=L.cell)
+        meshes.append({"name": f"{L.kind}: {L.name}" + (f" [frame {L.frame}]" if L.clipped else ""),
+                       "pos": pos, "uv": uv, "idx": idx, "png": png_bytes(L.image()), "blend": True,
+                       "extras": {"kind": L.kind, **({"frame": L.frame} if L.clipped else {})}})
     if not meshes:
         return False
-    t = np.tan(np.radians(fov) / 2)
+    t = np.tan(np.radians(sc.fov) / 2)
     write_glb(out_glb, meshes, float(2 * np.arctan(t if h >= w else t * h / w)), w / h)
     return True
+
+
+def _build(job: tuple) -> bool:
+    """box_cards for one (box, GLB path); False when the box has no layers. A worker of main's pmap."""
+    box, glb = job
+    return box.scene() is not None and box_cards(box, glb)
 
 
 def main():
@@ -163,12 +163,10 @@ def main():
     tmp.mkdir(parents=True, exist_ok=True)
     added: dict[str, bytes] = {}
     done = 0
-    for i, p in enumerate(man["panels"]):
-        box = Box(ep_out, pid_of(stem, i))
-        if box.cards() is None:
-            continue
-        glb = tmp / f"{p['id']}.glb"
-        if not box_cards(box, glb):
+    jobs = [(Box(ep_out, pid_of(stem, i)), tmp / f"{p['id']}.glb") for i, p in enumerate(man["panels"])]
+    built = pmap(_build, jobs)  # one GLB per box, boxes across processes
+    for (box, glb), p, ok in zip(jobs, man["panels"], built):
+        if not ok:
             continue
         p["renderMode"] = "scene3d"
         p["scene"] = f"panels/{p['id']}/scene.glb"
@@ -184,7 +182,9 @@ def main():
                 if KIND.get(b.get("kind") or ""):
                     entry["kind"] = KIND[b["kind"]]
                 p["bubbles"].append(entry)
-            added[f"panels/{p['id']}/bubbles.style.json"] = box.bubbles_file.read_bytes()
+            style = {k: v for k, v in bd.items() if k not in ("letters", "transcribed")}  # the pipeline's own
+            style["bubbles"] = [{k: v for k, v in b.items() if k != "segmented_as"} for b in bd["bubbles"]]
+            added[f"panels/{p['id']}/bubbles.style.json"] = json.dumps(style, indent=1).encode()
         done += 1
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():

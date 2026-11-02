@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import speakers as SP  # noqa: E402
 from boxstore import Box  # noqa: E402
+from workers import pmap  # noqa: E402
 
 TUNE = {"pepper-carrot-37", "pepper-carrot-39"}
 TEST = {"pepper-carrot-36", "pepper-carrot-38"}
@@ -31,25 +32,21 @@ def evaluate(root: Path, split: str = "tune", sheet: Path | None = None) -> dict
     data = json.loads((root / "speakers" / "dataset.json").read_text())
     n, ok = 0, 0
     by_kind, by_rule, fails = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0]), []
-    for box in data["boxes"]:
-        if box["episode"] not in eps:
-            continue
-        got = SP.load_box(Box(root / "dataset" / box["episode"], box["pid"]))
+    boxes = [box for box in data["boxes"] if box["episode"] in eps]
+    for box, got in zip(boxes, pmap(SP.answers_of, [Box(root / "dataset" / b["episode"], b["pid"]) for b in boxes])):
         if got is None:
             continue
-        cards, bubbles, frames, _ = got
-        for b in bubbles:
-            lab = labels.get(f"{box['pid']}#{b.id}")
+        gs = got["groups"]
+        for b, a in zip(got["bubbles"], got["answers"]):
+            lab = labels.get(f"{box['pid']}#{b['id']}")
             if not lab or lab.get("skip"):
                 continue
             if lab["kind"] in ("missing", "off_panel"):  # no card to find (a segmentation miss, or a speaker not
                 by_kind[lab["kind"] + " (not scored)"][1] += 1  # drawn in the box; user 2026-10-29): not scored
                 continue
-            a = SP.assign(b, cards, frames)
             # right: the kind matches and, for a card, the answer holds every labelled speaker and nothing outside
             # their groups (a group answer, Pepper with Carrot in her arms, is right for a label on Pepper)
             if lab["kind"] == "card":
-                gs = SP.groups(cards)
                 allowed = {i for g in gs if any(s in g for s in lab["speakers"]) for i in g}
                 right = a["speaker_kind"] == "card" and set(lab["speakers"]) <= set(a["speakers"]) <= allowed
             else:
@@ -77,12 +74,12 @@ def evaluate(root: Path, split: str = "tune", sheet: Path | None = None) -> dict
                 col = (61, 220, 132) if c["i"] in lab["speakers"] else (74, 163, 255) if c["i"] in a["speakers"] else (120, 120, 120)
                 for p in c["outline"]:
                     d.line([tuple(q) for q in p] + [tuple(p[0])], fill=col, width=4 if col != (120, 120, 120) else 1)
-            ys, xs = np.nonzero(b.mask)
-            d.rectangle([xs.min(), ys.min(), xs.max(), ys.max()], outline=(255, 216, 74), width=4)
-            if b.tail_tip:
-                d.ellipse([b.tail_tip[0] - 6, b.tail_tip[1] - 6, b.tail_tip[0] + 6, b.tail_tip[1] + 6], fill=(255, 216, 74))
+            d.rectangle(list(b["bbox"]), outline=(255, 216, 74), width=4)
+            if b["tail_tip"]:
+                tx, ty = b["tail_tip"]
+                d.ellipse([tx - 6, ty - 6, tx + 6, ty + 6], fill=(255, 216, 74))
             d.rectangle([0, 0, im.width, 18], fill=(0, 0, 0))
-            d.text((4, 3), f"{box['pid']} #{b.id}: label {lab['kind']} {lab['speakers']} | got {a['speaker_kind']} "
+            d.text((4, 3), f"{box['pid']} #{b['id']}: label {lab['kind']} {lab['speakers']} | got {a['speaker_kind']} "
                            f"{a['speakers']} ({a['rule']})", fill=(255, 255, 255))
             im.thumbnail((700, 400))
             tiles.append(im)

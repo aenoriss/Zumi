@@ -2,7 +2,7 @@
 the git history; their outputs in .data/out/dataset/erase_review/): what is behind every card is painted by FLUX
 Erase (flux_erase.erase_image), from as much real background as the model can use.
 
-Per box, from its flat layers (its cards) and the frame step's frames (boxstore.Box):
+Per box, from its planned layers (cards.plan: the cards before any pixels are drawn) and the frame step's frames:
 1. every card's interior is prefilled with the plain background colour of its own frame (membrane interpolation,
    no texture): the model then has no character left to continue (masking only a band left the figure visible and
    it painted it back), and no strokes to copy (a textured prefill came back as cracked plaster);
@@ -21,7 +21,7 @@ Per box, from its flat layers (its cards) and the frame step's frames (boxstore.
    matched at every outline (seam_match).
 
 Writes plates/<pid>/band-plate.png (the whole box, the art outside the cards) and band-raw[-fK].npz (the paid
-outputs, keyed on the mask: a rerun with the same mask pays nothing); cards.layers uses band-plate.png as the
+outputs, keyed on the mask: a rerun with the same mask pays nothing); cards.render uses band-plate.png as the
 backdrop when it exists.
 
     uv run python band_erase.py <episode.zumi> <out dir> [--panels 3,7] [--dry]
@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import hashlib
 import sys
-import threading
 from pathlib import Path
 
 import cv2
@@ -39,8 +38,9 @@ from scipy.ndimage import binary_dilation, distance_transform_edt as edt
 
 import flux_erase as FE
 from boxstore import Box
-from cards import BACKDROP_Z
+from cards import Plan
 from chapter import Chapter
+from spend import paid_map
 from view import focal
 
 LEAN = 0.3 / 1.5     # the head move the band covers, in units of the reading distance (30 cm at 1.5 m)
@@ -97,18 +97,14 @@ def membrane(img: np.ndarray, known: np.ndarray) -> np.ndarray:
     return fill
 
 
-def sliding_cards(box: Box, cj: dict) -> list[dict]:
-    """The box's cards ({mask, kind, shift}: shift = px a LEAN head move slides the card over its backdrop)."""
-    w, h = cj["w"], cj["h"]
-    f = focal(w, h, cj["fov"])
-    back_z = {l["frame"]: l["z"] for l in cj["layers"] if l["kind"] == "backdrop"}
+def sliding_cards(plan: Plan) -> list[dict]:
+    """The plan's cards ({mask, kind, shift}: shift = px a LEAN head move slides the card over its backdrop)."""
+    f = focal(plan.w, plan.h)
     cards = []
-    for l in cj["layers"]:
-        if l["kind"] == "backdrop":
-            continue
-        zb = back_z.get(l.get("frame"), max(back_z.values()) if back_z else BACKDROP_Z)
-        mid = l["z"] * (1 - l.get("relief_amp", 0) * 0.5)  # between the card's plane and its relief peak
-        cards.append({"mask": box.layer_mask(l, (h, w)), "kind": l["kind"], "shift": f * LEAN * (1 / mid - 1 / zb)})
+    for c in plan.cards():
+        mid = c.z * (1 - c.amp * 0.5)  # between the card's plane and its relief peak
+        cards.append({"mask": c.mask((plan.h, plan.w)), "kind": c.kind,
+                      "shift": f * LEAN * (1 / mid - 1 / plan.back_z(c.frame))})
     return cards
 
 
@@ -244,24 +240,31 @@ def seam_match(img, res, foot, page, reach, cap=30.0, sat_max=200, S=8.0):
 
 def _call(sent: np.ndarray, m: np.ndarray, cache: Path, dry: bool):
     """FLUX Erase on sent/m, or the saved output for this very mask. (output, log line)."""
-    # the key: the mask, and INPUT_VERSION for changes to what is sent beside it (bump it when the input changes)
+    # the key: the mask, and INPUT_VERSION for changes to what is sent beside it (bump it when the input changes).
+    # The image sent is not in the key, so a prefill tweak does not pay for every box again; its hash is saved
+    # beside the output, and a saved output for the same mask under different pixels is used with a warning
     key = hashlib.sha1(np.packbits(m).tobytes() + str(m.shape).encode() + INPUT_VERSION.encode()).hexdigest()[:16]
+    sent_h = hashlib.sha1(np.ascontiguousarray(sent).tobytes()).hexdigest()[:16]
     if cache.exists():
         z = np.load(cache)
         if str(z["key"]) == key:
+            was = str(z["sent"]) if "sent" in z.files else None
+            if was is not None and was != sent_h:
+                return z["g"], "saved output, WARNING: sent for other pixels (delete it to pay for a new one)"
             return z["g"], "saved output"
     if dry:
         return None, "dry"
     got, line = FE.erase_image(sent.copy(), m)
-    np.savez_compressed(cache, g=got.astype(np.uint8), key=key)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(cache, g=got.astype(np.uint8), key=key, sent=sent_h)
     return got, line
 
 
-def erase_box(box: Box, img: np.ndarray, dry: bool = False, log=print) -> np.ndarray | None:
-    """The band-erase plate of one box (the art outside its cards), from its layers and the frame step's frames,
-    saved in its plates dir; None when it has no cards (or dry)."""
-    cj, fr = box.cards(), box.frames()
-    cards = sliding_cards(box, cj) if cj else []
+def erase_box(box: Box, img: np.ndarray, plan: Plan, dry: bool = False, log=print) -> np.ndarray | None:
+    """The band-erase plate of one box (the art outside its cards), from its plan (cards.plan) and the frame step's
+    frames, saved in its plates dir; None when it has no cards (or dry)."""
+    fr = box.frames()
+    cards = sliding_cards(plan)
     frames = fr.masks if fr else []
     if not cards or not frames:
         return None
@@ -316,45 +319,51 @@ def erase_box(box: Box, img: np.ndarray, dry: bool = False, log=print) -> np.nda
     return res
 
 
-def erase_boxes(jobs: list[tuple[Box, np.ndarray]], dry: bool = False, workers: int = WORKERS, log=print) -> None:
-    """erase_box on every (box, image), WORKERS boxes at a time: a call is 5-9 s of waiting on BFL, so in sequence 29
-    boxes took ~4 min. Each box's lines are printed together when it is done. The daily cap (flux_erase reserves
-    every call in flight) stops the boxes not yet sent; a refused box (BFL moderation) skips only itself."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    stop = threading.Event()
-
-    def one(job):
-        box, img = job
+def erase_boxes(jobs: list[tuple[Box, np.ndarray, Plan]], dry: bool = False, workers: int = WORKERS,
+                log=print) -> None:
+    """erase_box on every (box, image, plan), WORKERS boxes at a time (spend.paid_map): a call is 5-9 s of waiting on
+    BFL, so in sequence 29 boxes took ~4 min. Each box's lines are printed together when it is done. The daily cap
+    (flux_erase reserves every call in flight) stops the boxes not yet sent; a refused box (BFL moderation) skips only
+    itself."""
+    def one(k):
+        box, img, plan = jobs[k]
         lines = [box.pid]
-        if stop.is_set():
-            return lines + ["  not sent: the daily budget was reached"]
         try:
-            erase_box(box, img, dry, log=lines.append)
-        except FE.BudgetExceeded as e:
-            stop.set()
-            lines.append(f"  STOP: {e}")
+            erase_box(box, img, plan, dry, log=lines.append)
+        except FE.BudgetExceeded:
+            raise
         except Exception as e:
             lines.append(f"  failed, box kept on its old plate (or the art): {str(e)[:160]}")
         return lines
 
-    with ThreadPoolExecutor(workers) as ex:
-        for fut in as_completed([ex.submit(one, j) for j in jobs]):
-            log("\n".join(fut.result()))
+    _, stopped = paid_map(one, range(len(jobs)), workers, on_done=lambda k, lines: log("\n".join(lines)))
+    for k in stopped:
+        log(f"{jobs[k][0].pid}\n  not sent (the daily cap, or an offline run): left for the next run")
 
 
 def main():
+    """The erase on the saved masks and frames (cards.plan, the depth model), then the layers drawn on the plates;
+    --dry pays for nothing (only saved outputs are used) and draws nothing."""
+    import cards as CD
+    import depth as DP
     zumi, out = Path(sys.argv[1]), Path(sys.argv[2])
     dry = "--dry" in sys.argv
     ch = Chapter(zumi)
     picks = range(len(ch))
     if "--panels" in sys.argv:
         picks = [int(v) for v in sys.argv[sys.argv.index("--panels") + 1].split(",")]
+    mono = DP.load()
+    depth_fn = lambda rgb: DP.frame_infer(mono, rgb)  # noqa: E731
     jobs = []
     for i in picks:
         box = Box(out, ch.pid(i))
-        if box.cards() is not None:
-            jobs.append((box, np.asarray(ch.image(i))))
-    erase_boxes(jobs, dry)
+        letters, chars, fr = box.letters(), box.characters(), box.frames()
+        if letters is not None and chars is not None and fr and fr.current:
+            jobs.append((box, ch.image(i), CD.plan(box, ch.image(i), letters, chars, depth_fn)))
+    erase_boxes([(b, np.asarray(img), p) for b, img, p in jobs], dry)
+    if not dry:
+        for b, img, p in jobs:
+            print(f"  {b.pid} layers: {CD.render(b, p, img, depth_fn)}")
     print(f"spent today {FE.spent_today('bfl'):.2f} USD on erases, {FE.spent_today():.2f} in all")
 
 

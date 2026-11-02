@@ -3,8 +3,10 @@ threshold, mixed precision, the text-encoder cache, SAM's private grounding call
 GPU single-threaded while the reviews run in parallel threads.
 
     seg = Segmenter()
-    seg.instances(tile, [("person", 0.45), ...])   per prompt: [(mask, score)], holes filled
-    seg.zoom(img, box, prompts)                    [(probability on the box's crop, score, prompt)]
+    seg.find(img, [("person", 0.45), ...])         per prompt: [(box-size mask, score)] over the box's tiles, holes filled
+    seg.instances(tile, [("person", 0.45), ...])   the same on one image SAM takes whole
+    seg.zoom(img, box, prompts)                    [(probability on the box's crop, score, prompt)]: crop-size, as a
+                                                   box-size array per instance would cost ~3.6 MB on a tall webtoon box
     seg.encode(images); seg.ground(state, prompt, boxes)   text (+ exemplar boxes) grounding on encoded images
 
 SAM 3 resizes every input to a 1008 x 1008 square, so a tall box is cut into square tiles (tiles) and a small
@@ -39,10 +41,8 @@ class Segmenter:
     autocast (as in Meta's examples)."""
 
     def __init__(self, threshold: float = THRESHOLD):
-        from sam3 import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
-        self.proc = Sam3Processor(build_sam3_image_model(checkpoint_path=str(CKPT), load_from_HF=False),
-                                  confidence_threshold=threshold)
+        self.proc = Sam3Processor(_model(), confidence_threshold=threshold)
         self._lock = threading.Lock()
         self._text: dict[str, dict] = {}
 
@@ -66,6 +66,25 @@ class Segmenter:
             for prompt, thr in prompts:
                 probs, scores = self._out(self.proc.set_text_prompt(prompt, base))
                 out.append([(binary_fill_holes(p > 0.5), float(s)) for p, s in zip(probs, scores) if s >= thr])
+        return out
+
+    def find(self, img: Image.Image, prompts: list[tuple[str, float]],
+             rows: list[int | None] | None = None) -> list[tuple[int, np.ndarray, float]]:
+        """instances over a whole box, tile by tile (tiles), each mask placed back on the box: [(prompt index,
+        box-size mask, score)], tile by tile, then prompt by prompt (the order callers merge in). rows: per prompt the
+        row it is asked around (only on the tiles holding it), or None for every tile."""
+        w, h = img.size
+        out: list[tuple[int, np.ndarray, float]] = []
+        for top in tiles(h, w):
+            tile = img.crop((0, top, w, min(h, top + w)))
+            ask = [k for k in range(len(prompts)) if rows is None or rows[k] is None or top <= rows[k] < top + tile.height]
+            if not ask:
+                continue
+            for k, hits in zip(ask, self.instances(tile, [prompts[k] for k in ask])):
+                for m, s in hits:
+                    full = np.zeros((h, w), bool)
+                    full[top:top + m.shape[0]] = m
+                    out.append((k, full, s))
         return out
 
     def zoom(self, img: Image.Image, box, prompts) -> list[tuple[np.ndarray, float, str]]:
@@ -112,6 +131,22 @@ class Segmenter:
                 b = torch.tensor(boxes, device=self.proc.device, dtype=torch.float32).view(-1, 1, 4)
                 state["geometric_prompt"].append_boxes(b, torch.ones((len(boxes), 1), device=self.proc.device, dtype=torch.bool))
             return self._out(self.proc._forward_grounding(state))
+
+
+def _model():
+    """SAM 3.1's image model on the GPU, its weights read from the memory-mapped checkpoint straight into it. sam3's
+    own loader (checkpoint_path=) builds the model on the CPU and reads the 3.5 GB checkpoint into RAM before moving
+    it, and Windows keeps that memory committed for the run: 11.0 GB of commit after loading, against 5.4 here."""
+    import torch
+    from sam3 import build_sam3_image_model
+    model = build_sam3_image_model(checkpoint_path=None, load_from_HF=False)
+    ckpt = torch.load(CKPT, map_location="cpu", weights_only=True, mmap=True)
+    ckpt = ckpt.get("model", ckpt)
+    missing, _ = model.load_state_dict({k.replace("detector.", ""): v for k, v in ckpt.items() if "detector" in k},
+                                       strict=False)
+    if missing:
+        print(f"SAM 3.1: weights missing from {CKPT.name}: {missing}")
+    return model
 
 
 def _slice(x, i: int, n: int):

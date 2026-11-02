@@ -16,6 +16,7 @@ import datetime as dt
 import functools
 import io
 import json
+import os
 import re
 import threading
 import time
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from spend import SPEND, BudgetExceeded, reserve, record, spent_today  # noqa: F401  (BudgetExceeded, spent_today: for callers)
+from spend import SPEND, BudgetExceeded, no_call_offline, reserve, record, spent_today  # noqa: F401  (BudgetExceeded, spent_today: for callers)
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
@@ -50,6 +51,8 @@ class Truncated(RuntimeError):
 
 @functools.lru_cache(maxsize=1)
 def _key() -> str:
+    if os.environ.get("OPENROUTER_API_KEY"):  # a cloud container gets it as a secret, not as a file
+        return os.environ["OPENROUTER_API_KEY"]
     for line in ENV.read_text().splitlines():
         if line.startswith("OPENROUTER_API_KEY="):
             return line.split("=", 1)[1].strip()
@@ -67,7 +70,8 @@ def _request(path: str, body: dict | None = None) -> dict:
             with urllib.request.urlopen(req, timeout=180) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code in (429, 502, 503) and attempt < 5:  # upstream rate limits clear within a minute or two
+            # upstream rate limits and server errors (500 "error code: 1101", 2026-11-01) clear within a minute or two
+            if e.code in (429, 500, 502, 503, 504) and attempt < 5:
                 time.sleep(10 * 2**attempt)
                 continue
             raise RuntimeError(f"OpenRouter {e.code}: {e.read().decode()[:300]}") from None
@@ -107,6 +111,7 @@ def chat(model: str, messages: list[dict], max_tokens: int = 2000, tag: str = ""
     more on top. brief: the model asked to be brief and to the point (BRIEF), off where the answer carries long text
     the brevity line could shorten (Transcribe's). A reply that spends the whole budget has no answer:
     usage["truncated"] is set, the ledger says so and a line is printed (callers read an empty answer as "nothing")."""
+    no_call_offline(tag or model)  # before pricing, which may fetch the model list
     if reasoning:
         max_tokens += REASONING_TOKENS[reasoning]
     if brief:

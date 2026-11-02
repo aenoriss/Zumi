@@ -17,11 +17,12 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_closing, binary_fill_holes, label
+from scipy.ndimage import binary_closing, binary_dilation, binary_fill_holes, distance_transform_edt, label
 
+from cards import PART_MIN
 from chapter import Chapter
-from masks import Found
-from sam import Segmenter, tiles
+from masks import COLOURS, Found
+from sam import Segmenter
 
 # any kind of character: SAM 3 reuses one tile encoding for every prompt, so extra prompts are cheap; the reviewer
 # removes what is not a character
@@ -29,8 +30,9 @@ PROMPTS = [("person", 0.45), ("character", 0.45), ("creature", 0.5), ("animal", 
 CROWD = ("group of people", 0.4)  # "crowd" scored nothing on ToG 223 p79; this prompt found the mass at 0.45-0.52
 MIN_SHARE = 0.002  # masks under this share of the panel are specks
 SMALL = 0.02  # an instance under this share of the panel, lying in a crowd mask, belongs to the crowd
-COLOURS = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48), (145, 30, 180), (70, 240, 240), (240, 50, 230),
-           (210, 245, 60), (0, 128, 128), (170, 110, 40), (128, 0, 0), (0, 0, 128)]
+CROWD_MARGIN = 4  # px around each character taken out of a crowd mask (exclusive): its outline goes with it
+SPECK_PX_MAX, SPECK_SHARE, SPECK_PX = 400, 0.8, 8  # a mask's piece of at most this many px, mostly within SPECK_PX of
+                                                    # another mask, is that one's edge pixels (exclusive)
 
 
 def same_instance(a: np.ndarray, b: np.ndarray) -> bool:
@@ -58,18 +60,13 @@ def merge(found: list[Found], new: Found) -> None:
 
 def segment(seg: Segmenter, img: Image.Image) -> list[Found]:
     """Kind "character" or "crowd"."""
-    w, h = img.size
     chars: list[Found] = []
     crowds: list[Found] = []
-    for top in tiles(h, w):
-        tile = img.crop((0, top, w, min(h, top + w)))
-        for (prompt, _), hits in zip(PROMPTS + [CROWD], seg.instances(tile, PROMPTS + [CROWD])):
-            for m, s in hits:
-                full = np.zeros((h, w), bool)
-                full[top : top + m.shape[0]] = m
-                if full.mean() < MIN_SHARE:
-                    continue
-                merge(crowds if prompt == CROWD[0] else chars, Found(full, s, "crowd" if prompt == CROWD[0] else "character"))
+    crowd = len(PROMPTS)
+    for k, full, s in seg.find(img, PROMPTS + [CROWD]):
+        if full.mean() < MIN_SHARE:
+            continue
+        merge(crowds if k == crowd else chars, Found(full, s, "crowd" if k == crowd else "character"))
     # small instances inside a crowd join it; big ones (a character in front) stay individual
     keep = []
     for c in chars:
@@ -102,6 +99,54 @@ def settle(chars: list[Found]) -> list[Found]:
             if changed:
                 break
     return chars
+
+
+def exclusive(found: list[Found]) -> list[Found]:
+    """The box's character masks with every pixel on one mask only, as the layers will cut them, without the leftovers
+    that cutting makes (run after the review, which can add overlaps):
+    1. a crowd loses every character masked on its own, grown CROWD_MARGIN px so their outlines go too;
+    2. two masks that share pixels: the smaller keeps them (cards.exclusive's rule);
+    3. every speck of a mask (a piece of at most SPECK_PX_MAX px) with SPECK_SHARE of it within SPECK_PX of another
+       mask goes to the mask it lies nearest: a mask's specks along another's outline are that one's edge pixels. A
+       figure cut into a few big pieces by what stands in front of it keeps them (P&C 37-p006).
+    P&C 36-p025: the crowd mask also held the two girls in front; its piece in their frame, cut by their own masks,
+    was 91 specks along their outlines (the largest 192 px), a card that grouped with one girl and won a tail aimed at
+    the other."""
+    chars = [f for f in found if f.kind != "crowd"]
+    crowds = [f for f in found if f.kind == "crowd"]
+    if chars and crowds:
+        taken = binary_dilation(np.logical_or.reduce([c.mask for c in chars]), iterations=CROWD_MARGIN)
+        crowds = [Found(c.mask & ~taken, c.score, c.kind, c.name) for c in crowds]
+    out = chars + crowds
+    if not out:
+        return out
+    masks, claimed = [None] * len(out), np.zeros_like(out[0].mask)
+    for k in sorted(range(len(out)), key=lambda k: int(out[k].mask.sum())):
+        masks[k] = out[k].mask & ~claimed
+        claimed |= masks[k]
+    for i in range(len(masks)):
+        lab, n = label(masks[i])
+        if n < 2:
+            continue
+        sizes = np.bincount(lab.ravel())
+        owner = np.zeros(masks[i].shape, np.int32)
+        for j, o in enumerate(masks):
+            if j != i and o.any():
+                owner[o] = j + 1
+        if not owner.any():
+            continue
+        d, (iy, ix) = distance_transform_edt(owner == 0, return_indices=True)
+        near = owner[iy, ix]
+        for p in range(1, n + 1):
+            if sizes[p] > SPECK_PX_MAX:
+                continue
+            piece = lab == p
+            if (piece & (d <= SPECK_PX)).sum() >= SPECK_SHARE * sizes[p]:
+                masks[int(np.bincount(near[piece]).argmax()) - 1] |= piece
+                masks[i] &= ~piece
+    # what is left too small for a card goes (the layers keep a piece of at least cards.PART_MIN px); segmentation's
+    # MIN_SHARE is no floor here: on a 1200 x 3649 credits page it is 8,700 px, more than a mascot
+    return [Found(m, f.score, f.kind, f.name) for f, m in zip(out, masks) if m.sum() >= PART_MIN]
 
 
 def clean(m: np.ndarray) -> np.ndarray:

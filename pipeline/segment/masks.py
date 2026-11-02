@@ -6,7 +6,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import hashlib
+
 import numpy as np
+
+# one colour per numbered mask, in the overlays the reviewer is shown (review_loop.marked) and the debug sheets
+COLOURS = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48), (145, 30, 180), (70, 200, 200), (240, 50, 230),
+           (150, 190, 30), (0, 128, 128), (170, 110, 40), (128, 0, 0), (0, 0, 128)]
 
 
 @dataclass
@@ -16,6 +22,7 @@ class Found:
     kind: str
     name: str | None = None  # an object's name ("beer mug 2"); None for the other kinds
     box: tuple[int, int, int, int] | None = None  # y0, y1, x0, x1 of the mask, filled on first use
+    aka: tuple[str, ...] = ()  # names of masks merged into this one (the review's "same"), so relations to them hold
 
     def bbox(self) -> tuple[int, int, int, int]:
         if self.box is None:
@@ -40,6 +47,17 @@ def top_order(found: list) -> list:
     id) is the same in memory and on disk. episode.py sorted only on saving and gave Understand (Transcribe's
     predecessor) the unsorted list: its ids pointed at other bubbles after a --from-masks re-run (133 of 329 bubbles, P&C 37-39)."""
     return sorted(found, key=lambda f: top_key(f.mask))
+
+
+def stamp(found: list[Found]) -> str:
+    """The masks' identity in the order given (the saved order, top_order): what a result keyed by mask index (a
+    bubble id) was made from, so a result for other masks, or for the same masks numbered otherwise, is told apart
+    from a current one (P&C 37-38: 24 boxes' bubbles numbered in an order their re-saved masks no longer had)."""
+    h = hashlib.sha1()
+    for f in found:
+        h.update(str(f.mask.shape).encode())
+        h.update(np.packbits(f.mask).tobytes())
+    return h.hexdigest()[:16]
 
 
 def save_masks(path: Path, found: list[Found]) -> None:

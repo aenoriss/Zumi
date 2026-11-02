@@ -51,6 +51,7 @@ import numpy as np
 from PIL import Image
 
 import openrouter as OR
+import page as PG
 from cards import MIN_FRAME_PX
 
 MODEL = "anthropic/claude-sonnet-5.5"  # fallback: "google/gemini-3.1-pro-preview"
@@ -65,7 +66,7 @@ SNAP = 0.03        # share of the box's width (x edges) or height (y edges) an e
 FLAT_MIN = 2000    # px outside every panel needed to learn a flat page colour from them
 FLAT_SHARE = 0.8   # share of those px within FLAT_TOL of their commonest colour for it to be the page: 0.92-1.00 on
                    # the 17 P&C 36/38 boxes whose dark grey page page.gutter missed, 0.08-0.58 where it is art
-FLAT_TOL = 8.0     # CIELAB, twice page.PAGE_TOL
+FLAT_TOL = 2 * PG.PAGE_TOL  # CIELAB
 POLY_MIN = 0.5     # a slanted panel's corner polygon must fill this share of its box to replace it
 PIECE_GAP = 6      # px: art outside the panels closer than twice this is one piece (letters into words and blocks)
 TOUCH_PX = 3       # px: a piece this close to a frame touches it and joins it; farther, it is loose (a flat frame)
@@ -243,11 +244,6 @@ def answer(img: Image.Image, model: str = MODEL, reasoning: str | None = REASONI
             "text_regions": text_regions}
 
 
-def ask(img: Image.Image, model: str = MODEL, reasoning: str | None = REASONING, tag: str = "") -> list[list[float]]:
-    """The model's panel boxes in 0-1000 units, uncached (the panel comparison asked other models with it)."""
-    return answer(img, model, reasoning, tag)["panels"]
-
-
 def _prompt(img: Image.Image) -> str:
     """PROMPT filled with the size the model sees (image_part scales the image to MAX_SIDE)."""
     s = min(1.0, MAX_SIDE / max(img.size))
@@ -263,15 +259,15 @@ def cache_file(img: Image.Image, prompt: str | None = None):
     return CACHE / f"{hashlib.sha1(buf.getvalue() + (MODEL + prompt).encode()).hexdigest()[:20]}.json"
 
 
-def _cached(img: Image.Image, tag: str) -> dict:
-    f = cache_file(img)
+def _cached(img: Image.Image, tag: str, prompt: str | None = None) -> dict:
+    f = cache_file(img, prompt)
     if f.exists():
         return json.loads(f.read_text())
     try:
-        v = answer(img, tag=tag)
+        v = answer(img, tag=tag, prompt=prompt)
     except PanelError as e:  # one more try; an answer that fails twice is not cached, so the next run asks again
         print(f"frames {tag}: {e}; asking again")
-        v = answer(img, tag=tag)
+        v = answer(img, tag=tag, prompt=prompt)
     CACHE.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps({"model": MODEL, "tag": tag, **v}))
     return v
@@ -309,11 +305,12 @@ def to_layout(v: dict, w: int, h: int) -> Layout:
     return Layout(v.get("kind", "story"), [k[0] for k in kept], [k[1] for k in kept], text)
 
 
-def layout(img: Image.Image, tag: str = "panels") -> Layout:
-    """The cached answer for this box, asked for when not cached. Raises OR.BudgetExceeded, or PanelError after two
-    unusable answers."""
+def layout(img: Image.Image, tag: str = "panels", prompt: str | None = None) -> Layout:
+    """The cached answer for this box, asked for when not cached. prompt: another prompt than the current one (an
+    earlier version, PROMPT_V1, PROMPT_V2: its cached answers). Raises OR.BudgetExceeded (spend.OfflineCall in an
+    offline run, when not cached), or PanelError after two unusable answers."""
     img = img.convert("RGB")
-    return to_layout(_cached(img, tag), *img.size)
+    return to_layout(_cached(img, tag, prompt), *img.size)
 
 
 def _iou(a, b) -> float:
@@ -368,12 +365,18 @@ class Split:
     page: np.ndarray
 
 
+def split_box(job: tuple) -> Split:
+    """split for one box from (img, its lettering masks' union, the model's layout or None), the gutter found from
+    the lettering: the frame step's per-box work, one argument so workers.pmap can run boxes in parallel."""
+    img, letters, lay = job
+    return split(img, PG.gutter(img, letters if letters.any() else None), lay, letters)
+
+
 def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.ndarray | None = None) -> Split:
     """The frames of one box from the model's layout (None: no answer, the box is one scene); letters: the lettering
     masks' union (its parts past every panel join no frame). See the module doc."""
     import cv2
     from scipy.ndimage import distance_transform_edt
-    import page as PG
     img = img.convert("RGB")
     w, h = img.size
     rgb = np.asarray(img)
@@ -477,7 +480,6 @@ def main() -> None:
     frames_step, a bubble touching the box edge can read as page, so counts may differ from the pipeline's."""
     import sys
     from pathlib import Path
-    import page as PG
     from chapter import Chapter
     for zp in map(Path, sys.argv[1:]):
         ch = Chapter(zp)

@@ -6,16 +6,20 @@ Per bubble, from the box's flat layers (mesh/<pid>.cards.json, .bubbles.json) an
   frame     the frame its stack is read in (home_frame, on the frame step's frames)
   tail      the bubble's tail, if it has one: the part of the mask a large opening removes, its tip the point farthest
             from the bubble's body; the direction body -> tip points at the speaker
-  kind      Transcribe's (bubbles.json): a caption goes to the narrator, a sound effect to nobody
+  kind      Transcribe's (bubbles.json): a caption or a sound effect is said by nobody
 Candidates are every character card in the box (any frame, a penalty across frames). The rules (assign) are tuned on
-a labelled dataset (experiments/speaker_dataset.py, speaker_eval.py); what they leave undecided goes to an LLM with
-the candidates numbered (TODO). A logistic regression over the same features, scored leave-one-episode-out on the
-card-labelled bubbles (2026-10-30, speaker_lr.py, now only in the git history), got 255/278 (91.7%) where these
-rules got 263/278 (94.6%), so the rules stay hand-written.
+a labelled dataset (experiments/speaker_dataset.py, speaker_eval.py). A logistic regression over the same features,
+scored leave-one-episode-out on the card-labelled bubbles (2026-10-30, speaker_lr.py, now only in the git history),
+got 255/278 (91.7%) where these rules got 263/278 (94.6%), so the rules stay hand-written. A vision-model fallback
+(2026-10-31, speaker_judge.py, deleted unmerged the same day: the box with numbered cards and lettered bubbles, the
+transcript, tail arrows, the rules' guesses as hints) never beat them: on the reprocessed P&C 36 (121 labelled
+lines) rules 116, Haiku 5.5 105, Sonnet 5.5 99; deciding only captions and tail-less sound effects, 115 and 113.
+On the 12 hardest old boxes Opus 5.5 did worst (44 of 68 vs the rules' 48). A trained model replaces it.
 
 Writes the box's speakers.json (Box.save_speakers), one record per bubble: its lettering card ("key"), "speakers"
-(character card png names, a chorus has several), "speaker_kind" (card | off_panel | narrator | sfx), "confidence"
-(0-1), "rule" (which rule decided) and "order" (reading order in the box).
+(character card png names, a chorus has several), "speaker_kind" (card | off_panel | nobody), "confidence"
+(0-1), "rule" (which rule decided) and "order" (reading order in the box). "nobody": no character says it, a
+caption or a sound effect (user, 2026-11-01: one answer; which of the two it is, is Transcribe's kind).
 
     uv run python speakers.py <episode.zumi> <out dir> [--panels 3,7]
 """
@@ -30,23 +34,36 @@ import cv2
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_opening, distance_transform_edt as edt, label
 
-import lettering_layer as LL
 from boxstore import Box
 
 TAIL_OPEN = 0.18      # the opening radius that strips a tail, as a share of the bubble's short side
 TAIL_MIN_PX = 60      # a tail has at least this many pixels...
-TAIL_MIN_LEN = 10     # ...and its tip lies at least this far out of the bubble's body
+TAIL_MIN_LEN = 10     # ...and its tip lies at least this far out of the bubble's body...
+TAIL_MIN_REACH = 0.08  # ...and this share of the bubble's short side: a burst's spikes (ORV p010: 15 px on 405) and a
+#                        caption's corner (CPC p022) are no tails. 2026-11-02, 524 lines: 0.07-0.10 all +1, 0.12 -1
+THOUGHT_TRAIL = True  # a tail-less balloon's trail of shrinking circles is its tail (thought_trail)
+TRAIL_TOL = 40        # trail: a circle is the balloon's fill colour within this (max channel difference)...
+TRAIL_DARK = 50       # ...outlined: its 3 px ring this much darker (mean grey) than its inside...
+TRAIL_PX = (12, 0.06)  # ...of 12 px up to this share of the balloon, about as wide as tall, not in other lettering
+TRAIL_SHRINK = 0.8    # each circle at most this share of the one before, farther out, in line (chain)
 GROUP_PX = 4          # groups: a card's outline within this many px of another counts as touching it...
 GROUP_SHARE = 0.30    # ...and this share of the smaller card's outline touching the bigger makes them one group
 OTHER_FRAME_PENALTY = 1 / 6  # tail rule: an other-frame card is handicapped by this share of the box's long side (200 px at 1200)
+AIM = 0.85            # tail rule: a card is aimed at when the tail's direction meets it at this cosine
+CLOSE_TIP = 1 / 60    # ...an aimed card within this share of the long side (20 px at 1200) of the nearest one...
+AIM_LEAD = 0.10       # ...wins over it when aimed at this much more squarely
+TIP_TOUCH = 1 / 80    # no card aimed: a card within this share of the long side (15 px at 1200) of the tip is the one
 CLUSTER_PX = 8        # reading order: bubbles this close (a stack) are read together...
 STACK_MAX = 0.10      # ...unless one is a sound effect or covers this share of the box
 TAU_CUT = 0.15        # reading order: a frame or bubble may cross a cut line by this share of its area
 INSET_GAP = 6         # ...a frame ringed by a bigger one (this gutter, px)...
 INSET_RING = 0.6      # ...on this share of its ring is an inset, read right after it
 HOME_SHARE = 0.65     # a bubble cluster with this share in one frame is read there; less: its tail decides
-NARRATION = {"caption", "narration"}
-SFX = {"sfx", "sound"}
+NARRATION = {"caption"}
+SFX = {"sfx"}
+TURN_TAKING = True    # tail rule: a cross-frame tail at the previous line's speaker goes to the other aimed card
+STACK_TAIL = True     # a tail-less balloon takes the speaker of the one tail in its chain of touching balloons
+NO_TAIL_RULES ={"single_in_frame", "nearest_in_frame", "nearest_other_frame", "no_cards"}
 
 
 @dataclass
@@ -72,6 +89,7 @@ class Bubble:
     tail_dir: tuple[float, float] | None = None
     order: int = 0
     feats: dict = field(default_factory=dict)
+    lettering: str | None = None  # what the segmenter found: a balloon ("bubble"), a caption box, or free "sfx" lettering
 
 
 def _centroid(m: np.ndarray) -> tuple[float, float]:
@@ -96,12 +114,13 @@ def tail_parts(mask: np.ndarray) -> dict | None:
     rest = m & ~binary_dilation(body, iterations=2)
     lab, n = label(rest)
     d = out["d"] = edt(~body)
+    min_reach = max(TAIL_MIN_LEN, TAIL_MIN_REACH * min(m.shape))
     for i in range(1, n + 1):
         part = lab == i
         py, px = np.unravel_index(np.argmax(np.where(part, d, -1)), d.shape)
         size, reach = int(part.sum()), float(d[py, px])
         out["parts"].append({"mask": part, "px": size, "reach": reach, "tip": (int(px), int(py)),
-                             "kept": size >= TAIL_MIN_PX and reach >= TAIL_MIN_LEN})
+                             "kept": size >= TAIL_MIN_PX and reach >= min_reach})
     return out
 
 
@@ -116,14 +135,96 @@ def tail(mask: np.ndarray) -> tuple[tuple[float, float] | None, tuple[float, flo
         return None, None
     best = max(kept, key=lambda p: p["reach"])
     (px, py), part, d, body, x0, y0 = best["tip"], best["mask"], t["d"], t["body"], t["x0"], t["y0"]
-    # the direction: from where the tail leaves the body to its tip
     by, bx = np.nonzero(part & (d <= 3))
     base = (float(bx.mean()), float(by.mean())) if len(bx) else _centroid(body)
+    # the direction: from where the tail leaves the body to its tip. The direction at the tip (tangent of the tail's
+    # last stretch, geodesic) and, for blunt tips, the normal of their semicircle were measured 2026-11-01 and lost:
+    # 310/333 and 116/121 at best against 314 and 119 (short tails give a few noisy pixels), 305 and 114 with the
+    # rounded-tip normal
     v = np.array([px - base[0], py - base[1]], float)
     n_ = np.linalg.norm(v)
     if n_ < 1e-6:
         return None, None
     return (float(px + x0), float(py + y0)), (float(v[0] / n_), float(v[1] / n_))
+
+
+def thought_trail(rgb: np.ndarray, m: np.ndarray, others: np.ndarray) -> tuple[tuple[float, float] | None,
+                                                                              tuple[float, float] | None]:
+    """(tip, unit direction) of a thought balloon's trail of small circles, or (None, None) (user, 2026-11-02:
+    Omniscient Reader draws thoughts so, no tail to strip). On the box's art (Scene.art): blobs of the balloon's fill
+    colour near it (within its short side), outlined darker, roundish, of TRAIL_PX, outside every other lettering mask;
+    a chain of them leaving the balloon (chain), each smaller than the last; and alone: no other such blob within four
+    diameters of the chain (letter holes and decoration come in crowds). The direction runs from the balloon's point
+    nearest the first circle to the last. Measured 2026-11-02 on the 537 tail-less balloons of P&C 36-39, Omniscient
+    Reader 0, Cursed Princess Club 1 and Lore Olympus 9: the two real trails found (ORV p004 #5, CPC p040 #3), no
+    other hit; without the "alone" test, three more (letter holes in the P&C credits and mirrored text, roses)."""
+    ys, xs = np.nonzero(m)
+    short = min(ys.ptp(), xs.ptp()) + 1
+    # the search stays within a short side of the balloon: work on that window (a webtoon box is 800 x 8754)
+    y0, x0 = max(0, ys.min() - short - 4), max(0, xs.min() - short - 4)
+    y1, x1 = min(m.shape[0], ys.max() + short + 5), min(m.shape[1], xs.max() + short + 5)
+    rgb, m, others = rgb[y0:y1, x0:x1], m[y0:y1, x0:x1], others[y0:y1, x0:x1]
+    ys, xs = ys - y0, xs - x0
+    lum = rgb.mean(2)
+    inner = lum[m]
+    fill = np.median(rgb[m][inner >= np.percentile(inner, 60)], axis=0)  # the bright part: the text left out
+    d = edt(~m)
+    cand = (d <= short) & ~binary_dilation(m, iterations=2) & ~others & (np.abs(rgb - fill).max(2) < TRAIL_TOL)
+    lab, n = label(cand)
+    blobs = []  # (x, y, area, distance from the balloon)
+    for i in range(1, n + 1):
+        b = lab == i
+        a = int(b.sum())
+        if not TRAIL_PX[0] <= a <= TRAIL_PX[1] * len(xs):
+            continue
+        by, bx = np.nonzero(b)
+        bh, bw = by.ptp() + 1, bx.ptp() + 1
+        if a / (bh * bw) < 0.55 or max(bh, bw) > 3 * min(bh, bw):
+            continue
+        if lum[b].mean() - lum[binary_dilation(b, iterations=3) & ~b].mean() < TRAIL_DARK:
+            continue
+        cx, cy = float(bx.mean()), float(by.mean())
+        blobs.append((cx, cy, a, float(d[int(cy), int(cx)])))
+    run = chain(sorted(blobs, key=lambda t: t[3]), xs, ys, short)
+    diam = lambda t: 2 * (t[2] / np.pi) ** 0.5  # noqa: E731
+    if not run or any(o not in run and any(np.hypot(o[0] - r[0], o[1] - r[1]) < 4 * diam(r) + 10 for r in run)
+                      for o in blobs):
+        return None, None
+    k = np.argmin((xs - run[0][0]) ** 2 + (ys - run[0][1]) ** 2)
+    v = np.array([run[-1][0] - xs[k], run[-1][1] - ys[k]], float)
+    n_ = np.linalg.norm(v)
+    tip = (run[-1][0] + x0, run[-1][1] + y0)
+    return (tip, (float(v[0] / n_), float(v[1] / n_))) if n_ > 1e-6 else (None, None)
+
+
+def chain(blobs: list[tuple], xs: np.ndarray, ys: np.ndarray, short: int) -> list[tuple]:
+    """The longest run of blobs (sorted by distance) leaving a balloon (its pixels xs, ys): the first within 0.3 of
+    its short side or two of its own diameters, each next one farther out, at most TRAIL_SHRINK of the last's area,
+    within three of its diameters (+10 px) and turning by at most 35 degrees. Two blobs at least, else []."""
+    diam = lambda t: 2 * (t[2] / np.pi) ** 0.5  # noqa: E731
+    best: list[tuple] = []
+    for s in blobs:
+        if s[3] > max(2 * diam(s), 0.3 * short):
+            continue
+        k = np.argmin((xs - s[0]) ** 2 + (ys - s[1]) ** 2)
+        prev, cur, run = (float(xs[k]), float(ys[k])), s, [s]
+        while True:
+            v0 = np.array([cur[0] - prev[0], cur[1] - prev[1]])
+            nxt = []
+            for o in blobs:
+                if o[3] <= cur[3] + 0.5 * diam(cur) or o[2] > TRAIL_SHRINK * cur[2]:
+                    continue
+                v1 = np.array([o[0] - cur[0], o[1] - cur[1]])
+                gap = float(np.linalg.norm(v1))
+                if gap <= 3 * diam(cur) + 10 and v0 @ v1 >= np.cos(np.radians(35)) * np.linalg.norm(v0) * gap:
+                    nxt.append((gap, o))
+            if not nxt:
+                break
+            prev, cur = (cur[0], cur[1]), min(nxt)[1]
+            run.append(cur)
+        if len(run) >= 2 and (len(run), run[0][2]) > (len(best), best[0][2] if best else 0):
+            best = run
+    return best
 
 
 def home_frame(m: np.ndarray, tips: list, frames: list[np.ndarray], rank: list[int], flags: list[str] | None = None,
@@ -161,30 +262,35 @@ def home_frame(m: np.ndarray, tips: list, frames: list[np.ndarray], rank: list[i
 def load_box(box: Box) -> tuple[list[Card], list[Bubble], list[np.ndarray], tuple[int, int]] | None:
     """The box's character cards, bubbles (with their features and reading order) and frames (the frame step's,
     which its layers were built on), or None without cards."""
-    cj = box.cards()
-    if cj is None:
+    sc = box.scene()
+    if sc is None:
         return None
-    w, h = cj["w"], cj["h"]
+    w, h = sc.w, sc.h
     fr = box.frames()
     frames = fr.masks if fr else []  # flat frames (credits) included: their mascots speak, and those bubbles are labelled
-    bub = {b["id"]: b for b in (box.bubbles() or {}).get("bubbles", [])}
-    # Transcribe's text and kind, joined as the layers join them (lettering_layer.transcribed): its element ids are
-    # the bubble ids
-    for e in box.transcript().get("elements", []):
-        if "id" in e:
-            b = bub.setdefault(int(e["id"]), {})
-            b.update(LL.transcribed(e, b.get("kind")))
+    bub = {b["id"]: b for b in (box.bubbles() or {}).get("bubbles", [])}  # Transcribe's text and kind joined in
     cards, bubbles = [], []
-    for l in cj["layers"]:
-        if l["kind"] == "character":
-            m = box.layer_mask(l, (h, w))
-            cards.append(Card(l["png"], l["kind"], l.get("frame"), m, _centroid(m), int(m.sum())))
-        elif l["kind"] == "lettering":
-            m = box.layer_mask(l, (h, w))
-            b = bub.get(l.get("bubble"), {})
-            tip, dirn = tail(m)
-            bubbles.append(Bubble(l.get("bubble", -1), l["png"], b.get("kind"), b.get("text", ""), m, None, _centroid(m),
-                                  tip, dirn))
+    for l in sc.layers:
+        if l.kind == "character":
+            m = l.mask((h, w))
+            if m.any():  # a sliver whose feathered alpha never passes half has no pixels to speak from (P&C 36, full run)
+                cards.append(Card(l.key, l.kind, l.frame, m, _centroid(m), int(m.sum())))
+        elif l.kind == "lettering":
+            m = l.mask((h, w))
+            b = bub.get(l.bubble, {})
+            # only balloons and caption boxes have tails: free sound-effect lettering has none to measure (a "!!!"
+            # balloon Transcribe calls a sound effect is still a balloon, and keeps its tail for the reaction rule).
+            # User's rule, 2026-11-01; it cost 2 of 333 (P&C 37-p017 #4, 39-p030 #4: credits captions the segmenter
+            # took for sound-effect lettering, whose tails pointed at the mascot)
+            tip, dirn = tail(m) if b.get("segmented_as") != "sfx" else (None, None)
+            bubbles.append(Bubble(l.bubble if l.bubble is not None else -1, l.key, b.get("kind"), b.get("text", ""), m,
+                                  None, _centroid(m), tip, dirn, lettering=b.get("segmented_as")))
+    plain = [b for b in bubbles if b.tail_tip is None and b.lettering != "sfx"]
+    if THOUGHT_TRAIL and plain:
+        rgb = sc.art().astype(np.float32)
+        for b in plain:
+            others = np.logical_or.reduce([o.mask for o in bubbles if o is not b] + [np.zeros_like(b.mask)])
+            b.tail_tip, b.tail_dir = thought_trail(rgb, b.mask, others)
     order_bubbles(bubbles, frames)  # also homes each bubble in its frame
     return cards, bubbles, frames, (w, h)
 
@@ -367,14 +473,11 @@ def as_groups(cards: list[Card]) -> tuple[list[Card], list[list[int]]]:
     return merged, gs
 
 
-def features(b: Bubble, cards: list[Card]) -> list[dict]:
+def features(b: Bubble, cards: list[Card], dist: list[np.ndarray]) -> list[dict]:
     """Per candidate card: distance from the bubble (and from its tail tip), the tail's aim at it (cosine), same
-    frame."""
+    frame. dist: each card's distance map (edt of its outside), made once per box."""
     out = []
-    for i, c in enumerate(cards):
-        if not hasattr(c, "_dist"):  # the distance map to a card, once per box
-            c._dist = edt(~c.mask)
-        dist_c = c._dist
+    for i, (c, dist_c) in enumerate(zip(cards, dist)):
         bd = float(dist_c[b.mask].min()) if b.mask.any() else 1e9
         f = {"card": i, "same_frame": c.frame == b.frame, "dist": bd, "area": c.area}
         if b.tail_tip is not None:
@@ -390,52 +493,124 @@ def features(b: Bubble, cards: list[Card]) -> list[dict]:
     return out
 
 
-_GROUPS: dict = {}
+def assign_all(cards: list[Card], bubbles: list[Bubble]) -> list[dict]:
+    """The rule cascade for every bubble of a box, run on speaking groups (as_groups, made once, with each group's
+    distance map), in reading order (turn-taking needs the line before), each answer given back as the member cards:
+    one {"speakers": [card index], "speaker_kind", "confidence", "rule"} per bubble, in the bubbles' order. Cards that
+    are only specks of others' outlines no longer reach here: characters.exclusive leaves none."""
+    merged, gs = as_groups(cards)
+    dist = [edt(~c.mask) for c in merged]
+    answers, prev = {}, None
+    for k in sorted(range(len(bubbles)), key=lambda k: bubbles[k].order):
+        a = _assign(bubbles[k], merged, dist, prev)
+        if a["speaker_kind"] == "card":
+            prev = a["speakers"][0]
+        a["speakers"] = sorted(i for g in a["speakers"] for i in gs[g])
+        answers[k] = a
+    if STACK_TAIL:
+        for u in balloon_chains(bubbles):
+            tailed = [j for j in u if bubbles[j].tail_tip is not None]
+            if len(tailed) != 1 or not answers[tailed[0]]["rule"].startswith("tail"):
+                continue
+            for k in u:
+                if k != tailed[0] and answers[k]["rule"] in NO_TAIL_RULES:
+                    answers[k] = {"speakers": list(answers[tailed[0]]["speakers"]), "speaker_kind": "card",
+                                  "confidence": 0.8, "rule": "stack_tail"}
+    return [answers[k] for k in range(len(bubbles))]
 
 
-def assign(b: Bubble, cards: list[Card], frames: list[np.ndarray]) -> dict:
-    """The rule cascade run on speaking groups (as_groups), its answer given back as the member cards. Returns
-    {"speakers": [card index], "speaker_kind", "confidence", "rule"}."""
-    key = id(cards)
-    if key not in _GROUPS or _GROUPS[key][0] is not cards:
-        _GROUPS.clear()
-        _GROUPS[key] = (cards, *as_groups(cards))
-    _, merged, gs = _GROUPS[key]
-    a = _assign(b, merged, frames)
-    a["speakers"] = sorted(i for g in a["speakers"] for i in gs[g])
-    return a
+def balloon_chains(bubbles: list[Bubble]) -> list[list[int]]:
+    """Balloons joined by touching (within CLUSTER_PX), whatever their size: a chain with one tail is one speaker's
+    (the tail is often on one balloon only: P&C 37-p017, 39-p023). Sound effects and captions join none."""
+    n = len(bubbles)
+    parent = list(range(n))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    ok = [b.kind not in SFX | NARRATION for b in bubbles]
+    grown = [binary_dilation(b.mask, iterations=CLUSTER_PX) if o else None for b, o in zip(bubbles, ok)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if ok[i] and ok[j] and (grown[i] & bubbles[j].mask).any():
+                parent[root(i)] = root(j)
+    chains: dict[int, list[int]] = {}
+    for i in range(n):
+        chains.setdefault(root(i), []).append(i)
+    return [u for u in chains.values() if len(u) > 1]
 
 
-def _assign(b: Bubble, cards: list[Card], frames: list[np.ndarray]) -> dict:
+def _assign(b: Bubble, cards: list[Card], dist: list[np.ndarray], prev: int | None = None) -> dict:
     """The rule cascade (v1) over candidate cards (groups). Measured 2026-10-29 on all four P&C episodes (336 labelled
     bubbles; the tune/test split of speaker_eval.py was spent that day): a tail with an aimed card is right 209/212;
     the errors sit where no tail aims at a card. Tried and out: aim before tip distance (-2), sfx to the touching
     card (-7 to -19), chorus by touching cards (+1/-2), off-panel when no card is aimed (-6: the tail's direction is
-    wrong on spiky shouts), Understand's speaker anchor as arbiter (0/40 against the tail)."""
+    wrong on spiky shouts), Understand's speaker anchor as arbiter (0/40 against the tail). 2026-10-31: turn-taking
+    in (tail_reply: +2 on the reprocessed P&C 36, 116 -> 118 of 121; +1 on the old four episodes, 313 -> 314 of 333;
+    nothing broken); fragment cards (largest connected piece under half the card) as no candidates out (-5 old, -1
+    new: a figure cut into pieces by what stands in front of it looks the same, P&C 37-p006). 2026-11-01, on the new
+    P&C 36-39 (344 lines) and the old 333, all out: a tail-less balloon taking the speaker its stack's tail names
+    (0 fixed, 7 broken: touching balloons are often a two-speaker exchange, 38-p009 "Yes." / "It's even..."; later
+    relabelled, and stacks were capped at STACK_MAX, which kept 39-p023's 10.5 % balloon out); the same
+    only for a balloon inside a segmented container (+2 credits lines, -4: containers hold exchanges too, 37-p008,
+    39-p010, 36-p006); dropping stripped parts thinner than 1-3 px on average as mask leaks (37-p017's tail lost to a
+    71 px sliver reaching 317; +1 credits line, -1 to -2: the laughing balloons of 38-p018 have tails as thin).
+    Then in (STACK_TAIL, assign_all): a tail-less balloon takes the speaker of the ONE tail in its chain of touching
+    balloons (balloon_chains, no size cap): 330 -> 332 of 344 on P&C 36-39 with today's labels, nothing broken; with
+    "the stack's tails name one speaker" instead of "one tail" it broke 37-p008 and 36-p006 (several tails).
+    And two tail fixes, 332 -> 334, nothing broken, each found on one line (so thin evidence, but flat over the range):
+    the tip touching a card when none is aimed (tail_touch: same result at 0-30 px), and the squarer aim between two
+    cards near the tip (CLOSE_TIP/AIM_LEAD: same at 10-40 px and a 0.05-0.1 lead; with no lead it broke 36-p016, at
+    80 px 10 lines). Stricter AIM cutoffs lose (0.88: -2, 0.95: -8)."""
     # a balloon of punctuation alone ("!!!", "???", "...") WITH a tail is a character's reaction, not a sound effect,
     # whatever Transcribe called it (8 of 8 in P&C 36-39, all tailed); without a tail it stays lettering
     reaction = b.tail_tip is not None and re.fullmatch(r"[!?.… ]+", (b.text or "").strip() or "x") is not None
     if b.kind in SFX and not reaction:
-        return {"speakers": [], "speaker_kind": "sfx", "confidence": 0.9, "rule": "kind_sfx"}
-    feats = features(b, cards)
+        return {"speakers": [], "speaker_kind": "nobody", "confidence": 0.9, "rule": "kind_sfx"}
+    feats = features(b, cards, dist)
     b.feats = {"cands": feats, "tail": b.tail_tip is not None}
     if b.kind in NARRATION:
         # a "caption" with a tail aimed at a card of its frame is speech in a box (P&C 39-p013: the song's lyrics)
-        if not any(f["same_frame"] and f.get("aim", -1) > 0.85 for f in feats):
-            return {"speakers": [], "speaker_kind": "narrator", "confidence": 0.9, "rule": "kind_caption"}
+        if not any(f["same_frame"] and f.get("aim", -1) > AIM for f in feats):
+            return {"speakers": [], "speaker_kind": "nobody", "confidence": 0.9, "rule": "kind_caption"}
     if not feats:
         return {"speakers": [], "speaker_kind": "off_panel", "confidence": 0.5, "rule": "no_cards"}
     same = [f for f in feats if f["same_frame"]]
     # no chorus rule: "a shout touched by two cards" won "CHEERS! CHEERS! CHEERS!" (39-p008) and lost two laughing
     # single speakers in 38-p018 (2026-10-29, all four episodes). A chorus needs its own evidence (several tails)
     if b.tail_tip is not None:
-        aimed = [f for f in feats if f.get("aim", -1) > 0.85]
+        side = max(b.mask.shape)
+        aimed = [f for f in feats if f.get("aim", -1) > AIM]
         if aimed:
             # a card in another frame must be this much nearer the tip than one in the bubble's own frame to win:
             # a share of the box's long side, not pixels, so it holds at any page resolution
-            penalty = OTHER_FRAME_PENALTY * max(b.mask.shape)
-            best = min(aimed, key=lambda f: f["tip_dist"] + (0 if f["same_frame"] else penalty))
+            penalty = OTHER_FRAME_PENALTY * side
+            key = lambda f: f["tip_dist"] + (0 if f["same_frame"] else penalty)  # noqa: E731
+            best = min(aimed, key=key)
+            # a tip between two cards: the one aimed at clearly more squarely wins (P&C 39-p023 "Gosh darn it!": 4 px
+            # from the llama at 0.87, 12 px from the lizard at 1.00); a near tie stays with the nearer (36-p016: 0.99/1.00)
+            close = [f for f in aimed if key(f) <= key(best) + CLOSE_TIP * side]
+            squarer = max(close, key=lambda f: f["aim"])
+            if squarer["aim"] - best["aim"] >= AIM_LEAD:
+                best = squarer
+            # turn-taking: a tail reaching into another frame at whoever said the line before is the reply, from the
+            # other card it aims at (P&C 36-p003 "Shhhhh, Pepper!" from Carrot, 36-p009 "Yes, really" after "Really?")
+            reply = [f for f in aimed if f["card"] != prev]
+            if TURN_TAKING and prev is not None and best["card"] == prev and not best["same_frame"] and reply:
+                return {"speakers": [min(reply, key=key)["card"]], "speaker_kind": "card", "confidence": 0.7,
+                        "rule": "tail_reply"}
             return {"speakers": [best["card"]], "speaker_kind": "card", "confidence": 0.85, "rule": "tail"}
+        # aimed at nobody, but the tip touches a card: a tail ending on a figure is that figure's, whatever the angle
+        # (P&C 38-p001 "Yes, it was difficult": the tip inside the dog, aimed at 0.75)
+        touched = [f for f in feats if f["tip_dist"] <= TIP_TOUCH * side]
+        if touched:
+            return {"speakers": [max(touched, key=lambda f: f["aim"])["card"]], "speaker_kind": "card",
+                    "confidence": 0.7, "rule": "tail_touch"}
+        # aimed at and touching nobody is NOT a sign of an off-panel speaker: answering off_panel there was tried
+        # 2026-11-02 with the 14 off-panel lines scored, +2 -16 (538 lines): such a tail is mostly mismeasured
     if len(same) == 1:
         return {"speakers": [same[0]["card"]], "speaker_kind": "card", "confidence": 0.75, "rule": "single_in_frame"}
     if same:
@@ -445,19 +620,35 @@ def _assign(b: Bubble, cards: list[Card], frames: list[np.ndarray]) -> dict:
     return {"speakers": [best["card"]], "speaker_kind": "card", "confidence": 0.3, "rule": "nearest_other_frame"}
 
 
-def run_box(box: Box, write: bool = True) -> list[dict]:
-    """Assign every bubble of a box; saved as its speakers.json when write (Box.save_speakers: the layers can be
-    rebuilt without losing it). Returns one record per bubble."""
+def answers_of(box: Box) -> dict | None:
+    """The rules' answers for a box with what scoring needs and no masks (small enough to come back from a
+    workers.pmap process): {"cards": n, "groups": [[card]], "bubbles": [{id, kind, text, order, frame, bbox (x0, y0,
+    x1, y1), tail_tip}], "answers": [assign_all's answer per bubble]}; None without layers."""
+    got = load_box(box)
+    if got is None:
+        return None
+    cards, bubbles, _, _ = got
+    answers = assign_all(cards, bubbles)
+
+    def bbox(m):
+        ys, xs = np.nonzero(m)
+        return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1) if len(xs) else (0, 0, 0, 0)
+
+    return {"cards": len(cards), "groups": groups(cards),
+            "bubbles": [{"id": b.id, "kind": b.kind, "text": b.text, "order": b.order, "frame": b.frame,
+                         "bbox": bbox(b.mask), "tail_tip": b.tail_tip} for b in bubbles], "answers": answers}
+
+
+def assign_box(box: Box, write: bool = True) -> list[dict]:
+    """Who speaks every bubble of a box (its layers, frames and transcript, load_box): one record per bubble, saved
+    as its speakers.json when write (Box.save_speakers, stamped with the cards.json it names cards of)."""
     got = load_box(box)
     if got is None:
         return []
-    cards, bubbles, frames, _ = got
-    recs = []
-    for b in bubbles:
-        a = assign(b, cards, frames)
-        recs.append({"pid": box.pid, "bubble": b.id, "key": b.key, "order": b.order, "kind": b.kind, "text": b.text,
-                     "speakers": [cards[k].key for k in a["speakers"]], "speaker_kind": a["speaker_kind"],
-                     "confidence": a["confidence"], "rule": a["rule"]})
+    cards, bubbles, _, _ = got
+    recs = [{"pid": box.pid, "bubble": b.id, "key": b.key, "order": b.order, "kind": b.kind, "text": b.text,
+             "speakers": [cards[k].key for k in a["speakers"]], "speaker_kind": a["speaker_kind"],
+             "confidence": a["confidence"], "rule": a["rule"]} for b, a in zip(bubbles, assign_all(cards, bubbles))]
     if write:
         box.save_speakers(recs)
     return recs
@@ -468,7 +659,7 @@ def main():
     ch, out = Chapter(Path(sys.argv[1])), Path(sys.argv[2])
     picks = [int(v) for v in sys.argv[sys.argv.index("--panels") + 1].split(",")] if "--panels" in sys.argv else range(len(ch))
     for i in picks:
-        for r in run_box(Box(out, ch.pid(i))):
+        for r in assign_box(Box(out, ch.pid(i))):
             print(f"{r['pid']} #{r['bubble']} [{r['rule']}] -> {r['speaker_kind']} {r['speakers']}  {r['text'][:40]!r}")
 
 

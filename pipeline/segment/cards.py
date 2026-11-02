@@ -2,7 +2,9 @@
 model only orders them. A depth-based surface before it failed: on close-ups DA3MONO gave a ramp with no figure in
 it, and where it worked the surface came out as 1-3 M points for what reads as a few planes.
 
-    layers(box, img, letters, chars, transcript, depth_fn)    one box, from what the earlier steps saved (boxstore.Box)
+    p = plan(box, img, letters, chars, depth_fn)    one box, from what the earlier steps saved (boxstore.Box); writes nothing
+    render(box, p, img, depth_fn)                   the plan drawn on the box's plate (band_erase reads p in between)
+    layers(box, img, letters, chars, depth_fn)      both, for a box whose plate is made
 
 Per frame of the box (the frame step's, frames.split):
   backdrop    the erased plate (characters, lettering and, when erased, the chosen objects removed), alpha = the frame
@@ -14,13 +16,14 @@ farther level STEP beyond, the backdrop at least BACKDROP_Z deep. DA3MONO, run o
 cards within TIE share a level) and shapes their relief.
 A character the erase did not reach (refused, or the daily cap) is still a card, its copy left in the backdrop: a
 doubled outline at a head move instead of a hole. The lettering is erased from the backdrop and comes back as cards of the
-original bubbles (lettering_layers), at the depth lettering_layer.place gives each.
+original bubbles (lettering_cards), at the depth lettering_layer.place gives each.
 
 Writes mesh/<pid>.cards.json ({w, h, fov, layers: [{png, bbox, z, kind, name}]}, far to near), mesh/<pid>.card-N.png
 (each cropped to its bbox) and mesh/<pid>.json (size and fov, as the browser viewer reads it).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -178,50 +181,21 @@ def claim_fringe(img: Image.Image, chars: np.ndarray, g: np.ndarray, reach: int 
 LETTER_GROW = 3   # px around a bubble's mask kept on its card: its drawn outline sits just outside the mask
 
 
-def lettering_layers(box, img: np.ndarray, letter_masks: list[np.ndarray], bubbles: dict, n: int) -> list[dict]:
+def lettering_cards(letters: list, bubbles: dict) -> list[Card]:
     """The lettering as cards of the ORIGINAL art (user, 2026-10-25: the redrawn bubbles looked off): each bubble's
     pixels, alpha = its mask grown LETTER_GROW px and feathered, at the depth lettering_layer.place chose for it
-    (just in front of whatever is behind it). Their PNGs numbered from n, after the scene's cards; the layers far to
-    near, to go after the scene's."""
-    import cv2
+    (just in front of whatever is behind it); in bubble order (their PNGs are numbered so)."""
     from scipy.ndimage import binary_dilation
-    added = []
+    out = []
     for b in bubbles.get("bubbles", []):
         k = b["id"] - 1
-        if not (0 <= k < len(letter_masks)) or not letter_masks[k].any():
+        if not (0 <= k < len(letters)) or not letters[k].mask.any():
             continue
-        m = binary_dilation(letter_masks[k], iterations=LETTER_GROW)
-        alpha = cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER) if FEATHER else m.astype(np.float32)
+        m = binary_dilation(letters[k].mask, iterations=LETTER_GROW)
         bb = _bbox(m, PAD)
-        png = box.card(n)
-        box.save_image(png, _rgba(img, alpha, bb))
-        # "bubble": its id in <pid>.bubbles.json (text, kind, outline) and in the lettering masks (id - 1)
-        added.append({"png": png, "bbox": bb, "z": b["depth"], "kind": "lettering", "bubble": b["id"],
-                      "name": lettering_name(b)})
-        n += 1
-    return sorted(added, key=lambda l: -l["z"])  # far to near among themselves
-
-
-def lettering_name(b: dict) -> str:
-    """A lettering card's name: its bubble's text (shortened), or "lettering <id>" before Transcribe read it."""
-    text = (b.get("text") or "").strip()
-    return (text[:24] + "…") if len(text) > 24 else (text or f"lettering {b['id']}")
-
-
-def annotate(box, result: dict) -> None:
-    """Transcribe's result for a box joined into its built layers: bubbles.json's text and kinds
-    (lettering_layer.annotate) and the lettering cards' names. Nothing when the box has no layers."""
-    import lettering_layer as LL
-    bj, cj = box.bubbles(), box.cards()
-    if bj is None or cj is None:
-        return
-    bj = LL.annotate(bj, result)
-    box.save_bubbles(bj)
-    by_id = {b["id"]: b for b in bj["bubbles"]}
-    for l in cj["layers"]:
-        if l["kind"] == "lettering" and l.get("bubble") in by_id:
-            l["name"] = lettering_name(by_id[l["bubble"]])
-    box.save_cards(cj)
+        out.append(Card("lettering", f"lettering {b['id']}", None, bb, _alpha(m, None, bb), b["depth"], 0.0,
+                        bubble=b["id"]))
+    return out
 
 
 def order(M: np.ndarray, masks: list[np.ndarray], area: np.ndarray, behind: list[tuple[int, int]] = ()) -> list[int]:
@@ -450,7 +424,7 @@ def relief_map(m: np.ndarray, M: np.ndarray, rgb: np.ndarray) -> Image.Image:
     return Image.fromarray((h * 255).astype(np.uint8))
 
 
-def depth_view(M: np.ndarray, areas: list[np.ndarray], path: Path) -> None:
+def depth_view(M: np.ndarray, areas: list[np.ndarray]) -> Image.Image:
     """The depth the cards were ordered by, each frame normalised on its own (2nd-98th percentile), bright = near,
     the page black: the viewer's "depth" view."""
     vis = np.zeros(M.shape, np.float32)
@@ -459,7 +433,7 @@ def depth_view(M: np.ndarray, areas: list[np.ndarray], path: Path) -> None:
             continue
         lo, hi = np.percentile(M[a], [2, 98])
         vis[a] = np.clip((hi - M[a]) / max(float(hi - lo), 1e-6), 0, 1)
-    Image.fromarray((vis * 255).astype(np.uint8)).save(path)
+    return Image.fromarray((vis * 255).astype(np.uint8))
 
 
 SEG_COL = {"character": [(230, 60, 60), (240, 130, 40), (220, 50, 160), (200, 90, 90)],
@@ -468,7 +442,7 @@ SEG_COL = {"character": [(230, 60, 60), (240, 130, 40), (220, 50, 160), (200, 90
 
 
 def seg_view(img: np.ndarray, chars: list[np.ndarray], objects: list[tuple[str, np.ndarray]],
-             letters: list[np.ndarray], frames: list[np.ndarray], path: Path) -> None:
+             letters: list[np.ndarray], frames: list[np.ndarray]) -> Image.Image:
     """The box with every mask tinted (characters warm, objects cool, lettering green) and each frame outlined in
     magenta: the viewer's "segmentation" view."""
     from PIL import ImageDraw
@@ -485,7 +459,7 @@ def seg_view(img: np.ndarray, chars: list[np.ndarray], objects: list[tuple[str, 
     for f in frames if len(frames) > 1 else []:
         ys, xs = np.nonzero(f)
         d.rectangle([int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())], outline=(255, 0, 255), width=4)
-    pic.save(path)
+    return pic
 
 
 def frame_depth(depth_fn, rgb: np.ndarray, areas: list[np.ndarray]) -> np.ndarray:
@@ -502,10 +476,82 @@ def frame_depth(depth_fn, rgb: np.ndarray, areas: list[np.ndarray]) -> np.ndarra
     return D
 
 
+def _alpha(m: np.ndarray, art: np.ndarray | None, bbox) -> np.ndarray:
+    """A card's alpha as its PNG holds it: the mask feathered FEATHER px, cut to the art, 0-255 over its bbox."""
+    import cv2
+    a = cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER) if FEATHER else m.astype(np.float32)
+    if art is not None:
+        a *= art
+    x0, y0, x1, y1 = bbox
+    return (np.clip(a[y0:y1, x0:x1], 0, 1) * 255).astype(np.uint8)
+
+
 def _rgba(rgb: np.ndarray, alpha: np.ndarray, bbox) -> Image.Image:
     x0, y0, x1, y1 = bbox
-    a = (np.clip(alpha[y0:y1, x0:x1], 0, 1) * 255).astype(np.uint8)
-    return Image.fromarray(np.dstack([rgb[y0:y1, x0:x1], a]), "RGBA")
+    return Image.fromarray(np.dstack([rgb[y0:y1, x0:x1], alpha]), "RGBA")
+
+
+@dataclass
+class Card:
+    """One card of a plan, as its PNG and cards.json entry will hold it: the alpha (0-255 over bbox, the box's px),
+    its plane depth z and relief_amp (rounded as saved), and for a character or object its relief map."""
+    kind: str
+    name: str
+    frame: int | None
+    bbox: tuple[int, int, int, int]
+    alpha: np.ndarray
+    z: float
+    amp: float
+    relief: Image.Image | None = None
+    bubble: int | None = None
+
+    def mask(self, shape: tuple[int, int]) -> np.ndarray:
+        """The card's pixels on the box: its alpha above half, as the reader and the erase see them."""
+        m = np.zeros(shape, bool)
+        x0, y0, x1, y1 = self.bbox
+        m[y0:y1, x0:x1] = self.alpha > 127
+        return m
+
+
+@dataclass
+class Backdrop:
+    frame: int
+    area: np.ndarray
+    flat: bool
+    z: float
+    amp: float
+
+
+@dataclass
+class Plan:
+    """A box's flat layers before any pixels are drawn (plan): everything that depends on the art, the masks and the
+    depth model but not on the erased plate, which render draws them on. The erase (band_erase) reads its cards."""
+    pid: str
+    w: int
+    h: int
+    page: np.ndarray
+    under: np.ndarray            # where the backdrop shows the plate: the cards' pixels grown PAD, and the lettering
+    backdrops: list[Backdrop]    # one per frame with layers, in frame order
+    scene: list[list[Card]]      # per backdrop its cards, far to near
+    lettering: list[Card]        # in bubble order
+    bubbles: dict | None         # lettering_layer.build's placement
+    views: dict[str, bytes]      # the viewer's "depth" and "seg" views, PNG
+    info: dict
+
+    def cards(self) -> list[Card]:
+        return [c for cs in self.scene for c in cs] + self.lettering
+
+    def back_z(self, frame: int | None) -> float:
+        """The backdrop depth of a card's frame; a card with none (lettering) takes the farthest backdrop."""
+        zs = {b.frame: b.z for b in self.backdrops}
+        return zs.get(frame, max(zs.values()) if zs else BACKDROP_Z)
+
+
+def _png(image: Image.Image) -> bytes:
+    import io
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _bbox(m: np.ndarray, pad: int) -> tuple[int, int, int, int]:
@@ -515,23 +561,18 @@ def _bbox(m: np.ndarray, pad: int) -> tuple[int, int, int, int]:
             min(h, int(ys.max()) + 1 + pad))
 
 
-def _scene(box, img: np.ndarray, chars: list[np.ndarray], objects: list[dict], plate: np.ndarray,
-           g: np.ndarray, frames: list[np.ndarray], flat: list[bool], depth_fn,
-           fringe: np.ndarray | None = None, lettering: np.ndarray | None = None,
-           depth_img: np.ndarray | None = None) -> tuple[dict, np.ndarray, list[dict], int]:
-    """img: the original box (RGB). chars: one mask per character. objects: the picker's objects erased from the
-    plate ({"name", "mask", "on", "held", "front", "except"}; empty when the objects were not erased: they stay
-    painted on it); held ones join their holder, supported ones their support. plate: the erased plate. g: the page
-    around the art. frames, flat: the frame step's. depth_fn: rgb crop -> depth, run on each frame alone
-    (frame_depth) on depth_img (the lettering-free image when there is one); it gives the backdrops' distance and
-    orders the cards. lettering: the lettering, taken out of the backdrop (it comes back as cards of the original
-    bubbles, lettering_layers).
-    Writes the layers' PNGs through box; returns (log info, depth per pixel of the nearest layer, 0 on the page:
-    what the lettering is placed against, the layers far to near, the next card number).
-    The backdrop is the original art except under the cards and the lettering, where it is the plate: the erase
-    model also removes cast shadows and redraws outlines in the band its mask is grown by, and showing the plate
-    there put a lighter floor where the character's shadow was (3.2% of ToG 228 p6's art off by more than 40)."""
-    import cv2
+def _scene(img: np.ndarray, chars: list[np.ndarray], objects: list[dict], g: np.ndarray, frames: list[np.ndarray],
+           flat: list[bool], depth_fn, fringe: np.ndarray | None = None, lettering: np.ndarray | None = None,
+           depth_img: np.ndarray | None = None, trace: list | None = None):
+    """The scene's geometry. img: the original box (RGB). chars: one mask per character. objects: the picker's
+    objects erased from the plate ({"name", "mask", "on", "held", "front", "except"}; empty when the objects were not
+    erased: they stay painted on it); held ones join their holder, supported ones their support. g: the page around
+    the art. frames, flat: the frame step's. depth_fn: rgb crop -> depth, run on each frame alone (frame_depth) on
+    depth_img (the lettering-free image when there is one); it gives the backdrops' distance and orders the cards.
+    lettering: the lettering, taken out of the backdrop (it comes back as cards of the original bubbles).
+    Returns (backdrops, cards per backdrop far to near, under: where the backdrop will show the plate, D: depth per
+    pixel of the nearest layer, 0 on the page, what the lettering is placed against, the depth view, log info).
+    trace: when given, one dict per frame with its depth, masks and levels (experiments/backdrop_depth.py)."""
     from scipy.ndimage import binary_dilation, distance_transform_edt
     h, w = g.shape
     art = ~g
@@ -551,7 +592,6 @@ def _scene(box, img: np.ndarray, chars: list[np.ndarray], objects: list[dict], p
     under = binary_dilation(np.logical_or.reduce([s[2] for s in segs]), iterations=PAD) if segs else np.zeros((h, w), bool)
     if lettering is not None:
         under |= lettering
-    backdrop = np.where(under[..., None], plate, img)
     # each frame's area is the frame itself (frames.split: its box, the page inside it kept): taking the page out
     # again here made a vignette its silhouette and notched frames at bubbles (P&C 39 p27, p8). flat: a frame of text
     # (credits), its backdrop without relief; its characters are still cards (the mascots of P&C's credits pages
@@ -560,10 +600,8 @@ def _scene(box, img: np.ndarray, chars: list[np.ndarray], objects: list[dict], p
     areas, flats = ([f for f, _ in kept], [x for _, x in kept]) if kept else ([art], [False])
     # depth only ever per frame (user, 2026-10-26)
     M = frame_depth(depth_fn, img if depth_img is None else depth_img, areas)
-    box.clear_cards()
-    depth_view(M, areas, box.view_file("depth"))
-    layers, D = [], np.zeros((h, w), np.float32)
-    n = 0
+    backdrops, scene, D = [], [], np.zeros((h, w), np.float32)
+    f = focal(w, h)
     for fk, area in enumerate(areas):
         if area.sum() < MIN_FRAME_PX:
             continue
@@ -586,62 +624,39 @@ def _scene(box, img: np.ndarray, chars: list[np.ndarray], objects: list[dict], p
                     near = binary_dilation(mc, iterations=EXCEPT_PX)
                     flip = any(0 <= y < h and 0 <= x < w and near[y, x] for x, y in o.get("except") or [])
                     behind.append((c_, a_) if bool(o.get("front")) != flip else (a_, c_))
-        f = focal(w, h)
         covered = np.logical_or.reduce([s[2] for s in mine]) if mine else np.zeros_like(area)
         relief_on = BACK_RELIEF > 0 and not flats[fk] and back_range_ok(M, area, covered)
+        if trace is not None:
+            trace.append({"frame": fk, "M": M.copy(), "area": area.copy(),
+                          "cov": np.logical_or.reduce([s[2] & area for s in mine]) if mine else np.zeros_like(area)})
         zb, ampb, zs, amps = depths(order(M, [s[2] & area for s in mine], area, behind),
                                     [card_relief(s[2] & area, f) for s in mine], BACK_RELIEF if relief_on else 0.0)
-        inset = round(INSET * max(w, h))
-        # the margin is mirrored from the frame minus the page along its edge (where the window hides nothing)
-        own = area & ~(g & (distance_transform_edt(area) <= inset + 1))
-        back, eb, win, fb = backdrop_image(backdrop, area, round(MARGIN * max(w, h)), inset, own)
-        box.save_image(box.card(n, "window"), win)
-        # "frame": the reader shows each frame's layers through a window of the frame's shape ("window", on
-        # "window_bbox", at depth "window_z") in front of them (user, 2026-10-26); lettering is not clipped. The
-        # backdrop's box runs past the frame by its margin and may reach past the image
-        layers.append({"png": box.card(n), "bbox": [int(v) for v in eb], "z": round(zb, 5),
-                       "kind": "backdrop", "name": f"backdrop {fk + 1}", "frame": fk,
-                       "window": box.card(n, "window"), "window_bbox": [int(v) for v in fb],
-                       "window_z": WINDOW_Z, **({"flat": True} if flats[fk] else {})})
-        if ampb > 0:
-            # depth on the backdrop's own frame (the erased plate under the cards), only for a frame with relief
-            rel = backdrop_relief(area, frame_depth(depth_fn, backdrop, [area]), eb)
-            box.save_image(box.card(n, "relief"), Image.fromarray((rel * 255).astype(np.uint8)))
-            layers[-1].update({"relief": box.card(n, "relief"), "relief_amp": round(ampb, 5), "relief_cell": BACK_CELL})
-        box.save_image(box.card(n), back)
+        backdrops.append(Backdrop(fk, area, flats[fk], round(zb, 5), round(ampb, 5)))
         D[area] = zb * (1 - ampb)  # the nearest each layer gets: the lettering is placed in front of it
-        n += 1
+        cards = []
         for (kind, name, m, _), z, amp in sorted(zip(mine, zs, amps), key=lambda c: -c[1]):
             m = m & area
-            alpha = cv2.GaussianBlur(m.astype(np.float32), (0, 0), FEATHER) if FEATHER else m.astype(np.float32)
-            alpha *= art
             bb = _bbox(m, PAD)
-            box.save_image(box.card(n), _rgba(img, alpha, bb))
-            box.save_image(box.card(n, "relief"), relief_map(m[bb[1]:bb[3], bb[0]:bb[2]], M[bb[1]:bb[3], bb[0]:bb[2]],
-                                                             img[bb[1]:bb[3], bb[0]:bb[2]]))
-            layers.append({"png": box.card(n), "bbox": bb, "z": round(z, 5), "kind": kind, "name": name,
-                           "frame": fk, "relief": box.card(n, "relief"), "relief_amp": round(amp, 5),
-                           "relief_cell": RELIEF_CELL})
+            sl = np.s_[bb[1]:bb[3], bb[0]:bb[2]]
+            cards.append(Card(kind, name, fk, bb, _alpha(m, art, bb), round(z, 5), round(amp, 5),
+                              relief=relief_map(m[sl], M[sl], img[sl])))
             D[m] = z * (1 - amp)  # far to near: the nearest card is written last
-            n += 1
-    info = {"frames": len(areas), "cards": sum(1 for l in layers if l["kind"] != "backdrop"),
-            "z": [f"{l['kind'][0]}{l['z']:.3f}" for l in layers]}
-    return info, D, layers, n
+        scene.append(cards)
+    return backdrops, scene, under, D, depth_view(M, areas), {"frames": len(areas)}
 
 
 LETTERING_GROW = 10  # px the lettering is grown where it is taken out of the depth image and the backdrop
 
 
-def layers(box, img: Image.Image, letters: list, chars: list, transcript: dict | None, depth_fn,
-           objects: bool = True) -> dict:
-    """The flat layers of one box (boxstore.Box), its frames and page from the frame step: per frame the backdrop
-    and one card per character and object, ordered by depth_fn (rgb crop -> depth, DA3MONO) on each frame alone,
-    then the original bubbles as cards in front, placed by lettering_layer. The backdrop is the box's band-erase plate
-    (step 3) when it has one, else the art itself; the depth model sees the box with its lettering filled in
-    (band_erase.lettering_free). objects: cut the saved objects out as cards on the art too (without a plate they stay
-    painted on the backdrop as well). Writes cards.json, the card PNGs, bubbles.json and the viewer's depth and
-    segmentation views; returns the log info. Raises when the box has no frames with a page (frames from before
-    2026-10-30, or none: run the frame step)."""
+def plan(box, img: Image.Image, letters: list, chars: list, depth_fn, objects: bool = True,
+         trace: list | None = None) -> Plan:
+    """The flat layers of one box (boxstore.Box) before any pixels are drawn, from its masks and the frame step's
+    frames and page: per frame the backdrop and one card per character and object, ordered by depth_fn (rgb crop ->
+    depth, DA3MONO) on each frame alone, then the original bubbles as cards in front, placed by lettering_layer. The
+    depth model sees the box with its lettering filled in (band_erase.lettering_free). objects: cut the saved objects
+    out as cards (the erase paints behind them); also when an earlier erase left a plate, which has them erased.
+    Reads the box, writes nothing. Raises when the box has no frames with a page (frames from before 2026-10-30, or
+    none: run the frame step)."""
     import band_erase as BE
     import lettering_layer as LL
     from scipy.ndimage import binary_dilation
@@ -656,23 +671,85 @@ def layers(box, img: Image.Image, letters: list, chars: list, transcript: dict |
     fringe = claim_fringe(img, union(chars, (h, w)), g)
     lettering = binary_dilation(let, iterations=LETTERING_GROW) & ~g if let.any() else None
     base = BE.lettering_free(rgb, lettering, fr.masks or [~g]) if lettering is not None else None
-    # the band erase paints behind every object too (each one a card); without its plate the objects stay painted
-    plate = box.plate()
-    objs = box.objects() if plate is not None or objects else []
-    info, D, scene, n = _scene(box, rgb, [c.mask for c in chars], objs, rgb if plate is None else plate, g, fr.masks,
-                               fr.flat, depth_fn, fringe, lettering, depth_img=base)
-    cj = {"w": w, "h": h, "fov": FOV, "layers": scene}
-    box.save_view_meta(w, h, FOV)
-    # the viewer's "segmentation" view (its "depth" view is written by _scene)
-    seg_view(rgb, [c.mask for c in chars], [(o["name"], o["mask"]) for o in box.objects()], [e.mask for e in letters],
-             fr.masks, box.view_file("seg"))
-    if letters:
-        # placement (depth clear of the layers) from lettering_layer; what is drawn is the original bubble, cut from
-        # the art (lettering_layers)
-        bub = LL.build(box.pid, img, [e.mask for e in letters], transcript, D, kinds=[e.kind for e in letters], valid=~g)
-        box.save_bubbles(bub)
-        lets = lettering_layers(box, rgb, [e.mask for e in letters], bub, n)
-        cj["layers"] = scene + lets
+    every = box.objects()
+    objs = every if objects or box.has_plate() else []
+    backdrops, scene, under, D, depth_pic, info = _scene(rgb, [c.mask for c in chars], objs, g, fr.masks, fr.flat,
+                                                         depth_fn, fringe, lettering, depth_img=base, trace=trace)
+    seg_pic = seg_view(rgb, [c.mask for c in chars], [(o["name"], o["mask"]) for o in every],
+                       [e.mask for e in letters], fr.masks)
+    # placement (depth clear of the layers) from lettering_layer; what is drawn is the original bubble
+    bub = LL.build(box.pid, img, letters, D, valid=~g) if letters else None
+    lets = lettering_cards(letters, bub) if bub else []
+    info["cards"] = sum(len(cs) for cs in scene)
+    if lets:
         info["lettering cards"] = len(lets)
-    box.save_cards(cj)
-    return info
+    return Plan(box.pid, w, h, g, under, backdrops, scene, lets, bub,
+                {"depth": _png(depth_pic), "seg": _png(seg_pic)}, info)
+
+
+def render(box, plan: Plan, img: Image.Image, depth_fn, trace: list | None = None) -> dict:
+    """The plan drawn and saved: each frame's backdrop (the box's band-erase plate under the cards when it has one,
+    else the art) with its window and, for a frame with relief, its relief from depth_fn on the backdrop itself; each
+    card cut from the original art. Writes cards.json, the card PNGs, bubbles.json and the viewer's files; returns
+    the log info. The backdrop is the original art except under the cards and the lettering, where it is the plate:
+    the erase model also removes cast shadows and redraws outlines in the band its mask is grown by, and showing the
+    plate there put a lighter floor where the character's shadow was (3.2% of ToG 228 p6's art off by more than 40).
+    trace: when given, each backdrop with relief adds {"frame", "relief", "eb"}."""
+    import io
+    from scipy.ndimage import distance_transform_edt
+    rgb = np.asarray(img)
+    w, h, g = plan.w, plan.h, plan.page
+    plate = box.plate()
+    backdrop = rgb if plate is None else np.where(plan.under[..., None], plate, rgb)
+    box.clear_cards()
+    layers, n = [], 0
+    inset = round(INSET * max(w, h))
+    for b, cards in zip(plan.backdrops, plan.scene):
+        # the margin is mirrored from the frame minus the page along its edge (where the window hides nothing)
+        own = b.area & ~(g & (distance_transform_edt(b.area) <= inset + 1))
+        back, eb, win, fb = backdrop_image(backdrop, b.area, round(MARGIN * max(w, h)), inset, own)
+        box.save_image(box.card(n, "window"), win)
+        # "frame": the reader shows each frame's layers through a window of the frame's shape ("window", on
+        # "window_bbox", at depth "window_z") in front of them (user, 2026-10-26); lettering is not clipped. The
+        # backdrop's box runs past the frame by its margin and may reach past the image
+        layers.append({"png": box.card(n), "bbox": [int(v) for v in eb], "z": b.z,
+                       "kind": "backdrop", "name": f"backdrop {b.frame + 1}", "frame": b.frame,
+                       "window": box.card(n, "window"), "window_bbox": [int(v) for v in fb],
+                       "window_z": WINDOW_Z, **({"flat": True} if b.flat else {})})
+        if b.amp > 0:
+            # depth on the backdrop's own frame (the erased plate under the cards), only for a frame with relief
+            rel = backdrop_relief(b.area, frame_depth(depth_fn, backdrop, [b.area]), eb)
+            if trace is not None:
+                trace.append({"frame": b.frame, "relief": (rel * 255).astype(np.uint8), "eb": eb})
+            box.save_image(box.card(n, "relief"), Image.fromarray((rel * 255).astype(np.uint8)))
+            layers[-1].update({"relief": box.card(n, "relief"), "relief_amp": b.amp, "relief_cell": BACK_CELL})
+        box.save_image(box.card(n), back)
+        n += 1
+        for c in cards:
+            box.save_image(box.card(n), _rgba(rgb, c.alpha, c.bbox))
+            box.save_image(box.card(n, "relief"), c.relief)
+            layers.append({"png": box.card(n), "bbox": list(c.bbox), "z": c.z, "kind": c.kind, "name": c.name,
+                           "frame": c.frame, "relief": box.card(n, "relief"), "relief_amp": c.amp,
+                           "relief_cell": RELIEF_CELL})
+            n += 1
+    lets = []
+    for c in plan.lettering:
+        box.save_image(box.card(n), _rgba(rgb, c.alpha, c.bbox))
+        # "bubble": its id in <pid>.bubbles.json (text, kind, outline) and in the lettering masks (id - 1)
+        lets.append({"png": box.card(n), "bbox": list(c.bbox), "z": c.z, "kind": "lettering", "bubble": c.bubble,
+                     "name": c.name})
+        n += 1
+    layers += sorted(lets, key=lambda l: -l["z"])  # far to near among themselves
+    for view, data in plan.views.items():
+        Image.open(io.BytesIO(data)).save(box.view_file(view))
+    box.save_view_meta(w, h, FOV)
+    if plan.bubbles is not None:
+        box.save_bubbles(plan.bubbles)
+    box.save_cards({"w": w, "h": h, "fov": FOV, "layers": layers})
+    return {**plan.info, "z": [f"{l['kind'][0]}{l['z']:.3f}" for l in layers if l["kind"] != "lettering"]}
+
+
+def layers(box, img: Image.Image, letters: list, chars: list, depth_fn, objects: bool = True,
+           trace: list | None = None) -> dict:
+    """plan and render in one, for a box whose plate (if any) is already made."""
+    return render(box, plan(box, img, letters, chars, depth_fn, objects, trace), img, depth_fn, trace)

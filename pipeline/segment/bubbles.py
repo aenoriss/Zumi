@@ -15,9 +15,11 @@ width, 25 % overlap). Each tile gets:
 - exemplar passes (SAM 3 concept mode): the tile shrunk to 756 px with example crops from other panels in a
   margin, each marked as a positive box, so SAM 3 finds everything that looks like them. Examples come from a
   hand-picked bank (`.data/exemplars/bank.json`), never from the panel being segmented. The two dialogue groups
-  share one canvas; each sound-effect group has its own (LAYOUT). All of a panel's images are encoded in batches
-  and each text prompt is encoded once: 7.34 -> 6.08 s per panel on 12 test panels, same masks (52 of 53 at
-  IoU >= 0.8, 1 at 0.5-0.8).
+  share one canvas; each sound-effect group has its own (LAYOUT). A tile's images (the tile and its canvases) are
+  encoded in one batch and each text prompt is encoded once: 7.34 -> 6.08 s per panel on 12 test panels, same
+  masks (52 of 53 at IoU >= 0.8, 1 at 0.5-0.8). Tile by tile, not the whole panel at once: every encoded image
+  holds 108 MB of GPU memory until its passes are done, and a 15-tile webtoon box (Omniscient Reader 0, 800 x
+  8754) held 60 of them, filling the 12 GB and 18.8 GB of commit.
 
 Masks of the same kind that overlap by more than half are one object seen twice (overlapping tiles); different
 kinds merge only when near-identical, so a sound effect crossing a caption box stays a separate mask (Tower of
@@ -44,7 +46,8 @@ from boxstore import Box
 from chapter import Chapter
 from masks import Found, top_order
 from sam import SIDE as CANVAS, Segmenter, tiles
-from textcrops import clean_crop, letter_count
+from shape import dialogue_like, letter_shaped
+from textcrops import clean_crop
 
 ROOT = Path(__file__).resolve().parent.parent
 BANK = ROOT / ".data/exemplars/bank.json"
@@ -59,23 +62,6 @@ DIALOGUE = ("bubble", "caption")
 MAX_INSIDE = 0.6  # a bubble mostly inside a caption card is the card's text block
 MAX_SFX_INSIDE = 0.9  # letters almost wholly inside a bubble are its dialogue; letters crossing its edge are their
 #                       own element (True Beauty 5 p71 "DAMN IT!" over the burst)
-
-# Dialogue masks must hold dialogue (measured on 85 hits from 8 panels, labelled by eye): blood drops and specks
-# held 0-2 lettering blobs at 0.1-0.8 % of the tile; real bubbles 2-70 blobs; a bubble holding only "!" is large.
-MIN_LETTERS, MIN_FEW_LETTER_SHARE = 3, 0.01  # 3+ blobs, or 1+ blob in a mask over 1 % of the tile
-# A caption is a flat card: share of its pixels within 30 of its median colour was 0.71-0.93 for real cards and
-# 0.09-0.28 for whole panels the card pass returned (Pepper&Carrot 39 rows 8 and 14, Tower of God 223 p4).
-MIN_CAPTION_UNIFORMITY = 0.5
-# Weak hits must be flat shapes: the black "!" splat (ToG 228 p89, score 0.30) had uniformity 0.89-0.91; the
-# face the burst pass picked at 0.31-0.32 (True Beauty 5 p57) 0.19-0.57. Spiky bursts are not flat but score 0.8+.
-WEAK_SCORE, WEAK_MIN_UNIFORMITY = 0.4, 0.8
-
-# Lettering shape of a sound-effect mask (same 368 hits): letters are strokes with gaps.
-MAX_SFX_SHARE = 0.15  # never more than this share of the tile
-BIG_SFX_SHARE, MAX_BIG_FILL = 0.04, 0.30  # over 4 % of the tile, words filled 0.15-0.29 of their box, art more
-MAX_SFX_FILL, MIN_SOLID_SHARE = 0.6, 0.03  # solid shapes over 3 % of the tile are art
-MAX_ANY_FILL = 0.68  # letters filled at most 0.66 of their box at any size; a head (ToG 223 p11) filled 0.80
-MIN_STRIP_ASPECT = 0.06  # a box this flat (height / width) is a band along a panel edge, not a word
 
 
 @dataclass(frozen=True)
@@ -155,21 +141,6 @@ def composite(tile: Image.Image, groups: dict[str, list[Image.Image]], cell: int
     return canvas, boxes
 
 
-def letter_shaped(m: np.ndarray) -> bool:
-    """Could this sound-effect mask be letters rather than a piece of art or a panel-edge band?"""
-    share = m.mean()
-    if share == 0 or share > MAX_SFX_SHARE:
-        return False
-    ys, xs = np.nonzero(m)
-    bh, bw = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
-    fill = m.sum() / (bh * bw)
-    if bh < MIN_STRIP_ASPECT * bw:
-        return False
-    if share > BIG_SFX_SHARE:
-        return fill <= MAX_BIG_FILL
-    return fill <= MAX_ANY_FILL and not (fill > MAX_SFX_FILL and share > MIN_SOLID_SHARE)
-
-
 def stability(prob: np.ndarray) -> float:
     """Share of the pixels above 0.3 that are also above 0.7: 1 for a crisp mask, low for a hesitant one."""
     return float((prob > 0.7).sum() / max(1, (prob > 0.3).sum()))
@@ -201,19 +172,6 @@ def run_pass(seg: Segmenter, state: dict, tile: Image.Image, ps: Pass, boxes: li
             continue
         out.append((m, float(s)))
     return out
-
-
-def dialogue_like(pixels: np.ndarray, m: np.ndarray, kind: str, score: float) -> bool:
-    """Does this bubble or caption mask hold text, and is it a flat shape where it has to be (captions, weak hits)?"""
-    if not m.any():
-        return False
-    if kind == "caption" or score < WEAK_SCORE:
-        vals = pixels[m].astype(np.int16)
-        uniformity = (np.abs(vals - np.median(vals, axis=0)).max(axis=1) <= 30).mean()
-        if uniformity < (WEAK_MIN_UNIFORMITY if score < WEAK_SCORE else MIN_CAPTION_UNIFORMITY):
-            return False
-    n = letter_count(pixels, m)
-    return n >= MIN_LETTERS or (n >= 1 and m.mean() >= MIN_FEW_LETTER_SHARE)
 
 
 def add(found: list[Found], new: Found) -> None:
@@ -291,29 +249,29 @@ def group_letters(found: list[Found], reach: int) -> list[Found]:
 def segment(seg: Segmenter, img: Image.Image, bank: Bank, episode: str, panel: int) -> list[Found]:
     w, h = img.size
     tops = tiles(h, w)
-    tile_imgs = [img.crop((0, top, w, min(h, top + w))) for top in tops]
-    # one canvas per layout entry and tile; every image of the panel goes through the encoder in batches
-    images, where = list(tile_imgs), {}  # where[(tile, group)] = (image index, example boxes)
-    for names, cell, n in LAYOUT:
-        groups = {g: bank.pick(g, episode, panel, n) for g in names}
-        for k, t in enumerate(tile_imgs):
-            canvas, boxes = composite(t, groups, cell)
-            for g in names:
-                where[(k, g)] = (len(images), boxes.get(g))
-            images.append(canvas)
-    states = seg.encode(images)
+    layout = [(names, cell, {g: bank.pick(g, episode, panel, n) for g in names}) for names, cell, n in LAYOUT]
     found: list[Found] = []
-    for k, (top, tile) in enumerate(zip(tops, tile_imgs)):
+    for top in tops:
+        tile = img.crop((0, top, w, min(h, top + w)))
+        # the tile, then one canvas per layout entry: one encoder batch, freed before the next tile
+        images, where = [tile], {}  # where[group] = (image index, example boxes)
+        for names, cell, groups in layout:
+            canvas, boxes = composite(tile, groups, cell)
+            for g in names:
+                where[g] = (len(images), boxes.get(g))
+            images.append(canvas)
+        states = seg.encode(images)
         for ps in PASSES:
             if ps.exemplars is None:
-                hits = run_pass(seg, states[k], tile, ps, None)
+                hits = run_pass(seg, states[0], tile, ps, None)
             else:
-                i, boxes = where[(k, ps.exemplars)]
+                i, boxes = where[ps.exemplars]
                 hits = run_pass(seg, states[i], tile, ps, boxes)
             for m, s in hits:
                 full = np.zeros((h, w), bool)
                 full[top : top + m.shape[0]] = m
                 add(found, Found(full, s, ps.kind))
+        del states
     return group_letters(drop_inner_text(found), reach=max(8, w // 40))
 
 

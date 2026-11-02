@@ -3,8 +3,8 @@ on the frame normalised over the whole frame (what orders the cards), and the ba
 passes cards.back_range_ok the relief map the backdrop gets (DA3MONO on the erased backdrop, white = near), for one
 that fails the frame's depth on the background alone (the frame minus the cards, grown a few px) normalised over its
 own 2-98th percentiles, cards red. Prints the background's share of the frame and its spread as a share of the
-frame's. Runs the layers step once per box (episode.layers_step: the saved masks, frames and plate, the depth model;
-no objects picked, no erase, no paid call) and records what cards.order and cards.backdrop_relief see. Boxes without
+frame's. Builds the layers once per box (cards.layers: the saved masks, frames and plate, the depth model; no objects
+picked, no erase, no paid call) and reads its trace (each frame's depth and cards, each backdrop's relief). Boxes without
 current frames are skipped. Writes one sheet per box and overview.png (every frame, one tile each).
 
     uv run python experiments/backdrop_depth.py <episode.zumi> <out dir> <sheet dir> --panels 2,8,13,24 | all
@@ -20,7 +20,6 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cards as CD  # noqa: E402
 import depth as DP  # noqa: E402
-import episode  # noqa: E402
 from boxstore import Episode  # noqa: E402
 from chapter import Chapter  # noqa: E402
 
@@ -51,32 +50,20 @@ def main():
     arg = sys.argv[sys.argv.index("--panels") + 1]
     picks = range(len(ch)) if arg == "all" else [int(v) for v in arg.split(",")]
     mono = DP.load()
-    transcripts = ep.transcripts()
-    seen = []
-    order, relief = CD.order, CD.backdrop_relief
-
-    def spy_order(M, masks, area, behind=()):
-        cov = np.logical_or.reduce(masks) if masks else np.zeros_like(area)
-        seen.append({"M": M.copy(), "area": area.copy(), "cov": cov, "relief": None})
-        return order(M, masks, area, behind)
-
-    def spy_relief(area, Mb, eb):
-        im = relief(area, Mb, eb)
-        seen[-1]["relief"], seen[-1]["eb"] = (im * 255).astype(np.uint8), eb
-        return im
-
-    CD.order, CD.backdrop_relief = spy_order, spy_relief
     sheets.mkdir(parents=True, exist_ok=True)
     tiles = []
     for p in picks:
-        seen.clear()
         box = ep.box(p)
         letters, chars, fr = box.letters(), box.characters(), box.frames()
         if letters is None or chars is None or not (fr and fr.current):
             print(f"p{p}: no saved masks or no current frames, skipped")
             continue
-        episode.layers_step(ep, {p: ch.image(p)}, {p: letters}, {p: chars}, transcripts,
-                            lambda rgb: DP.frame_infer(mono, rgb), objects=box.plate() is not None)
+        trace = []  # cards.layers: per frame its depth, area and cards, then each backdrop relief by frame
+        CD.layers(box, ch.image(p), letters, chars, lambda rgb: DP.frame_infer(mono, rgb), objects=box.has_plate(),
+                  trace=trace)
+        reliefs = {t["frame"]: t for t in trace if "relief" in t}
+        seen = [{**t, "relief": reliefs.get(t["frame"], {}).get("relief"), "eb": reliefs.get(t["frame"], {}).get("eb")}
+                for t in trace if "M" in t]
         img = np.asarray(ch.image(p))
         rows = []
         for k, s in enumerate(seen):

@@ -41,7 +41,7 @@ def b64(im):
 
 def erase(img: Image.Image, mask: Image.Image, dilate: int = DILATE):
     """One API call: (output image, seconds, credits). Raises BudgetExceeded before sending if the cap would break."""
-    with reserve(RESERVE_USD, "FLUX Erase"):
+    with reserve(RESERVE_USD, "FLUX Erase"):  # raises OfflineCall in an offline run
         return _erase(img, mask, dilate)
 
 

@@ -6,10 +6,10 @@ One loop for three tasks: "characters" (one mask per character, crowds merged), 
 captions, sound effects) and "objects" (the picker's objects). Design from the literature review (docs/research,
 2026-10-24) and our own failures:
 - the model acts by mask number (set-of-mark), never by drawing, with the actions its task offers (TASK[task]
-  "actions"): same, split, improve, extend, drop, crowd, missing;
+  "actions"): same, split, improve, extend, drop, group, missing;
 - every change to pixels is made by SAM 3.1 on a zoomed crop (missing, improve, split) and kept only if SAM
   confirms it; boxes from the model are prompts, never output;
-- every destructive action (drop, merge) is checked again on that one mask, rendered alone with a zoomed crop
+- every destructive action (drop, merge, group) is checked again on that one mask, rendered alone with a zoomed crop
   (per-candidate verification beat choosing among all marks by 6-13 points in REF-VC); applied only on agreement;
 - additions (missing) and enlargements (improve) are also checked alone, and only after SAM produced a candidate,
   so a proposal SAM cannot carry out costs no LLM call; an enlargement may not grow into a neighbour;
@@ -28,17 +28,33 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_fill_holes
 
-from bubbles import dialogue_like, letter_shaped
-from characters import clean
-from masks import Found
+from shape import dialogue_like, letter_shaped, letter_stats, tile_area
+from characters import SMALL, clean
+from masks import COLOURS, Found
 from openrouter import BudgetExceeded, Truncated, ask_json, image_part
-from sam import THRESHOLD
 
 REVIEW_MODEL, REVIEW_EFFORT = "anthropic/claude-haiku-5.5", "high"
-SMALL_FIGURE, DENSE = 0.02, 8  # 8+ character masks under 2% of the panel each: judged together as possible background
-COLOURS = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48), (145, 30, 180), (70, 200, 200), (240, 50, 230),
-           (150, 190, 30), (0, 128, 128), (170, 110, 40), (128, 0, 0), (0, 0, 128)]
+DENSE = 8  # this many character masks under characters.SMALL of the panel each: judged together as possible background
 LABEL = {"bubble": "speech bubble", "caption": "caption box", "sfx": "sound effect", "character": "character", "crowd": "crowd"}
+# Characters drawn together who act as one become one mask, kind "crowd" (user, 2026-11-01: characters that talk
+# together have a single mask; P&C 39-p008, three small figures at the bar who cheer and answer as one). Each group is
+# merged only when the single-mask check (GROUP_Q) agrees. It replaced "crowd", one flat list merged into a single
+# mask unchecked, which took only amorphous masses.
+GROUP_ACTION = ('- "group": groups of numbers that are characters who act and speak as one unit; each group becomes one '
+                'mask. Decide in this order. (1) Read the speech balloons: characters who each say their own lines '
+                '(separate balloons, each tail pointing at a different one of them) are never a group, even side by '
+                'side or riding together. (2) Characters who share their lines are a group: one balloon for all of them, '
+                'a chorus, a toast, a cheer, or several balloons pointing at the cluster as a whole. (3) Characters with '
+                'no lines are a group when they do one thing together as one unit: a crowd or audience, a horde, '
+                'patrons clapping or raising their mugs together. Small background figures count, even tiny or partly '
+                'hidden behind each other or behind furniture. Main characters who just stand near each other are not.')
+# the riders of P&C 36-p028 sat together and were merged, though each says a line of their own (user: "the agent
+# should check the dialogs")
+GROUP_Q = ('Read the speech balloons in the panel first. Is the highlighted region a group of characters who act and '
+           'speak as one unit: they share their lines (one balloon for all, a chorus, a cheer) or, without lines, do '
+           'one thing together (a crowd, an audience, patrons clapping)? If the characters in it each say separate '
+           'lines of their own, answer no; if they are unrelated characters who happen to stand near each other, '
+           'answer no. Reply with JSON only: {"yes": true}')
 
 TASK = {
     "characters": {
@@ -59,9 +75,10 @@ TASK = {
                    '- "improve": numbers whose character has a whole body part (head, arm, legs, tail) visible but left '
                    'uncoloured. Not for slightly loose edges.\n'
                    '- "drop": numbers whose mask is not a character or a part of one.\n'
-                   '- "crowd": numbers that are figures of an amorphous mass meant as a crowd (spectators, a horde).\n'
+                   + GROUP_ACTION + '\n'
                    '- "missing": characters with no mask, as boxes [x0, y0, x1, y1] in percent of the image (0-100).',
-        "empty": '{"same": [], "split": [], "improve": [], "drop": [], "crowd": [], "missing": []}',
+        "empty": '{"same": [], "split": [], "improve": [], "drop": [], "group": [], "missing": []}',
+        "group_q": GROUP_Q,
         # "a drawing on a page is not" read as the comic itself: "a drawn man in a suit ... comic illustration" -> no
         # (ToG 223 p48, 1 run in 4; same on p11 additions)
         "drop_q": 'Is the highlighted region a character (a person, creature, monster, animal or robot) in the scene, '
@@ -153,7 +170,7 @@ TASK["objects"] = {
              'fixed to a wall or ceiling? Reply with JSON only: {"yes": true}',
     "prompts": ("furniture", "object", "item"),
 }
-ACTIONS = ("same", "split", "improve", "extend", "drop", "crowd", "missing")
+ACTIONS = ("same", "split", "improve", "extend", "drop", "group", "missing")
 for _t in TASK.values():  # the actions a task offers the reviewer (its reply template): no other is carried out
     _t["allowed"] = tuple(k for k in ACTIONS if f'"{k}"' in _t["empty"])
 PROMPT_KIND = {"speech bubble": "bubble", "caption box": "caption", "letters": "sfx", "word": "sfx",
@@ -227,17 +244,15 @@ def zoom(seg, img: Image.Image, box, prompts) -> list[tuple[np.ndarray, float, s
     per instance."""
     x0, y0, x1, y1 = box
     out = []
-    for prob, sc, prompt in seg.zoom(img, box, prompts):
-        if sc < THRESHOLD:
-            continue
+    for prob, sc, prompt in seg.zoom(img, box, prompts):  # every score at least the processor's sam.THRESHOLD
         mm = prob > 0.5
         if not mm.any() or mm.mean() > 0.8:  # fills the crop: SAM marked the box, not an object
             continue
         full = np.zeros((img.height, img.width), bool)
         full[y0:y1, x0:x1] = binary_fill_holes(mm)
-        if PROMPT_KIND.get(prompt) == "character":
+        if PROMPT_KIND[prompt] == "character":
             full = clean(full)
-        out.append((full, float(sc), PROMPT_KIND.get(prompt, "character")))
+        out.append((full, float(sc), PROMPT_KIND[prompt]))
     return out
 
 
@@ -252,8 +267,9 @@ def _ids(v, n):
 
 
 def _passes_gates(img: Image.Image, cand) -> bool:
-    """An added mask must pass the same rules as the segmentation pass: bubbles and captions hold letters
-    (bubbles.py), sound effects have a lettering shape, a character does not fill its box."""
+    """An added mask must pass the same rules as the segmentation pass: bubbles and captions hold letters, sound
+    effects have a lettering shape (shape.py, its shares of a tile as that pass measures them), a character does not
+    fill its box."""
     m, score, kind = cand
     if kind == "object":  # no shape rule of its own; the single-mask check (add_q, whole_q) judges it
         return int(m.sum()) >= 150
@@ -261,8 +277,8 @@ def _passes_gates(img: Image.Image, cand) -> bool:
         ys, xs = np.nonzero(m)
         return len(ys) >= 200 and m.sum() <= 0.8 * (ys.ptp() + 1) * (xs.ptp() + 1)
     if kind == "sfx":
-        return letter_shaped(m)
-    return dialogue_like(np.asarray(img), m, kind, score)
+        return letter_shaped(m, tile_area(*m.shape))
+    return dialogue_like(np.asarray(img), m, kind, score, tile_area(*m.shape))
 
 
 def _label(e: Found) -> str:
@@ -284,6 +300,27 @@ def _check(judge, question, img, m, tag, log) -> bool:
     return bool(judge.ask([{"type": "text", "text": q}] + single(img, m), tag, log, max_tokens=300).get("yes"))
 
 
+def merge_checked(judge, question, img, els: list[Found], groups: list[list[int]], gone: set[int], tag: str,
+                  log: Log, what: str, kind: str | None = None) -> list[tuple[list[int], Found]]:
+    """Each group of mask numbers (0-based) merged into one mask when the single-mask check on the merged mask
+    agrees: [(the group, its mask)], `gone` updated. kind: the merged mask's (default its first member's); an
+    object's names ride along (Found.name, aka)."""
+    out = []
+    for grp in groups:
+        g = [i for i in grp if i not in gone]
+        if len(g) < 2:
+            continue
+        m = np.logical_or.reduce([els[i].mask for i in g])
+        if _check(judge, question, img, m, f"{tag} {what}", log):
+            aka = els[g[0]].aka + tuple(n for i in g[1:] for n in ((els[i].name,) if els[i].name else ()) + els[i].aka)
+            out.append((g, Found(m, max(els[i].score for i in g), kind or els[g[0]].kind, els[g[0]].name, aka=aka)))
+            gone |= set(g)
+            log.applied.append((what, [i + 1 for i in g]))
+        else:
+            log.rejected.append((what, [i + 1 for i in g]))
+    return out
+
+
 def parse_verdict(v: dict, n: int, size: tuple[int, int], allowed=ACTIONS) -> dict:
     """The reviewer's reply as actions on n masks: only the `allowed` ones (the task's), mask numbers 0-based and in
     range, "missing" boxes in pixels of an image of `size` (each with the reply's own box beside it, for the log,
@@ -293,8 +330,11 @@ def parse_verdict(v: dict, n: int, size: tuple[int, int], allowed=ACTIONS) -> di
     def lst(key):
         x = v.get(key, [])
         return x if isinstance(x, list) else []
-    out = {"same": [_ids(g, n) for g in lst("same")]}
-    for key in ("drop", "crowd", "improve", "split", "extend"):
+    # a list of groups; a flat list of numbers is one group (Haiku answered "group": [1, 2, 3] for P&C 39-p008, and
+    # each number read as a group of its own came out empty)
+    out = {key: ([_ids(lst(key), n)] if lst(key) and all(isinstance(x, (int, float)) for x in lst(key))
+                 else [_ids(g, n) for g in lst(key)]) for key in ("same", "group")}
+    for key in ("drop", "improve", "split", "extend"):
         out[key] = _ids(v.get(key, []), n)
     miss = v.get("missing", [])
     if isinstance(miss, list) and len(miss) == 4 and all(isinstance(x, (int, float)) for x in miss):
@@ -323,7 +363,7 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
     t = TASK[task]
     log = Log()
     if task == "characters":
-        small = [k for k, e in enumerate(els) if e.kind == "character" and e.mask.mean() < SMALL_FIGURE]
+        small = [k for k, e in enumerate(els) if e.kind == "character" and e.mask.mean() < SMALL]
         if len(small) >= DENSE:
             union = np.logical_or.reduce([els[k].mask for k in small])
             if _check(judge, t["background_q"], img, union, f"{tag} background", log):
@@ -352,21 +392,12 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
         changed = False
         new = list(els)
         gone: set[int] = set()
-        # merges: verified on the merged mask alone
-        for grp in act["same"]:
-            g = [i for i in grp if i not in gone]
-            if len(g) < 2:
-                continue
-            m = np.logical_or.reduce([els[i].mask for i in g])
-            ok = _check(judge, t["same_q"], img, m, f"{tag} same", log)
-            if ok:
-                new.append(Found(m, max(els[i].score for i in g), els[g[0]].kind, els[g[0]].name))
-                gone |= set(g)
-                log.applied.append(("same", [i + 1 for i in g]))
-                changes.append(f"merged {', '.join(str(i + 1) for i in g)}")
+        # merges: verified on the merged mask alone (same: one character in pieces; group: characters acting as one)
+        for key, kind, word in (("same", None, "merged"), ("group", "crowd", "grouped")):
+            for g, f in merge_checked(judge, t.get(f"{key}_q"), img, els, act.get(key, []), gone, tag, log, key, kind):
+                new.append(f)
+                changes.append(f"{word} {', '.join(str(i + 1) for i in g)}")
                 changed = True
-            else:
-                log.rejected.append(("same", [i + 1 for i in g]))
         # drops: verified on the mask alone
         for i in act["drop"]:
             if i in gone:
@@ -378,13 +409,6 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
                 gone.add(i)
                 log.applied.append(("drop", i + 1))
                 changes.append(f"dropped {i + 1}")
-        # crowd (characters): label only, no pixels change
-        crowd = [i for i in act["crowd"] if i not in gone]
-        if crowd:
-            m = np.logical_or.reduce([els[i].mask for i in crowd])
-            new.append(Found(m, max(els[i].score for i in crowd), "crowd"))
-            gone |= set(crowd)
-            log.applied.append(("crowd", [i + 1 for i in crowd]))
         # improve: SAM on a zoomed box around the mask; kept if it grows the mask and still holds it
         for i in act["improve"]:
             if i in gone:
@@ -408,7 +432,7 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
                 best = max(cands, key=lambda c: c[1])
                 grown = m | best[0]
                 if _check(judge, t["whole_q"], img, grown, f"{tag} improve", log):
-                    new[i] = Found(grown, els[i].score, els[i].kind, els[i].name)
+                    new[i] = Found(grown, els[i].score, els[i].kind, els[i].name, aka=els[i].aka)
                     log.applied.append(("improve", i + 1))
                     changes.append(f"enlarged {i + 1}")
                     changed = True
@@ -428,8 +452,10 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
                     uniq.append(c)
             if len(uniq) >= 2 and np.logical_or.reduce([u[0] for u in uniq]).__and__(m).sum() >= 0.7 * m.sum():
                 gone.add(i)
-                kind = {"sfx": None, "crowd": "character"}.get(els[i].kind, els[i].kind)  # a split crowd is characters
-                new += [Found(u[0] & region, u[1], kind or u[2], els[i].name) for u in uniq]
+                # a split crowd is characters; a split sound effect takes each part's prompt kind (a part SAM finds as
+                # a speech bubble comes back a bubble); any other kind is kept
+                kind = {"sfx": None, "crowd": "character"}.get(els[i].kind, els[i].kind)
+                new += [Found(u[0] & region, u[1], kind or u[2], els[i].name, aka=els[i].aka) for u in uniq]
                 log.applied.append(("split", i + 1, len(uniq)))
                 changes.append(f"split {i + 1} into {len(uniq)}")
                 changed = True
@@ -441,8 +467,7 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
             if i in gone or els[i].kind != "sfx":
                 continue
             m = els[i].mask
-            ys, xs = np.nonzero(m)
-            H = max(8, int(min(ys.ptp(), xs.ptp()) + 1))
+            H = max(8, int(letter_stats(m)[1]))  # the letter height sfx_refine finds the word's letters by
             near = binary_dilation(m, iterations=min(120, int(1.5 * H)))
             others = [e.mask for k, e in enumerate(els) if k != i]
             taken = binary_dilation(np.logical_or.reduce(others), iterations=3) if others else np.zeros_like(m)
@@ -460,7 +485,7 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
             grown = m | np.logical_or.reduce(pieces) if pieces else m
             # SAM's whole-word mask, letter-shaped and clear of neighbours, needs no LLM check: the check was flaky on
             # exactly this case (refused AKREEE in the loop, accepted it when asked alone); loose pieces still need it
-            if pieces and grown.sum() >= 1.05 * m.sum() and letter_shaped(grown) and \
+            if pieces and grown.sum() >= 1.05 * m.sum() and letter_shaped(grown, tile_area(*grown.shape)) and \
                     (whole or _check(judge, t["extend_q"], img, grown, f"{tag} extend", log)):
                 new[i] = Found(grown, els[i].score, "sfx")
                 log.applied.append(("extend", i + 1))
