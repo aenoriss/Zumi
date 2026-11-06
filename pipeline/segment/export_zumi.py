@@ -44,6 +44,25 @@ READ_MIN_S = 1.5   # and at least this long
 TAIL_S = 1.0       # after the last bubble before the panel may move on
 
 
+PANEL_MIN_S = 3.0  # a panel with nothing to say (no bubbles, or not processed) holds the clock this long
+
+
+def timeline(panels: list[dict]) -> float:
+    """One clock for the episode, precomputed so a reader needs no pacing logic: each panel's startTime and endTime
+    from the episode's start, in index order, its duration what timing() set (durationOverride) or PANEL_MIN_S;
+    each bubble's startTime and endTime from its startOffset and durationHint. Returns the episode's length."""
+    t = 0.0
+    for p in sorted(panels, key=lambda p: p["index"]):
+        d = p.get("durationOverride") or PANEL_MIN_S
+        p["startTime"], p["endTime"] = round(t, 2), round(t + d, 2)
+        for b in p.get("bubbles", []):
+            if "startOffset" in b:
+                b["startTime"] = round(t + b["startOffset"], 2)
+                b["endTime"] = round(b["startTime"] + b.get("durationHint", 0), 2)
+        t += d
+    return round(t, 2)
+
+
 def timing(bubbles: list[dict], seconds: dict[int, float]) -> float:
     """startOffset and durationHint on each bubble entry in reading order, from the clips' lengths (seconds: bubble id
     -> clip seconds) and a reading time for bubbles without one; returns the panel's duration: the time its bubbles
@@ -269,6 +288,7 @@ def main():
     cast = [c for c in cast if c["id"] in speaking or "voice" in c]  # the characters a reader meets: speakers, voices
     if cast:
         man["cast"] = cast
+    man["episode"]["durationHint"] = timeline(man["panels"])
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             if item.filename == "manifest.json" or item.filename in added:

@@ -104,6 +104,8 @@ class Bubble(Model):
     audio: str | None = None
     startOffset: float | None = None
     durationHint: float | None = None
+    startTime: float | None = None  # from the episode's start, precomputed
+    endTime: float | None = None
 
 
 class StripPlacement(Model):
@@ -120,6 +122,8 @@ class Panel(Model):
     depthScale: float | None = None
     strip: StripPlacement | None = None
     durationOverride: float | None = None
+    startTime: float | None = None  # from the episode's start, precomputed
+    endTime: float | None = None
     mood: str | None = None
     layers: list[Layer]
     bubbles: list[Bubble] = Field(default_factory=list)

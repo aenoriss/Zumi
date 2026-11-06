@@ -47,7 +47,7 @@
           "description": "Instrumental tracks available to this episode. The first one starts with panel 0 unless panel 0 names a cue. Panels switch tracks with musicCue.",
           "items": { "$ref": "#/$defs/musicTrack" }
         },
-        "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, sum of panel durations; informational" },
+        "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, the last panel's endTime when the pipeline precomputed the timeline, else the sum of panel durations; informational" },
         "layout": { "$ref": "#/$defs/layout" }
       }
     },
@@ -175,6 +175,8 @@
           }
         },
         "durationOverride": { "type": "number", "minimum": 0, "description": "Seconds; when absent the reader computes voices + 1.5 s per bubble, min 3 s, min 20 s for immersive modes, never below the longest animation" },
+        "startTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when this panel becomes active, precomputed by the pipeline: one clock drives the episode, the panel whose [startTime, endTime) holds the clock is the active one, the ones after it have not played yet" },
+        "endTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the next panel takes over; endTime - startTime is the panel's duration" },
         "mood": { "type": "string", "description": "Free text from the understanding pass; drives ambience and music prompts" },
         "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" } },
         "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" } },
@@ -219,7 +221,9 @@
         "anchorLayer": { "type": "string", "description": "layer id the tail follows in parallax" },
         "audio": { "$ref": "#/$defs/panelAudioPath" },
         "startOffset": { "type": "number", "minimum": 0, "description": "Seconds after the panel appears" },
-        "durationHint": { "type": "number", "minimum": 0 }
+        "durationHint": { "type": "number", "minimum": 0 },
+        "startTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the bubble appears and its clip starts, precomputed by the pipeline (= the panel's startTime + startOffset); a bubble whose startTime is ahead of the clock has not played yet" },
+        "endTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the bubble's clip or reading time ends" }
       }
     },
     "animation": {
