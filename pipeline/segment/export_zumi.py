@@ -9,8 +9,10 @@ Per processed box the panel becomes renderMode "scene3d" with panels/<id>/scene.
              distance, the frames' windows at 1
 Unlit materials (KHR_materials_unlit): the art is already lit. Bubbles go into the manifest as the schema allows
 (id, text, kind from Transcribe, position = normalised centre, speakerId = the cast id of the speaker from the
-speaker records and the identity, audio = the line recorded in that voice as panels/<id>/voice/<bubble>.mp3 with
-its durationHint); their measured style and placement (shape, colours, font size, depth: layers.place_lettering)
+speaker records and the identity, audio = the line recorded in that voice as panels/<id>/voice/<bubble>.mp3), in
+the box's reading order with a startOffset and durationHint each (timing: the clips' lengths, a reading time for
+bubbles without one, GAP_S between them) and the panel's durationOverride set to the time its bubbles take, so the
+reader paces the panel by its voices; their measured style and placement (shape, colours, font size, depth: layers.place_lettering)
 and Transcribe's delivery and pace go into panels/<id>/bubbles.style.json next to the scene, until the schema has
 them. The manifest's cast is the series cast as of this episode (character_identity): id, name, the Inworld voice
 it was designed with; a look sharing another character's voice carries that voice. The lettering is also in the
@@ -36,6 +38,23 @@ from workers import pmap
 
 KIND = {"speech": "speech", "thought": "thought", "caption": "caption", "sfx": "shout", "shout": "shout"}
 VOICE_ENGINE = "inworld-tts-2"
+GAP_S = 0.6        # between one bubble's end and the next's start, as audio/episode.mp3 spaces the lines
+READ_CPS = 15.0    # reading speed for a bubble without a clip (a caption, a sound effect): seconds = chars / READ_CPS
+READ_MIN_S = 1.5   # and at least this long
+TAIL_S = 1.0       # after the last bubble before the panel may move on
+
+
+def timing(bubbles: list[dict], seconds: dict[int, float]) -> float:
+    """startOffset and durationHint on each bubble entry in reading order, from the clips' lengths (seconds: bubble id
+    -> clip seconds) and a reading time for bubbles without one; returns the panel's duration: the time its bubbles
+    take, plus TAIL_S. The reader then moves on when the voices are done instead of its floor of 20 s a scene."""
+    t = 0.0
+    for e in bubbles:
+        n = int(e["id"][1:])
+        d = seconds.get(n) or max(READ_MIN_S, len(e["text"]) / READ_CPS)
+        e["startOffset"], e["durationHint"] = round(t, 2), round(d, 2)
+        t += d + GAP_S
+    return round(t - GAP_S + TAIL_S, 2) if bubbles else 0.0
 
 
 def voices(ep: Episode) -> tuple[dict, list[dict], dict]:
@@ -219,13 +238,14 @@ def main():
         bd = box.bubbles()
         if bd is not None:
             W, H = bd["w"], bd["h"]
-            speaker = {}
+            speaker, order = {}, {}
             for r in box.speakers() or []:
+                order[r["bubble"]] = r["order"]  # the box's reading order (speakers.reading_order)
                 if r.get("speakers"):
                     s = r["speakers"][0]
                     speaker[r["bubble"]] = card_char.get(s if "/" in s else f"{box.pid}/{s}")
-            p["bubbles"] = []
-            for b in bd["bubbles"]:
+            p["bubbles"], seconds = [], {}
+            for b in sorted(bd["bubbles"], key=lambda b: (order.get(b["id"], 10**6), b["bbox"][1])):
                 x0, y0, x1, y1 = b["bbox"]
                 entry = {"id": f"b{b['id']}", "text": b.get("text") or "",
                          "position": {"x": round((x0 + x1) / 2 / W, 4), "y": round((y0 + y1) / 2 / H, 4)}}
@@ -237,10 +257,11 @@ def main():
                 line = lines.get((box.pid, b["id"]))
                 if line and (ep_out / "audio" / line["file"]).exists():
                     entry["audio"] = f"panels/{p['id']}/voice/b{b['id']}.mp3"
-                    entry["durationHint"] = line.get("seconds", 0)
+                    seconds[b["id"]] = float(line.get("seconds") or 0)
                     added[entry["audio"]] = mp3_bytes(ep_out / "audio" / line["file"])
                     voiced += 1
                 p["bubbles"].append(entry)
+            p["durationOverride"] = timing(p["bubbles"], seconds)
             style = {k: v for k, v in bd.items() if k not in ("letters", "transcribed")}  # the pipeline's own
             style["bubbles"] = [{k: v for k, v in b.items() if k != "segmented_as"} for b in bd["bubbles"]]
             added[f"panels/{p['id']}/bubbles.style.json"] = json.dumps(style, indent=1).encode()
