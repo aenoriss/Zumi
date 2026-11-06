@@ -17,14 +17,15 @@ dependencies = [
     "pycocotools",  # imported by sam3's image processor
     "psutil",  # imported by sam3 at package import
     "scipy",  # hole filling in masks
-    "opencv-python==4.11.0.86",  # page, frames, cards, erase, lettering (it came in only through a research group)
-    "requests==2.34.2",  # the FLUX Erase API (flux_erase.py)
-    # Depth Anything 3, imported from pipeline/.vendor (depth.py): what its model loading imports
+    "opencv-python==4.11.0.86",  # page, frames, layers (it came in only through a research group)
+    "requests==2.34.2",  # the FLUX Erase API (layers.py)
+    # Depth Anything 3, imported from pipeline/.vendor (layers.py): what its model loading imports
     "omegaconf",
     "addict",
     "imageio",
     "huggingface_hub",
     "tqdm",
+    "soundfile>=0.14.0",
 ]
 
 [tool.uv]
@@ -39,3 +40,6 @@ sam3 = { git = "https://github.com/facebookresearch/sam3", rev = "7f473cfd983d5e
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[dependency-groups]
+dev = []

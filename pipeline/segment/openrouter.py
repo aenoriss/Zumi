@@ -37,7 +37,10 @@ TOKENS_PER_IMAGE = 2500  # conservative estimate for the pre-call worst case
 # thinking on 17 review calls and wrote no answer, read as "no changes" (P&C 36 p12 kept a whole panel as a caption):
 # high doubled, with BRIEF asked. The ledger to 2026-10-30: Sonnet (low) wrote at most 519 completion tokens, Haiku
 # (high) at most 6826, so low and medium reserve less and the cap admits more calls at once
-REASONING_TOKENS = {"low": 2000, "medium": 4000, "high": 8000}
+REASONING_TOKENS = {"low": 2000, "medium": 4000, "high": 8000, "xhigh": 16000, "max": 32000}
+# for Claude, OpenRouter turns the effort into a thinking budget that is a share of max_tokens (low 0.2, medium 0.5,
+# high 0.8, xhigh and max 0.95), so the answer only has the rest when the model thinks to the budget: xhigh and max
+# are for callers whose answer is far smaller than the budget (the identity reader: 2-8k tokens used of 14k)
 BRIEF = "Be brief and to the point: keep any reasoning short and reply with only what was asked."
 
 
@@ -136,6 +139,48 @@ def chat(model: str, messages: list[dict], max_tokens: int = 2000, tag: str = ""
     if usage["truncated"]:
         print(f"openrouter: {tag or model} spent its whole budget ({max_tokens} tokens): no answer")
     return resp["choices"][0]["message"].get("content") or "", usage
+
+
+SPEECH_RESERVE_USD = 0.05  # per call, the worst case reserved before sending (Gemini 3.8 Flash TTS: 9 USD per M
+                           # audio tokens; a line of dialogue has cost well under a cent)
+
+
+def speech(model: str, text: str, voice: str, instructions: str | None = None, tag: str = "",
+           fmt: str = "pcm") -> tuple[bytes, float]:
+    """One text-to-speech call (/audio/speech): (the audio bytes: PCM 24 kHz 16-bit mono from the Gemini TTS models,
+    mp3 where a model gives it; the cost in USD). voice: a preset the model lists (supported_voices on /models) or a
+    provider's voice id. instructions: the delivery (tone, pacing, emotion), which OpenRouter passes to Gemini as the
+    text's style. The cost is read from the generation record (X-Generation-Id) after the call; when the record is
+    not there yet the reservation goes into the ledger instead."""
+    no_call_offline(tag or model)
+    body = {"model": model, "input": text, "voice": voice, "response_format": fmt}
+    if instructions:
+        body["instructions"] = instructions
+    with reserve(SPEECH_RESERVE_USD, tag or model):
+        req = urllib.request.Request(API + "/audio/speech", data=json.dumps(body).encode(),
+                                     headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                audio, gen = r.read(), r.headers.get("X-Generation-Id")
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"OpenRouter {e.code}: {e.read().decode()[:300]}") from None
+        cost = _generation_cost(gen) if gen else None
+        record("openrouter", SPEECH_RESERVE_USD if cost is None else cost, model=model, tag=tag, generation=gen,
+               **({"cost_unknown": True} if cost is None else {}))
+    return audio, SPEECH_RESERVE_USD if cost is None else cost
+
+
+def _generation_cost(gen_id: str) -> float | None:
+    """The cost OpenRouter recorded for a generation, or None when the record is not readable within a few seconds."""
+    for _ in range(5):
+        try:
+            c = (_request(f"/generation?id={gen_id}").get("data") or {}).get("total_cost")
+            if c is not None:
+                return float(c)
+        except RuntimeError:
+            pass
+        time.sleep(1.5)
+    return None
 
 
 def parse_json(text: str) -> dict:

@@ -23,7 +23,8 @@ from boxstore import Box  # noqa: E402
 from workers import pmap  # noqa: E402
 
 TUNE = {"pepper-carrot-37", "pepper-carrot-39"}
-TEST = {"pepper-carrot-36", "pepper-carrot-38"}
+TEST = {"pepper-carrot-36", "pepper-carrot-38", "true-beauty-4", "true-beauty-5", "true-beauty-7", "unordinary-1",
+        "unordinary-2"}
 
 
 def evaluate(root: Path, split: str = "tune", sheet: Path | None = None) -> dict:

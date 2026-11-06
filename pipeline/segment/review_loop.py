@@ -29,12 +29,11 @@ from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_fill_holes
 
 from shape import dialogue_like, letter_shaped, letter_stats, tile_area
-from characters import SMALL, clean
-from masks import COLOURS, Found
+from masks import COLOURS, SMALL, Found, clean
 from openrouter import BudgetExceeded, Truncated, ask_json, image_part
 
 REVIEW_MODEL, REVIEW_EFFORT = "anthropic/claude-haiku-5.5", "high"
-DENSE = 8  # this many character masks under characters.SMALL of the panel each: judged together as possible background
+DENSE = 8  # this many character masks under masks.SMALL of the panel each: judged together as possible background
 LABEL = {"bubble": "speech bubble", "caption": "caption box", "sfx": "sound effect", "character": "character", "crowd": "crowd"}
 # Characters drawn together who act as one become one mask, kind "crowd" (user, 2026-11-01: characters that talk
 # together have a single mask; P&C 39-p008, three small figures at the bar who cheer and answer as one). Each group is
@@ -137,7 +136,7 @@ TASK = {
     },
 }
 TASK["objects"] = {
-    # the picker (scene_judge.choose_objects) lists them in one call and SAM masks each from its name and point; the
+    # the picker (objects.choose_objects) lists them in one call and SAM masks each from its name and point; the
     # same loop as for characters and lettering then checks the masks (user, 2026-10-26): a mask that took the wrong
     # thing or half of it, two objects in one mask, an object the pick missed (P&C 39 p8: a mug "on" a counter that
     # had no mask)
@@ -186,6 +185,11 @@ class Log:
     rejected: list = field(default_factory=list)
     truncated: list = field(default_factory=list)  # calls that spent the whole budget: no answer, taken as no change
     stopped: list = field(default_factory=list)    # calls the daily cap refused: nothing sent, taken as no change
+
+    def record(self) -> dict:
+        """The log as the run log keeps it (out/run.json, Episode.save_run_log)."""
+        return {"applied": self.applied, "rejected": self.rejected, "cost": self.cost, "truncated": self.truncated,
+                "stopped": self.stopped}
 
 
 @dataclass
@@ -467,7 +471,7 @@ def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: 
             if i in gone or els[i].kind != "sfx":
                 continue
             m = els[i].mask
-            H = max(8, int(letter_stats(m)[1]))  # the letter height sfx_refine finds the word's letters by
+            H = max(8, int(letter_stats(m)[1]))  # the letter height bubbles' refinement finds the word's letters by
             near = binary_dilation(m, iterations=min(120, int(1.5 * H)))
             others = [e.mask for k, e in enumerate(els) if k != i]
             taken = binary_dilation(np.logical_or.reduce(others), iterations=3) if others else np.zeros_like(m)

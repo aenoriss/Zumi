@@ -2,7 +2,7 @@
 FLUX erases together). A call reserves its worst case before it is sent and is refused if today's spend, plus the
 calls in flight, plus its own would pass the cap: the pipeline calls from 8 threads at once, and checking the
 ledgers alone let them all pass on the same reading. Each service keeps its own ledger under .data/spend
-(openrouter.jsonl, bfl.jsonl); today's spend is both, by local date.
+(openrouter.jsonl, bfl.jsonl, gemini.jsonl); today's spend is all of them, by local date.
 
     with spend.reserve(worst_usd, "what"):     # raises BudgetExceeded before anything is sent
         ...call...
@@ -25,7 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEND = ROOT / ".data/spend"
-LEDGERS = {"openrouter": SPEND / "openrouter.jsonl", "bfl": SPEND / "bfl.jsonl"}
+LEDGERS = {"openrouter": SPEND / "openrouter.jsonl", "bfl": SPEND / "bfl.jsonl", "gemini": SPEND / "gemini.jsonl",
+           "inworld": SPEND / "inworld.jsonl"}
 DAILY_CAP_USD = float(os.environ.get("ZUMI_DAILY_USD", 2.0))
 WORKERS = 16  # calls in flight per step: they wait on remote models, not on cores (openrouter backs off on 429s)
 _LOCK = threading.Lock()

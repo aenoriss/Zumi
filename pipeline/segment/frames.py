@@ -1,7 +1,9 @@
 """Drawn frames inside one box: a page comic box (Pepper&Carrot) nearly always holds several, a webtoon box rarely
-(ToG 228 p64). Each frame is its own scene and its own camera, so the layers step fits depth per frame (cards.py).
+(ToG 228 p64). Each frame is its own scene and its own camera, so the layers step fits depth per frame (layers.py).
 
-split(img, gutter, layout(img)) -> Split(frames, flat, page); episode.frames_step saves it per box.
+    answers = ask(ep, imgs)                    the panel boxes (paid, cached; runs in the background while SAM segments)
+    update(ep, imgs, letters, answers)         the frames split and saved per box (Box.save_frames), the step
+    split(img, gutter, layout(img)) -> Split(frames, flat, page)     one box
 
 Panel boxes from Claude Sonnet 5.5 (OpenRouter, under the 2 USD/day cap of openrouter.py; about 0.0043 USD and 3 s a
 box), chosen 2026-10-30: on the 6 hard boxes of the panel comparison (panel_llm.py and panel_score.py, now only in the
@@ -51,8 +53,112 @@ import numpy as np
 from PIL import Image
 
 import openrouter as OR
-import page as PG
-from cards import MIN_FRAME_PX
+from boxstore import Episode
+from masks import MIN_FRAME_PX, union
+from spend import paid_map
+from workers import pmap
+
+
+# =====================================================================================================
+# The page (was page.py): the gutters and margins of a box, white, grey or black. gutter() is the first guess, from
+# colour alone; split adds a flat page colour it learns outside the panel boxes, and its page is the one every later
+# step reads (boxstore.Box.frames().page).
+# =====================================================================================================
+
+PAGE_TOL = 4.0     # CIELAB distance (L 0..100) from the page colour that still counts as page: a flat digital page
+                   # varies by under 0.5 (ToG 223 grey 214 +- 1)
+PAGE_BORDER = 0.6  # share of the box's border pixels the page colour must hold ...
+PAGE_CUT = 0.8     # ... or of each of its top and bottom rows (a box is cut from the strip at page gutters; a bubble
+                   # touching the cut leaves 0.90-0.95 page in those rows, ToG 223 p94, p98)
+
+
+def lab(img: Image.Image) -> np.ndarray:
+    """The box in CIELAB (float32, L 0..100)."""
+    import cv2
+    return cv2.cvtColor(np.asarray(img.convert("RGB")).astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+
+
+def page_colour(img: Image.Image) -> np.ndarray | None:
+    """The page's CIELAB colour when it is not white (light grey ToG 223, black), else None (white or no uniform
+    page). Candidates: the most common colour (2-unit Lab bins) of the whole border, and of the top and bottom rows;
+    a candidate is the page when it holds PAGE_BORDER of the border or PAGE_CUT of each of the two cut rows, within
+    PAGE_TOL. White (min channel >= 245) is left to white_margin."""
+    lb = lab(img)
+    rgb = np.asarray(img.convert("RGB"))
+    border = np.concatenate([lb[0], lb[-1], lb[1:-1, 0], lb[1:-1, -1]])
+    cut = np.concatenate([lb[0], lb[-1]])
+    for src in (border, cut):
+        vals, cnt = np.unique(np.round(src / 2), axis=0, return_counts=True)
+        c = vals[cnt.argmax()] * 2
+        near = np.linalg.norm(src - c, axis=-1) <= PAGE_TOL
+        c = np.median(src[near], axis=0)  # the bin's centre refined to the page's own colour
+        share = lambda px: float((np.linalg.norm(px - c, axis=-1) <= PAGE_TOL).mean())
+        if share(border) >= PAGE_BORDER or (share(lb[0]) >= PAGE_CUT and share(lb[-1]) >= PAGE_CUT):
+            edge = np.concatenate([rgb[0], rgb[-1], rgb[1:-1, 0], rgb[1:-1, -1]])
+            on = np.linalg.norm(border - c, axis=-1) <= PAGE_TOL
+            if np.median(edge[on], axis=0).min() >= 245:
+                return None
+            return c.astype(np.float32)
+    return None
+
+
+def white_margin(img: Image.Image, exclude: np.ndarray | None = None) -> np.ndarray:
+    """White reaching the box's edge (min channel >= 245), grown 4 px, plus a 2 px band along the box's border.
+    `exclude`: pixels the white may not spread through (speech bubbles, which are white and often touch the edge)."""
+    from scipy.ndimage import binary_dilation, label
+    a = np.asarray(img.convert("RGB"))
+    white = (a.min(axis=2) >= 245)
+    if exclude is not None:
+        white &= ~exclude
+    lb, _ = label(white)
+    edge_ids = np.unique(np.concatenate([lb[0], lb[-1], lb[:, 0], lb[:, -1]]))
+    out = binary_dilation(np.isin(lb, edge_ids[edge_ids > 0]), iterations=4)
+    out[:2], out[-2:], out[:, :2], out[:, -2:] = True, True, True, True
+    return out
+
+
+def gutter(img: Image.Image, letters: np.ndarray | None = None, white_share: float = 0.98) -> np.ndarray:
+    """The page around the art: white_margin, plus every row or column that is page apart from lettering. A caption
+    box half in the gutter (ToG 228 p6) is not white, so the white alone kept its gutter half as art, and an erase
+    mask had FLUX Erase paint floor tiles into the page.
+    A page of another colour (page_colour: light grey ToG 223, black) is added the same way: pixels within PAGE_TOL
+    of it connected to the box's edge, grown 4 px like the white; and those pixels count as page in the row and
+    column rule.
+    Speech bubbles are white and often touch the box edge, so the white flood took whole bubbles over the art as page
+    (91% of ToG 228 p10's lettering). The page is found without them, then each bubble pixel takes the class of the
+    nearest pixel outside the bubbles: a bubble on the art is art, a bubble on the page is page, one hanging off the
+    art onto the page is split where it crosses."""
+    from scipy.ndimage import binary_dilation, distance_transform_edt, label
+    bub = binary_dilation(letters, iterations=3) if letters is not None and letters.any() else None
+    g = white_margin(img, exclude=bub)
+    page = None
+    pc = page_colour(img)
+    if pc is not None:
+        page = np.linalg.norm(lab(img) - pc, axis=-1) <= PAGE_TOL
+        lb, _ = label(page & ~bub if bub is not None else page)
+        ids = np.unique(np.concatenate([lb[0], lb[-1], lb[:, 0], lb[:, -1]]))
+        g = g | binary_dilation(np.isin(lb, ids[ids > 0]), iterations=4)
+    if bub is None:
+        return g
+    if not bub.all():
+        _, (iy, ix) = distance_transform_edt(bub, return_indices=True)
+        g = np.where(bub, g[iy, ix], g)
+    else:  # the box is all lettering: page
+        g = np.ones_like(g)
+    white = np.asarray(img.convert("RGB")).min(axis=2) >= 245
+    if page is not None:
+        white = white | page
+    # lettering grown 3 px: the box's outline sits just outside its mask (gutter rows read 0.975 white without it, 1.0
+    # with it)
+    art = ~binary_dilation(letters, iterations=3)
+    rows = ((white & art).sum(1) >= white_share * art.sum(1)) & (art.sum(1) > 0)
+    cols = ((white & art).sum(0) >= white_share * art.sum(0)) & (art.sum(0) > 0)
+    return g | rows[:, None] | cols[None, :]
+
+
+# =====================================================================================================
+# The panel model
+# =====================================================================================================
 
 MODEL = "anthropic/claude-sonnet-5.5"  # fallback: "google/gemini-3.1-pro-preview"
 REASONING = "low"
@@ -66,7 +172,7 @@ SNAP = 0.03        # share of the box's width (x edges) or height (y edges) an e
 FLAT_MIN = 2000    # px outside every panel needed to learn a flat page colour from them
 FLAT_SHARE = 0.8   # share of those px within FLAT_TOL of their commonest colour for it to be the page: 0.92-1.00 on
                    # the 17 P&C 36/38 boxes whose dark grey page page.gutter missed, 0.08-0.58 where it is art
-FLAT_TOL = 2 * PG.PAGE_TOL  # CIELAB
+FLAT_TOL = 2 * PAGE_TOL  # CIELAB
 POLY_MIN = 0.5     # a slanted panel's corner polygon must fill this share of its box to replace it
 PIECE_GAP = 6      # px: art outside the panels closer than twice this is one piece (letters into words and blocks)
 TOUCH_PX = 3       # px: a piece this close to a frame touches it and joins it; farther, it is loose (a flat frame)
@@ -369,7 +475,7 @@ def split_box(job: tuple) -> Split:
     """split for one box from (img, its lettering masks' union, the model's layout or None), the gutter found from
     the lettering: the frame step's per-box work, one argument so workers.pmap can run boxes in parallel."""
     img, letters, lay = job
-    return split(img, PG.gutter(img, letters if letters.any() else None), lay, letters)
+    return split(img, gutter(img, letters if letters.any() else None), lay, letters)
 
 
 def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.ndarray | None = None) -> Split:
@@ -390,24 +496,24 @@ def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.
     rect = np.zeros((h, w), bool)
     for x0, y0, x1, y1 in panels:
         rect[y0:y1, x0:x1] = True
-    # what looks like page: white, the page colour page.py finds, and a flat colour holding FLAT_SHARE of the pixels
-    # outside every panel (the dark grey page of P&C 36/38, missed by page.gutter: its gutters and margins sat inside
-    # the frames)
-    lab = PG.lab(img)
+    # what looks like page: white, the page colour page_colour finds, and a flat colour holding FLAT_SHARE of the
+    # pixels outside every panel (the dark grey page of P&C 36/38, missed by gutter: its gutters and margins sat
+    # inside the frames)
+    labc = lab(img)
     looks = rgb.min(axis=2) >= 245
-    pc = PG.page_colour(img)
+    pc = page_colour(img)
     if pc is not None:
-        looks |= np.linalg.norm(lab - pc, axis=-1) <= PG.PAGE_TOL
+        looks |= np.linalg.norm(labc - pc, axis=-1) <= PAGE_TOL
     outside = ~rect & ~page
     flatc = np.zeros((h, w), bool)
     if lay is not None and lay.panels and outside.sum() >= FLAT_MIN:
-        vals, cnt = np.unique(np.round(lab[outside] / 2), axis=0, return_counts=True)
-        near = np.linalg.norm(lab - vals[cnt.argmax()] * 2, axis=-1) <= FLAT_TOL
+        vals, cnt = np.unique(np.round(labc[outside] / 2), axis=0, return_counts=True)
+        near = np.linalg.norm(labc - vals[cnt.argmax()] * 2, axis=-1) <= FLAT_TOL
         if near[outside].mean() >= FLAT_SHARE:
             flatc = near
             page |= near & ~rect  # only outside the panels: inside, the same colour may be art
     # gutter-like, for fitting the boxes: looks like page and is page (or lies outside every panel), or is the flat
-    # page colour (a loose box's edge in a grey gutter that page.gutter missed)
+    # page colour (a loose box's edge in a grey gutter that gutter() missed)
     G = (looks & (page | ~rect)) | flatc
     panels = [_fit(b, G, w, h) for b in panels]
     masks, slanted = [], []
@@ -475,9 +581,37 @@ def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.
     return Split([m for m, _ in out], [f for _, f in out], page)
 
 
+def ask(ep: Episode, imgs: dict[int, Image.Image]) -> dict[int, Layout | None]:
+    """The panel boxes per box (layout: Claude Sonnet 5.5, boxes asked at once, answers cached). They need only the
+    images, so episode.py asks for them in the background while SAM segments. A box with no answer (the daily cap,
+    two unreadable replies) gets None: one scene for now, asked again next run."""
+    def one(i):
+        try:
+            return layout(imgs[i], f"panels:{ep.box(i).pid}")
+        except PanelError as e:
+            print(f"p{i}: no panel boxes ({e}); one scene for now")
+            return None
+
+    asked, stopped = paid_map(one, list(imgs))
+    return asked | {i: None for i in stopped}
+
+
+def update(ep: Episode, imgs: dict[int, Image.Image], letters: dict[int, list], answers: dict) -> None:
+    """The step: each box's frames (split_box on ask's answers, boxes across processes) saved with the page they
+    leave out (Box.save_frames), which every later step uses as the page. The lettering masks feed the gutter (a
+    bubble touching the box edge is not page). A box with no answer is saved as unanswered, so the next run asks
+    again."""
+    jobs = [(img, union(letters[i], (img.height, img.width)), answers[i]) for i, img in imgs.items()]
+    counts = []
+    for i, s in zip(imgs, pmap(split_box, jobs)):
+        ep.box(i).save_frames(s.frames, s.flat, s.page, answers[i] is not None)
+        counts.append(len(s.frames))
+    print(f"frames per box: {counts}")
+
+
 def main() -> None:
-    """Frames per box per episode, from the gutter alone: without the lettering masks the pipeline gives
-    frames_step, a bubble touching the box edge can read as page, so counts may differ from the pipeline's."""
+    """Frames per box per episode, from the gutter alone: without the lettering masks the pipeline gives update, a
+    bubble touching the box edge can read as page, so counts may differ from the pipeline's."""
     import sys
     from pathlib import Path
     from chapter import Chapter
@@ -491,7 +625,7 @@ def main() -> None:
             except (OR.BudgetExceeded, PanelError) as e:
                 print(f"p{i}: no answer ({e})")
                 lay = None
-            s = split(img, PG.gutter(img), lay)
+            s = split(img, gutter(img), lay)
             counts.append(len(s.frames))
             flats += [i] if any(s.flat) else []
         hist = {k: counts.count(k) for k in sorted(set(counts))}

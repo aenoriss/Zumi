@@ -1,18 +1,20 @@
 """Item 8: an episode processed by episode.py written back into a .zumi the readers open.
 
 Per processed box the panel becomes renderMode "scene3d" with panels/<id>/scene.glb:
-  layers     one textured surface per flat layer (cards.py), far to near: each frame's window, the backdrop of each
+  layers     one textured surface per flat layer (layers.py), far to near: each frame's window, the backdrop of each
              frame, then a card per character and erased object, each RGBA (alpha from its mask) and blended; a quad,
              or a grid bulging by its relief map
   camera     the panel's own camera: a perspective camera at the origin looking down -Z (glTF convention), vertical
              field of view from the 55 deg assumed on the long side (view.py); units are shares of the reading
              distance, the frames' windows at 1
 Unlit materials (KHR_materials_unlit): the art is already lit. Bubbles go into the manifest as the schema allows
-(id, text, kind from Transcribe, position = normalised centre; who speaks is not exported yet); their measured
-style and placement (shape, colours, font size, depth:
-lettering_layer.py) go into panels/<id>/bubbles.style.json next to the scene, until the schema has them. The
-lettering is also in the scene, as cards of the original bubbles.
-The original flat layer stays as the panel's fallback.
+(id, text, kind from Transcribe, position = normalised centre, speakerId = the cast id of the speaker from the
+speaker records and the identity, audio = the line recorded in that voice as panels/<id>/voice/<bubble>.mp3 with
+its durationHint); their measured style and placement (shape, colours, font size, depth: layers.place_lettering)
+and Transcribe's delivery and pace go into panels/<id>/bubbles.style.json next to the scene, until the schema has
+them. The manifest's cast is the series cast as of this episode (character_identity): id, name, the Inworld voice
+it was designed with; a look sharing another character's voice carries that voice. The lettering is also in the
+scene, as cards of the original bubbles. The original flat layer stays as the panel's fallback.
 
     python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>
 """
@@ -28,11 +30,52 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from boxstore import Box, pid_of
+from boxstore import Box, Episode, pid_of
 from view import focal
 from workers import pmap
 
 KIND = {"speech": "speech", "thought": "thought", "caption": "caption", "sfx": "shout", "shout": "shout"}
+VOICE_ENGINE = "inworld-tts-2"
+
+
+def voices(ep: Episode) -> tuple[dict, list[dict], dict]:
+    """What the voice steps saved for the episode: ({card id: cast id}, the manifest's cast entries for the
+    characters of this episode, {(pid, bubble): line record}). Empty when identity or lines were not made."""
+    ident_f = ep.out / "identity" / "identity.json"
+    if not ident_f.exists():
+        return {}, [], {}
+    ident = json.loads(ident_f.read_text(encoding="utf-8"))
+    cast_f = ep.run / "cast" / ident["series"] / "cast.json"
+    chars = json.loads(cast_f.read_text(encoding="utf-8"))["characters"] if cast_f.exists() else []
+    by_id = {c["id"]: c for c in chars}
+
+    def voice_of(cid: str, hops: int = 0) -> dict:
+        v = (by_id.get(cid) or {}).get("voice") or {}
+        if v.get("same_voice_as") and hops < 4:
+            return voice_of(v["same_voice_as"], hops + 1)
+        return v
+
+    cast = []
+    for cid in sorted(set(ident["cards"].values()), key=lambda k: int(k[1:])):
+        c = by_id.get(cid)
+        if not c:
+            continue
+        entry = {"id": cid, "name": c["name"]}
+        v = voice_of(cid)
+        if v.get("id"):
+            entry["voice"] = {"engine": VOICE_ENGINE, "voiceId": v["id"], "description": v.get("description") or ""}
+        cast.append(entry)
+    lines_f = ep.out / "audio" / "lines.json"
+    lines = {(l["pid"], l["bubble"]): l for l in json.loads(lines_f.read_text(encoding="utf-8"))} if lines_f.exists() else {}
+    return ident["cards"], cast, lines
+
+
+def mp3_bytes(wav: Path) -> bytes:
+    import soundfile as sf
+    data, rate = sf.read(wav)
+    buf = io.BytesIO()
+    sf.write(buf, data, rate, format="MP3")
+    return buf.getvalue()
 
 
 def write_glb(path: Path, meshes: list[dict], yfov: float, aspect: float) -> None:
@@ -165,6 +208,8 @@ def main():
     done = 0
     jobs = [(Box(ep_out, pid_of(stem, i)), tmp / f"{p['id']}.glb") for i, p in enumerate(man["panels"])]
     built = pmap(_build, jobs)  # one GLB per box, boxes across processes
+    card_char, cast, lines = voices(Episode(ep_out, stem))
+    voiced, speaking = 0, set()
     for (box, glb), p, ok in zip(jobs, man["panels"], built):
         if not ok:
             continue
@@ -174,6 +219,11 @@ def main():
         bd = box.bubbles()
         if bd is not None:
             W, H = bd["w"], bd["h"]
+            speaker = {}
+            for r in box.speakers() or []:
+                if r.get("speakers"):
+                    s = r["speakers"][0]
+                    speaker[r["bubble"]] = card_char.get(s if "/" in s else f"{box.pid}/{s}")
             p["bubbles"] = []
             for b in bd["bubbles"]:
                 x0, y0, x1, y1 = b["bbox"]
@@ -181,11 +231,23 @@ def main():
                          "position": {"x": round((x0 + x1) / 2 / W, 4), "y": round((y0 + y1) / 2 / H, 4)}}
                 if KIND.get(b.get("kind") or ""):
                     entry["kind"] = KIND[b["kind"]]
+                if speaker.get(b["id"]):
+                    entry["speakerId"] = speaker[b["id"]]
+                    speaking.add(speaker[b["id"]])
+                line = lines.get((box.pid, b["id"]))
+                if line and (ep_out / "audio" / line["file"]).exists():
+                    entry["audio"] = f"panels/{p['id']}/voice/b{b['id']}.mp3"
+                    entry["durationHint"] = line.get("seconds", 0)
+                    added[entry["audio"]] = mp3_bytes(ep_out / "audio" / line["file"])
+                    voiced += 1
                 p["bubbles"].append(entry)
             style = {k: v for k, v in bd.items() if k not in ("letters", "transcribed")}  # the pipeline's own
             style["bubbles"] = [{k: v for k, v in b.items() if k != "segmented_as"} for b in bd["bubbles"]]
             added[f"panels/{p['id']}/bubbles.style.json"] = json.dumps(style, indent=1).encode()
         done += 1
+    cast = [c for c in cast if c["id"] in speaking or "voice" in c]  # the characters a reader meets: speakers, voices
+    if cast:
+        man["cast"] = cast
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             if item.filename == "manifest.json" or item.filename in added:
@@ -194,7 +256,8 @@ def main():
         zout.writestr("manifest.json", json.dumps(man, indent=2))
         for name, data in added.items():
             zout.writestr(name, data, compress_type=zipfile.ZIP_STORED if name.endswith(".glb") else zipfile.ZIP_DEFLATED)
-    print(f"{done} panels as scene3d -> {dst} ({dst.stat().st_size / 1e6:.1f} MB)")
+    print(f"{done} panels as scene3d, {len(cast)} cast characters, {voiced} voiced bubbles -> {dst} "
+          f"({dst.stat().st_size / 1e6:.1f} MB)")
 
 
 if __name__ == "__main__":

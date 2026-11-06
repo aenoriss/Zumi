@@ -1,5 +1,5 @@
 """The episode pipeline: box breakdown, segmentation (each task with its review), the erase, the flat layers,
-Transcribe, then the speakers. This script runs steps 2-6 on a chapter step 1 has cut; each step is a function of its
+Transcribe, the speakers, then character identity and voices. This script runs steps 2-8 on a chapter step 1 has cut; each step is a function of its
 own inputs, steps hand data to each other through what they save (boxstore.Box), and a step skips the boxes whose
 output is current (frames from the current lettering, saved objects, a transcript of the same masks). The GPU steps
 (SAM, DA3) run in order; the network steps run beside them in background threads, each started once its inputs exist
@@ -8,60 +8,84 @@ output is current (frames from the current lettering, saved objects, a transcrip
 
     uv run python episode.py <episode.zumi> <out dir> [--panels 10-15 | --panels 3,7,9] [--no-review]
                              [--segment-only] [--no-erase] [--no-transcribe] [--from-masks]
+                             [--no-identity] [--no-voices] [--series NAME]
 
 1. Box breakdown. The chapter is cut into boxes by intake (pipeline/zumi/intake, `zumi intake`: the strip stitched,
    gutters scanned, one box per panel, packed as a .zumi). Within each box, its frames and the page around them
-   (frames_step: Claude Sonnet 5.5 panel boxes, about 0.0043 USD a box, cached; frames.split); depth is only ever
+   (frames.ask: Claude Sonnet 5.5 panel boxes, about 0.0043 USD a box, cached; frames.update); depth is only ever
    estimated per frame. The panel boxes are asked for at the start; the split waits for 2a, since the page needs
    the lettering masks.
 2. Segmentation, one SAM 3.1 model for the run (sam.Segmenter). Each task is found, then reviewed by the reasoning
    layer (review_loop.py, Claude Haiku 5.5, high reasoning: merge, split, improve, drop, missing, each change carried
    out by SAM on a zoomed crop and checked alone; boxes in parallel threads). On 221 held-out panels the review cut
    major errors by 56%, fixing 6-16 for each one it introduced (docs/research/reviewer-heldout-test-2026-10.md).
-   a. lettering: bubbles.py, sound effects tightened by sfx_refine.py; reviewed.
+   a. lettering: bubbles.py (sound effects tightened to their letters inside); reviewed.
    b. characters: characters.py; reviewed.
-   c. objects (objects_step): picked by scene_judge.choose_objects (Haiku, names, points and relations), masked by
-      SAM (objects.py); reviewed. Only with the erase: an object is cut out of the backdrop.
-3. Erase (band_erase.py): what the art hides behind characters, objects and lettering. The card interiors are
+   c. objects (objects.find): picked by a Haiku call (names, points and relations), masked by SAM, reviewed. Only
+      with the erase: an object is cut out of the backdrop.
+3. Erase (layers.py): what the art hides behind characters, objects and lettering. The card interiors are
    prefilled with the frame's plain background colour, a band as wide as a head move uncovers is masked, and ONE
    FLUX Erase call per box paints it (BFL API, 0.034 USD a call, 2 USD/day cap); a result that is the model's
    placeholder is retried frame by frame. Its masks need the cards and their depth: it reads them from the plan of
-   step 4 (layers_step).
-4. Flat layers (cards.plan, then cards.render on the plates): per frame the backdrop and one card per character
+   step 4. Steps 3 and 4 are one call, layers.build.
+4. Flat layers (layers.py: plan, then render on the plates): per frame the backdrop and one card per character
    and object, ordered by DA3MONO run on each frame alone, fixed steps between them; the lettering in front as cards
-   of the original bubbles, placed by lettering_layer.py.
-5. Transcribe (transcribe.py, Claude Haiku 5.5), optional: each bubble's text and kind, boxes in parallel, saved to
-   transcripts.json stamped with the masks it read (Box.bubbles joins it into the bubbles when they match; a box
-   segmented again is read again). It moves nothing in the 3D and says nothing about speakers.
-6. Speakers (speakers.assign_box): who speaks each bubble, by rules on the layers, the frames and Transcribe's kinds.
+   of the original bubbles, placed just in front of what is behind each.
+5. Transcribe (transcribe.update, Claude Haiku 5.5), optional: each bubble's text and kind, boxes in parallel, saved
+   to transcripts.json stamped with the masks it read (Box.transcript_current; Box.bubbles joins it into the bubbles
+   when they match; a box segmented again is read again). An element whose kind Haiku decided in a situation where
+   typing goes wrong (balloon-less words by a person, a split word, a first-person box, an unclear sound maker) gets
+   a doubt, and its box is read once more by Claude Sonnet 5.5, whose kind wins there (at most transcribe.SECOND_USD
+   an episode). It moves nothing in the 3D and says nothing about speakers.
+6. Speakers (speakers.assign_box): who speaks each bubble, by rules on the layers, the frames and Transcribe's kinds,
+   run on every box each time; a bubble the identity reader corrected on the same layers keeps that correction.
+7. Identity (character_identity.identity_step): which character cards are one character across the episode's boxes
+   and the series' episodes: appearance groups (three frozen encoders, witness link), then one Claude Sonnet 5.5
+   call that reads the story and edits them (pass 1, the series' first episode) or assigns them to the series cast
+   (pass 2, later episodes). The same call reviews the speaker links: every link made without a clear tail (the
+   only or the nearest figure, a shared or a tied tail, several cards) is marked `check` and decided by the tail
+   and the turns of the conversation; a speaker may be any card of the episode or off-panel; the corrections go
+   into the boxes' speaker records. identity/identity.json and the series cast (<run>/cast/<series>/); a rerun
+   keeps the voices of the characters it founds again.
+8. Voices (character_identity.voices_step): a voice description for every character with at least 3 lines and no
+   voice yet (one Sonnet call), each designed once on Inworld TTS-2 and published (a voice id and sample in the
+   cast, inworld.design_voice), then every balloon with a speaker recorded in its character's voice, the delivery
+   note from the balloon's kind and Transcribe's reading of the drawing, with the scene's previous balloons as
+   context (<episode>/audio/<pid>.b<bubble>.wav, audio/lines.json; only changed lines again; audio/episode.mp3
+   joins them for listening). Inworld's free plan has no daily request limit (Gemini's 100 a day was why it went,
+   2026-11-06; Inworld's CREATIVE delivery was also judged more expressive).
 
 Writes what boxstore.py lists (masks, frames and page, objects, layers, plates, transcripts.json, speakers), out/run.json (each
 review's fixes and cost, each step's time), out/step1-strip.png and out/sheets/<episode>-pNNN.png (panel |
-lettering | characters | Transcribe).
+lettering | characters | Transcribe), identity/ and audio/ (steps 7-8).
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import numpy as np
+# before any step imports huggingface_hub, which fixes its cache dir on import: the models live on D: (C: is full;
+# the identity step's own default came too late under this script, 2026-11-06, and a download to C: died)
+os.environ.setdefault("HF_HOME", "D:/hf-cache")
+
 from PIL import Image, ImageDraw
 
 import bubbles as B
 import characters as CH
+import frames as FR
+import objects as OB
 import transcribe as T
 from boxstore import Episode
 from chapter import Chapter
-from masks import Found, stamp, top_order, union
-from openrouter import Truncated
+from masks import Found, top_order
 from spend import paid_map, spent_today
 from workers import pmap
 from review_loop import review
 from sam import Segmenter
-from sfx_refine import refine_panel
 
 Imgs = dict[int, Image.Image]  # box index -> box image
 Masks = dict[int, list[Found]]  # box index -> masks
@@ -115,24 +139,18 @@ def reviewed(ep: Episode, seg: Segmenter, imgs: Imgs, els: Masks, task: str, log
     calls the cap refuses and keeps the masks); its fixes and cost go into log under "p<i> <task>"."""
     done, _ = paid_map(lambda i: review(seg, imgs[i], els[i], task, f"{ep.stem} p{i} {task}"), list(els))
     for i, (_, lg) in done.items():
-        log[f"p{i} {task}"] = _review_record(lg)
+        log[f"p{i} {task}"] = lg.record()
     return {i: done[i][0] if i in done else els[i] for i in els}
 
 
-def _review_record(lg) -> dict:
-    """A review's log (review_loop.Log) as the run log keeps it."""
-    return {"applied": lg.applied, "rejected": lg.rejected, "cost": lg.cost, "truncated": lg.truncated,
-            "stopped": lg.stopped}
-
-
 def lettering_step(ep: Episode, seg: Segmenter, imgs: Imgs, chapters: Path, review_on: bool, log: dict) -> Masks:
-    """2a: bubbles, captions and sound effects (bubbles.py, the exemplar bank's crops from the .zumi files in
-    `chapters`), sound effects tightened (sfx_refine.py), then reviewed."""
+    """2a: bubbles, captions and sound effects (bubbles.segment, the exemplar bank's crops from the .zumi files in
+    `chapters`; the sound effects tightened inside), then reviewed."""
     bank = B.Bank(B.BANK, chapters)
     letters = {}
     for i, img in imgs.items():
         statuses = []
-        letters[i] = refine_panel(seg, img, B.segment(seg, img, bank, ep.stem, i), statuses)
+        letters[i] = B.segment(seg, img, bank, ep.stem, i, statuses)
         if statuses:  # the run log: what the sound-effect refinement did ("dropped-partial", "word-captured", ...)
             log[f"p{i} sfx"] = {s: statuses.count(s) for s in sorted(set(statuses))}
     return reviewed(ep, seg, imgs, letters, "lettering", log) if review_on else letters
@@ -147,116 +165,13 @@ def characters_step(ep: Episode, seg: Segmenter, imgs: Imgs, review_on: bool, lo
     return dict(zip(chars, pmap(CH.exclusive, list(chars.values()))))  # boxes across processes
 
 
-def frame_layouts(ep: Episode, imgs: Imgs) -> dict:
-    """Step 1's panel boxes per box (frames.layout: Claude Sonnet 5.5, boxes asked at once, answers cached). They
-    need only the images, so main asks for them while SAM segments. A box with no answer (the daily cap, two
-    unreadable replies) gets None: one scene for now."""
-    import frames as FR
-
-    def ask(i):
-        try:
-            return FR.layout(imgs[i], f"panels:{ep.box(i).pid}")
-        except FR.PanelError as e:
-            print(f"p{i}: no panel boxes ({e}); one scene for now")
-            return None
-
-    asked, stopped = paid_map(ask, list(imgs))
-    return asked | {i: None for i in stopped}  # not asked (the cap): one scene for now, asked again next run
-
-
-def frames_step(ep: Episode, imgs: Imgs, letters: Masks, asked: dict) -> None:
-    """Step 1's frames within each box (frames.split on frame_layouts' answers), saved with the page they leave out
-    (Box.save_frames), which every later step uses as the page. The lettering feeds the gutter (a bubble touching the
-    box edge is not page). A box with no answer is saved as unanswered so the next run asks again."""
-    import frames as FR
-    jobs = [(img, union(letters[i], (img.height, img.width)), asked[i]) for i, img in imgs.items()]
-    counts = []
-    for i, s in zip(imgs, pmap(FR.split_box, jobs)):  # boxes across processes
-        ep.box(i).save_frames(s.frames, s.flat, s.page, asked[i] is not None)
-        counts.append(len(s.frames))
-    print(f"frames per box: {counts}")
-
-
-def objects_step(ep: Episode, seg: Segmenter | None, imgs: Imgs, chars: Masks, review_on: bool, log: dict) -> None:
-    """2c, every object in front of the backdrop per box (scene_judge, Haiku 5.5) masked by SAM 3.1 (objects.py),
-    then reviewed like characters and lettering (review_loop, task "objects"), saved (Box.save_objects) and reused on
-    reruns. A box whose pick fails (the daily cap, a reply cut off) is not saved, so the next run asks again. The
-    first version listed big furniture only (it chose what to erase): the vase on ToG 228 p6's side table stayed
-    painted on the backdrop."""
-    import objects as OB
-    from scene_judge import choose_objects
-
-    def pick(i):
-        img = imgs[i]
-        try:
-            return choose_objects(img, union(chars[i], (img.height, img.width)), tag=f"{ep.stem} p{i} objects")
-        except Truncated as e:  # no answer is not "no objects": nothing saved, so the next run asks again
-            print(f"p{i}: objects not chosen ({e}); not saved")
-            return None
-
-    picked, _ = paid_map(pick, [i for i in imgs if not ep.box(i).has_objects()])  # the cap: the rest next run
-    todo = {}
-    for i, objs in picked.items():
-        if objs is None:
-            continue
-        if objs:
-            seg = seg or Segmenter()
-        todo[i] = OB.masks_for_objects(seg, imgs[i], objs) if objs else []
-
-    def check(i):
-        per = todo[i]
-        if not per or not review_on:
-            return per, None
-        new, lg = review(seg, imgs[i], [Found(o["mask"], o["score"], "object", o["name"]) for o in per], "objects",
-                         f"{ep.stem} p{i} objects")
-        return OB.reviewed(new, per), lg
-
-    done, _ = paid_map(check, list(todo))
-    for i, (per, lg) in sorted(done.items()):
-        ep.box(i).save_objects(per)
-        if lg is not None:
-            log[f"p{i} objects"] = _review_record(lg)
-        fixes = f", review: {lg.applied}" if lg is not None and lg.applied else ""
-        print(f"p{i}: objects {[o['name'] + (' @ ' + o['on'] if o.get('on') else '') + (' [held]' if o.get('held') else '') + (' [front]' if o.get('front') else '') for o in per] or 'none'}{fixes}")
-
-
 def layers_step(ep: Episode, imgs: Imgs, letters: Masks, chars: Masks, erase: bool = True) -> None:
-    """Steps 3-4: every box's layers planned (cards.plan: the cards, their depths and the bubbles' placement, which
-    the plate does not change), the band erase (band_erase.py) painting what is behind each box's cards from its plan,
-    ONE FLUX Erase call per box, boxes in parallel (a box whose result is the model's placeholder is retried frame by
-    frame; paid results cached by mask; the daily cap stops it cleanly), then the layers drawn on the plates
-    (cards.render). erase: False pays for no erase: the layers are drawn on the art (or on plates an earlier run paid
-    for), the objects stay painted on it. DA3MONO on each frame alone orders the cards and gives each frame's backdrop
-    distance (user, 2026-10-26: DA3METRIC per frame tied characters DA3MONO told apart and lost the figure on
-    close-ups, P&C 39 p24)."""
-    import band_erase as BE
-    import cards as CD
-    import depth as DP
-    import torch
-    mono = DP.load()
-    depth_fn = lambda rgb: DP.frame_infer(mono, rgb)  # noqa: E731
-    plans = {i: CD.plan(ep.box(i), img, letters[i], chars[i], depth_fn, objects=erase) for i, img in imgs.items()}
-    if erase:
-        BE.erase_boxes([(ep.box(i), np.asarray(imgs[i]), p) for i, p in plans.items()],
-                       log=lambda s: print("  " + s.replace("\n", "\n  ")))
-        torch.cuda.empty_cache()
-    for i, p in plans.items():
-        print(f"  {ep.box(i).pid} layers: {CD.render(ep.box(i), p, imgs[i], depth_fn)}")
-
-
-def transcribe_step(ep: Episode, imgs: Imgs, letters: Masks) -> dict:
-    """Step 5, Transcribe (transcribe.read_boxes, boxes in parallel) for every box whose transcript was not made from
-    its current lettering (stamps differ), saved stamped (transcripts.json); Box.bubbles joins it in when read. A box
-    the daily cap refuses is skipped; the others are kept. Returns the report picture per box read."""
-    jobs = {}
-    for i, img in imgs.items():
-        st = stamp(letters[i])
-        if letters[i] and ep.box(i).transcript().get("letters") != st:
-            jobs[i] = (img, [f.mask for f in letters[i]], [f.kind for f in letters[i]], f"{ep.stem} p{i}")
-    print(f"  {len(jobs)} of {len(imgs)} boxes to read ({len(imgs) - len(jobs)} current or without lettering)")
-    results, pictures = T.read_boxes(jobs)
-    ep.save_transcripts({i: {**r, "letters": stamp(letters[i])} for i, r in results.items()})
-    return pictures
+    """Steps 3-4 (layers.build): every box planned, the erase on all of them (paid, boxes in parallel; the daily cap
+    stops it cleanly), the layers drawn on the plates. erase: False pays for no erase: the layers are drawn on the
+    art (or on plates an earlier run paid for), the objects stay painted on it."""
+    import layers as LY
+    LY.build([(ep.box(i), img, letters[i], chars[i]) for i, img in imgs.items()], erase,
+             log=lambda s: print("  " + s.replace("\n", "\n  ")))
 
 
 def speakers_step(ep: Episode, picks: list[int]) -> None:
@@ -285,6 +200,10 @@ def main() -> None:
     ap.add_argument("--from-masks", action="store_true",
                     help="reuse the saved lettering and character masks (no SAM for them); every later step still "
                          "runs, each skipping what is current (frames, objects, transcripts of the same masks)")
+    ap.add_argument("--no-identity", action="store_true", help="skip steps 7-8 (identity and voices)")
+    ap.add_argument("--no-voices", action="store_true", help="skip step 8 (voice design and the recorded lines)")
+    ap.add_argument("--series", default="",
+                    help="the series whose cast identity uses (default: the episode name without its number)")
     a = ap.parse_args()
     ch = Chapter(a.zumi)
     ep = Episode(a.out, ch.stem)
@@ -335,7 +254,7 @@ def main() -> None:
     # the frames are made again when the lettering is new or they are not current; their panel boxes need only the
     # images, so they are asked for now, while SAM segments
     stale = {i: imgs[i] for i in imgs if not a.from_masks or not ((f := ep.box(i).frames()) and f.current)}
-    layouts = background("1 frame layouts", frame_layouts, ep, stale) if stale else None
+    layouts = background("1 frame layouts", FR.ask, ep, stale) if stale else None
     if not a.from_masks:
         seg = Segmenter()
         letters = timed("2a lettering", lettering_step, ep, seg, imgs, a.zumi.parent, not a.no_review, log)
@@ -343,16 +262,16 @@ def main() -> None:
             letters[i] = top_order(letters[i])
             ep.box(i).save_letters(letters[i])
     # Transcribe needs only the lettering: it reads while characters, objects, the erase and the layers run
-    transcript = None if a.no_transcribe else background("5 transcribe", transcribe_step, ep, imgs, letters)
+    transcript = None if a.no_transcribe else background("5 transcribe", T.update, ep, imgs, letters)
     if not a.from_masks:
         chars = timed("2b characters", characters_step, ep, seg, imgs, not a.no_review, log)
         for i in imgs:
             chars[i] = top_order(chars[i])
             ep.box(i).save_characters(chars[i])
     if stale:
-        timed("1 frames", frames_step, ep, stale, letters, layouts())
+        timed("1 frames", FR.update, ep, stale, letters, layouts())
     if erase:
-        timed("2c objects", objects_step, ep, seg, imgs, chars, not a.no_review, log)
+        timed("2c objects", OB.find, ep, seg, imgs, chars, not a.no_review, log)
     if seg is not None:
         del seg
         import torch
@@ -363,6 +282,11 @@ def main() -> None:
     net.shutdown()
     if not a.segment_only:
         timed("6 speakers", speakers_step, ep, list(imgs))
+    if not a.segment_only and not a.no_identity:
+        import character_identity as CI
+        ident = timed("7 identity", CI.identity_step, ep, ch, a.series or CI.series_of(ch.stem))
+        if ident and not a.no_voices:
+            timed("8 voices", CI.voices_step, ep, ch, ident)
     for i in imgs:
         sheet(imgs[i], letters[i], chars[i], pictures.get(i), f"{ch.stem} panel {i}").save(a.out / "sheets" / f"{ch.pid(i)}.png")
     print({k: round(v, 1) for k, v in times.items()}, f"spent today {spent_today():.3f} USD")

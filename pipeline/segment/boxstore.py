@@ -8,11 +8,11 @@ paths or formats.
     out/masks/<pid>-frames.npz                       the frame step's frames, which are flat, the page, and whether
                                                      the model answered (frames.split)
     out/parallax/mesh/<pid>.cards.json + PNGs        the flat layers (cards.layers) and the viewer's views
-    out/parallax/mesh/<pid>.bubbles.json             the lettering's placement (lettering_layer.build); Box.bubbles
+    out/parallax/mesh/<pid>.bubbles.json             the lettering's placement (layers.place_lettering); Box.bubbles
                                                      joins Transcribe's text and kinds in when read
     out/parallax/mesh/<pid>.speakers.json            who speaks each bubble (speakers.assign_box), stamped with
                                                      the cards.json it was made from
-    out/parallax/plates/<pid>/                       the band erase's plate and paid outputs (band_erase.py)
+    out/parallax/plates/<pid>/                       the band erase's plate and paid outputs (layers.erase_box)
     out/transcripts.json                             Transcribe's results per box index
     out/run.json                                     the run log: each review's fixes and cost, each step's time
 
@@ -44,10 +44,11 @@ def index_of(pid: str) -> int:
 
 def transcribed(e: dict, kind: str | None) -> dict:
     """A bubble's fields from Transcribe's element for it (e, {} when none), `kind` the segmenter's: the text it read
-    (none when it dropped the element), its finer kind (speech, caption, shout) when it gave one, and whether the
-    text is all capitals."""
+    (none when it dropped the element), its finer kind (speech, caption, shout) when it gave one, how the line is
+    said (delivery, the voice step's style note), and whether the text is all capitals."""
     text = (e.get("text") or "") if e.get("keep", True) and e else ""
-    return {"text": text, "kind": e.get("kind") or kind, "uppercase": (not text) or text == text.upper()}
+    return {"text": text, "kind": e.get("kind") or kind, "delivery": (e.get("delivery") or None) if e else None,
+            "pace": (e.get("pace") or None) if e else None, "uppercase": (not text) or text == text.upper()}
 
 
 def lettering_name(b: dict) -> str:
@@ -95,6 +96,11 @@ class Layer:
     def key(self) -> str:
         """The layer's id in its box: its PNG's name, as speakers.json names cards."""
         return self._files["png"]
+
+    @property
+    def path(self) -> Path:
+        """The layer's PNG on disk (for a step that embeds or copies the card itself)."""
+        return self._dir / self._files["png"]
 
     @property
     def peak_z(self) -> float:
@@ -244,7 +250,7 @@ class Box:
         return self._mesh / f"{self.pid}.cards.json"
 
     def scene(self) -> Scene | None:
-        """The saved flat layers (cards.render: cards.json and its PNGs), far to near, or None before the layers; a
+        """The saved flat layers (layers.render: cards.json and its PNGs), far to near, or None before the layers; a
         lettering card is named by its bubble's text (bubbles(): "lettering <id>" until Transcribe has read it)."""
         if not self._cards_file.exists():
             return None
@@ -298,7 +304,7 @@ class Box:
         return self._mesh / f"{self.pid}.bubbles.json"
 
     def bubbles(self) -> dict | None:
-        """The box's bubbles: lettering_layer.build's placement (bubbles.json: {pid, w, h, fov, font, cap_ratio,
+        """The box's bubbles: layers.place_lettering's placement (bubbles.json: {pid, w, h, fov, font, cap_ratio,
         letters, bubbles: [...]}) with Transcribe's text and kind joined in (transcribed), only when the transcript
         was made from the same lettering masks (the "letters" stamps match): a transcript of other masks numbers other
         bubbles. Without one, text is "" and the kind the segmenter's, which "segmented_as" keeps either way."""
@@ -315,7 +321,7 @@ class Box:
         return bj
 
     def save_bubbles(self, bj: dict) -> None:
-        """bj: the placement only (lettering_layer.build), stamped with the masks it was built on."""
+        """bj: the placement only (layers.place_lettering), stamped with the masks it was built on."""
         self._mesh.mkdir(parents=True, exist_ok=True)
         self._bubbles_file.write_text(json.dumps(bj, indent=1))
 
@@ -362,6 +368,11 @@ class Box:
         """This box's result in out/transcripts.json ({} when Transcribe has not run on it)."""
         return load_transcripts(self.out).get(self.index, {})
 
+    def transcript_current(self, letters: list[Found]) -> bool:
+        """Whether Transcribe's result for this box was made from these lettering masks (their stamp), or there is
+        no lettering to read: a box segmented again is read again."""
+        return not letters or self.transcript().get("letters") == stamp(letters)
+
 
 class Episode:
     """An episode's out dir: its boxes (box(i)), Transcribe's results and the run log."""
@@ -369,14 +380,22 @@ class Episode:
     def __init__(self, out: Path, stem: str):
         self.out, self.stem = Path(out), stem
 
+    @property
+    def run(self) -> Path:
+        """The run this episode belongs to: out is <run>/dataset/<episode>. What is shared across a run's episodes
+        (the series casts, <run>/cast/<series>/) lives beside dataset/."""
+        return self.out.parent.parent
+
     def box(self, i: int) -> Box:
         return Box(self.out, pid_of(self.stem, i))
 
     def transcripts(self) -> dict[int, dict]:
         return load_transcripts(self.out)
 
-    def save_transcripts(self, results: dict[int, dict]) -> None:
-        save_transcripts(self.out, results)
+    def save_transcripts(self, results: dict[int, dict], letters: dict[int, list[Found]]) -> None:
+        """Transcribe's results ({box index: result}) saved, each stamped with the lettering masks it was read from
+        (letters[i]), so Box.transcript_current and Box.bubbles can tell a current result from a stale one."""
+        save_transcripts(self.out, {i: {**r, "letters": stamp(letters[i])} for i, r in results.items()})
 
     def save_run_log(self, review: dict, times: dict) -> None:
         """out/run.json, merged into the previous runs': each segmentation task's review per box ("p<i> <task>":

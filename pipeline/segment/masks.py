@@ -9,10 +9,16 @@ from pathlib import Path
 import hashlib
 
 import numpy as np
+from scipy.ndimage import binary_closing, binary_fill_holes, label
 
 # one colour per numbered mask, in the overlays the reviewer is shown (review_loop.marked) and the debug sheets
 COLOURS = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48), (145, 30, 180), (70, 200, 200), (240, 50, 230),
            (150, 190, 30), (0, 128, 128), (170, 110, 40), (128, 0, 0), (0, 0, 128)]
+# the smallest pieces that count, shared by the steps that make masks and the step that draws them (layers.py)
+PART_MIN = 50        # px a mask must have inside a frame to be a card there; characters.py keeps pieces that small
+MIN_FRAME_PX = 1000  # px: a smaller frame gets no layers (frames.TEXT_MIN keeps text frames at least this big)
+SMALL = 0.02         # a character instance under this share of the panel: in a crowd mask it belongs to the crowd
+                     # (characters.py); many of them at once are judged together as possible background (review_loop)
 
 
 @dataclass
@@ -29,6 +35,18 @@ class Found:
             ys, xs = np.flatnonzero(self.mask.any(axis=1)), np.flatnonzero(self.mask.any(axis=0))
             self.box = (int(ys[0]), int(ys[-1]) + 1, int(xs[0]), int(xs[-1]) + 1) if len(ys) else (0, 0, 0, 0)
         return self.box
+
+
+def clean(m: np.ndarray) -> np.ndarray:
+    """Speckle and pinholes out of a mask (ToG 228 p94, ToG 223 p48: gloved hands came out as noise): close small
+    gaps, fill holes, drop specks under 0.5% of the mask. On every character mask (characters.py) and on every
+    candidate SAM makes for the review (review_loop)."""
+    m = binary_fill_holes(binary_closing(m, structure=np.ones((5, 5), bool), iterations=1) | m)
+    lab, n = label(m)
+    if n > 1:
+        sizes = np.bincount(lab.ravel())
+        m = np.isin(lab, [k for k in range(1, n + 1) if sizes[k] >= 0.005 * m.sum()])
+    return m
 
 
 def union(found: list[Found], shape: tuple[int, int]) -> np.ndarray:

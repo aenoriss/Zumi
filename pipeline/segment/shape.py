@@ -1,5 +1,5 @@
-"""The lettering shape rules, one place for every pass that judges a lettering mask: the first pass (bubbles.py), the
-sound-effect refinement (sfx_refine.py) and the review's additions and extensions (review_loop.py).
+"""The lettering shape rules, one place for every pass that judges a lettering mask: the first pass and the
+sound-effect refinement (bubbles.py) and the review's additions and extensions (review_loop.py).
 
 The shares below are of a TILE, the square one box-width wide the first pass runs SAM on (sam.tiles), not of the
 whole box: a caller with a box-size mask passes ref_area=tile_area(h, w). The review once judged its additions by

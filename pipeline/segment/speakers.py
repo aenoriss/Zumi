@@ -90,6 +90,8 @@ class Bubble:
     order: int = 0
     feats: dict = field(default_factory=dict)
     lettering: str | None = None  # what the segmenter found: a balloon ("bubble"), a caption box, or free "sfx" lettering
+    delivery: str | None = None   # Transcribe's note on how the line is said, carried to the voice step
+    pace: str | None = None       # Transcribe's tempo for the line (slow, normal, fast), carried to the voice step
 
 
 def _centroid(m: np.ndarray) -> tuple[float, float]:
@@ -284,7 +286,8 @@ def load_box(box: Box) -> tuple[list[Card], list[Bubble], list[np.ndarray], tupl
             # took for sound-effect lettering, whose tails pointed at the mascot)
             tip, dirn = tail(m) if b.get("segmented_as") != "sfx" else (None, None)
             bubbles.append(Bubble(l.bubble if l.bubble is not None else -1, l.key, b.get("kind"), b.get("text", ""), m,
-                                  None, _centroid(m), tip, dirn, lettering=b.get("segmented_as")))
+                                  None, _centroid(m), tip, dirn, lettering=b.get("segmented_as"),
+                                  delivery=b.get("delivery"), pace=b.get("pace")))
     plain = [b for b in bubbles if b.tail_tip is None and b.lettering != "sfx"]
     if THOUGHT_TRAIL and plain:
         rgb = sc.art().astype(np.float32)
@@ -541,7 +544,7 @@ def assign_all(cards: list[Card], bubbles: list[Bubble]) -> list[dict]:
             for k in u:
                 if k != tailed[0] and answers[k]["rule"] in NO_TAIL_RULES:
                     answers[k] = {"speakers": list(answers[tailed[0]]["speakers"]), "speaker_kind": "card",
-                                  "confidence": 0.8, "rule": "stack_tail"}
+                                  "confidence": 0.5, "rule": "stack_tail"}  # 4 of 8 right on the test labels (2026-11-05)
     return [answers[k] for k in range(len(bubbles))]
 
 
@@ -628,7 +631,10 @@ def _assign(b: Bubble, cards: list[Card], dist: list[np.ndarray], prev: int | No
             if TURN_TAKING and prev is not None and best["card"] == prev and not best["same_frame"] and reply:
                 return {"speakers": [min(reply, key=key)["card"]], "speaker_kind": "card", "confidence": 0.7,
                         "rule": "tail_reply"}
-            return {"speakers": [best["card"]], "speaker_kind": "card", "confidence": 0.85, "rule": "tail"}
+            # a tip between two cards (figures side by side, tails that cross) is the reader's to confirm: 0.75 puts
+            # it among the `check` balloons of the identity reader (user, 2026-11-06); a clear tail stays 0.85
+            return {"speakers": [best["card"]], "speaker_kind": "card", "confidence": 0.75 if len(close) > 1 else 0.85,
+                    "rule": "tail"}
         # aimed at nobody, but the tip touches a card: a tail ending on a figure is that figure's, whatever the angle
         # (P&C 38-p001 "Yes, it was difficult": the tip inside the dog, aimed at 0.75)
         touched = [f for f in feats if f["tip_dist"] <= TIP_TOUCH * side]
@@ -667,14 +673,25 @@ def answers_of(box: Box) -> dict | None:
 
 def assign_box(box: Box, write: bool = True) -> list[dict]:
     """Who speaks every bubble of a box (its layers, frames and transcript, load_box): one record per bubble, saved
-    as its speakers.json when write (Box.save_speakers, stamped with the cards.json it names cards of)."""
+    as its speakers.json when write (Box.save_speakers, stamped with the cards.json it names cards of). A bubble the
+    identity reader corrected on the same layers (its record's rule "reader", character_identity.apply_speakers)
+    keeps that correction: the rules run again whenever the pipeline does, the reader's reading is paid for once."""
     got = load_box(box)
     if got is None:
         return []
     cards, bubbles, _, _ = got
-    recs = [{"pid": box.pid, "bubble": b.id, "key": b.key, "order": b.order, "kind": b.kind, "text": b.text,
-             "speakers": [cards[k].key for k in a["speakers"]], "speaker_kind": a["speaker_kind"],
-             "confidence": a["confidence"], "rule": a["rule"]} for b, a in zip(bubbles, assign_all(cards, bubbles))]
+    kept = {r["bubble"]: r for r in (box.speakers() or []) if r.get("rule") == "reader"}
+    recs = []
+    for b, a in zip(bubbles, assign_all(cards, bubbles)):
+        r = {"pid": box.pid, "bubble": b.id, "key": b.key, "order": b.order, "kind": b.kind, "text": b.text,
+             "delivery": b.delivery, "pace": b.pace, "speakers": [cards[k].key for k in a["speakers"]],
+             "speaker_kind": a["speaker_kind"], "confidence": a["confidence"], "rule": a["rule"]}
+        # the same bubble: its id and its words (ids shift when a lettering mask goes, a transcript can change)
+        if b.id in kept and b.kind != "sfx" and kept[b.id].get("text", "").strip() == (b.text or "").strip():
+            k = kept[b.id]
+            r["was"] = {key: r[key] for key in ("speakers", "speaker_kind", "rule", "confidence")}
+            r["speakers"], r["speaker_kind"], r["rule"] = k["speakers"], k["speaker_kind"], "reader"
+        recs.append(r)
     if write:
         box.save_speakers(recs)
     return recs

@@ -17,11 +17,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_closing, binary_dilation, binary_fill_holes, distance_transform_edt, label
+from scipy.ndimage import binary_dilation, distance_transform_edt, label
 
-from cards import PART_MIN
 from chapter import Chapter
-from masks import COLOURS, Found
+from masks import COLOURS, PART_MIN, SMALL, Found, clean
 from sam import Segmenter
 
 # any kind of character: SAM 3 reuses one tile encoding for every prompt, so extra prompts are cheap; the reviewer
@@ -29,7 +28,6 @@ from sam import Segmenter
 PROMPTS = [("person", 0.45), ("character", 0.45), ("creature", 0.5), ("animal", 0.5), ("monster", 0.5), ("figure", 0.5)]
 CROWD = ("group of people", 0.4)  # "crowd" scored nothing on ToG 223 p79; this prompt found the mass at 0.45-0.52
 MIN_SHARE = 0.002  # masks under this share of the panel are specks
-SMALL = 0.02  # an instance under this share of the panel, lying in a crowd mask, belongs to the crowd
 CROWD_MARGIN = 4  # px around each character taken out of a crowd mask (exclusive): its outline goes with it
 SPECK_PX_MAX, SPECK_SHARE, SPECK_PX = 400, 0.8, 8  # a mask's piece of at most this many px, mostly within SPECK_PX of
                                                     # another mask, is that one's edge pixels (exclusive)
@@ -147,17 +145,6 @@ def exclusive(found: list[Found]) -> list[Found]:
     # what is left too small for a card goes (the layers keep a piece of at least cards.PART_MIN px); segmentation's
     # MIN_SHARE is no floor here: on a 1200 x 3649 credits page it is 8,700 px, more than a mascot
     return [Found(m, f.score, f.kind, f.name) for f, m in zip(out, masks) if m.sum() >= PART_MIN]
-
-
-def clean(m: np.ndarray) -> np.ndarray:
-    """Speckle and pinholes out of a character mask (ToG 228 p94, ToG 223 p48: gloved hands came out as noise):
-    close small gaps, fill holes, drop specks under 0.5% of the mask."""
-    m = binary_fill_holes(binary_closing(m, structure=np.ones((5, 5), bool), iterations=1) | m)
-    lab, n = label(m)
-    if n > 1:
-        sizes = np.bincount(lab.ravel())
-        m = np.isin(lab, [k for k in range(1, n + 1) if sizes[k] >= 0.005 * m.sum()])
-    return m
 
 
 def overlay(img: Image.Image, chars: list[Found]) -> Image.Image:
