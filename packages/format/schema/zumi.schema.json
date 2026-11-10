@@ -48,7 +48,106 @@
           "items": { "$ref": "#/$defs/musicTrack" }
         },
         "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, the last panel's endTime when the pipeline precomputed the timeline, else the sum of panel durations; informational" },
-        "layout": { "$ref": "#/$defs/layout" }
+        "layout": { "$ref": "#/$defs/layout" },
+        "settings": {
+          "type": "array",
+          "description": "The places the episode is drawn in (pipeline step 10): a frame names its setting in panels[].frames[].setting. Props and music hang on them",
+          "items": {
+            "type": "object",
+            "required": ["id", "name"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "indoor": { "type": "boolean" },
+              "timeOfDay": { "type": "string" },
+              "weather": { "type": "string" }
+            }
+          }
+        },
+        "places": {
+          "type": "object",
+          "description": "Settings' surroundings shown through the reader's walls (pipeline step 10c): each place is a wide painted view lifted to two meshes around the seat, and the timeline says which place shows when. A reader fades the open place out over `fade` seconds, then the next one in; no place outside the timeline",
+          "required": ["meshes", "timeline"],
+          "additionalProperties": false,
+          "properties": {
+            "fade": { "type": "number", "minimum": 0, "description": "Seconds of each half of a swap" },
+            "meshes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["setting", "front", "back", "hDeg", "vDeg"],
+                "additionalProperties": false,
+                "properties": {
+                  "setting": { "type": "string", "pattern": "^[a-z0-9_-]+$", "description": "episode.settings[].id" },
+                  "front": { "$ref": "#/$defs/placePath", "description": "The view as a mesh, cut at depth edges; eye at the origin, the view's centre down -z, y up, MoGe's metres (scale it to the room)" },
+                  "back": { "$ref": "#/$defs/placePath", "description": "The surface behind the front's near objects, the same frame; shown through the front's gaps" },
+                  "hDeg": { "type": "number", "exclusiveMinimum": 0, "description": "Degrees the view spans across, centred straight ahead" },
+                  "vDeg": { "type": "number", "exclusiveMinimum": 0, "description": "Degrees it spans up and down, centred on the horizon" },
+                  "light": { "$ref": "#/$defs/placeLight" }
+                }
+              }
+            },
+            "timeline": {
+              "type": "array",
+              "description": "In time order on the episode clock: seconds from the episode start",
+              "items": {
+                "type": "object",
+                "required": ["start", "end", "setting"],
+                "additionalProperties": false,
+                "properties": {
+                  "start": { "type": "number", "minimum": 0 },
+                  "end": { "type": "number", "minimum": 0 },
+                  "setting": { "type": "string", "description": "meshes[].setting" }
+                }
+              }
+            }
+          }
+        },
+        "score": {
+          "type": "object",
+          "description": "The music as the pipeline resolved it: per-track gain envelopes on the episode clock, which a reader interpolates linearly (a crossfade is one track falling while another rises), and the reviewer's spans as data. When present a reader follows the envelopes and ignores musicCue",
+          "required": ["envelope"],
+          "additionalProperties": false,
+          "properties": {
+            "envelope": {
+              "type": "object",
+              "description": "music[].id -> knots [[seconds, gain], ...] in time order; gain 0..1 is the track's level, linear between knots, 0 before the first and after the last",
+              "additionalProperties": { "type": "array", "items": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2 } }
+            },
+            "placement": {
+              "type": "array",
+              "description": "How the music sits in the room over time, by role (music is made for the open place and heard through its portal): point = from a point inside the place behind the key wall (music heard in the scene), wide = spread across the open walls (lead, underscore). In time order, seconds on the episode clock",
+              "items": {
+                "type": "object",
+                "required": ["start", "end", "mode"],
+                "additionalProperties": false,
+                "properties": {
+                  "start": { "type": "number", "minimum": 0 },
+                  "end": { "type": "number", "minimum": 0 },
+                  "mode": { "type": "string", "enum": ["point", "wide"] }
+                }
+              }
+            },
+            "spans": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["from", "to", "mood", "role"],
+                "additionalProperties": false,
+                "properties": {
+                  "from": { "type": "string", "description": "The first bubble or frame of the span: p<panel>/b<bubble> or p<panel>/f<frame>" },
+                  "to": { "type": "string" },
+                  "setting": { "type": "string" },
+                  "mood": { "type": "string", "enum": ["light", "tense", "grave", "epic", "tender"] },
+                  "role": { "type": "string", "enum": ["lead", "under", "source", "out"] },
+                  "colour": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "cast": {
@@ -111,7 +210,9 @@
         "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6, "description": "Linear gain relative to voices; the reader also ducks music under speech" },
         "loopStart": { "type": "number", "minimum": 0, "description": "Seconds; loop region start for seamless loops (optional)" },
         "loopEnd": { "type": "number", "minimum": 0, "description": "Seconds; loop region end (optional)" },
-        "mood": { "type": "string" }
+        "mood": { "type": "string" },
+        "setting": { "type": "string", "description": "episode.settings[].id the track belongs to (the tracks of one setting share tempo, key and instruments)" },
+        "duration": { "type": "number", "minimum": 0, "description": "Seconds of audio in the file" }
       }
     },
     "musicCue": {
@@ -123,10 +224,46 @@
         "track": { "type": "string", "description": "episode.music[].id, or 'none' to fade music out" },
         "transition": { "type": "string", "enum": ["crossfade", "fadeOutIn", "cut"], "default": "crossfade", "description": "crossfade: equal-power overlap; fadeOutIn: silence gap between tracks; cut: immediate (use only on hard scene breaks)" },
         "seconds": { "type": "number", "minimum": 0, "default": 2.5, "description": "Total transition time" },
-        "startAt": { "type": "number", "minimum": 0, "default": 0, "description": "Seconds into the new track to start from" }
+        "startAt": { "type": "number", "minimum": 0, "default": 0, "description": "Seconds into the new track to start from" },
+        "at": { "type": "number", "minimum": 0, "default": 0, "description": "Seconds after the panel appears before the cue fires (a cue on a frame inside the panel)" }
       }
     },
     "scenePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/scene\\.glb$" },
+    "placePath": { "type": "string", "pattern": "^episode/places/[a-z0-9_-]+/(front|back)\\.glb$" },
+    "hexColor": { "type": "string", "pattern": "^#[0-9a-f]{6}$" },
+    "placeLight": {
+      "type": "object",
+      "description": "How the open place lights the reader's room, measured from its painted view (places.py light): a reader blends to it over the swap's fade in, and back over its fade out. Colours are light colours (brightest channel at full), sRGB",
+      "required": ["ambient", "key", "room", "occlusion"],
+      "additionalProperties": false,
+      "properties": {
+        "ambient": {
+          "type": "object", "required": ["sky", "horizon", "ground"], "additionalProperties": false,
+          "description": "Light from above, around and below: the colours of the view's top, middle and bottom thirds (a trilight ambient)",
+          "properties": { "sky": { "$ref": "#/$defs/hexColor" }, "horizon": { "$ref": "#/$defs/hexColor" }, "ground": { "$ref": "#/$defs/hexColor" } }
+        },
+        "key": {
+          "type": "object", "required": ["yaw", "pitch", "color", "strength"], "additionalProperties": false,
+          "description": "The place's main light (its brightest region: a fire, lanterns, a lit window, the sun) as a directional light into the room",
+          "properties": {
+            "yaw": { "type": "number", "description": "Degrees from straight ahead (the key wall), positive to the right" },
+            "pitch": { "type": "number", "description": "Degrees above the horizon" },
+            "color": { "$ref": "#/$defs/hexColor" },
+            "strength": { "type": "number", "minimum": 0, "maximum": 1, "description": "How much it stands out from the rest: near 0 for an evenly lit place, near 1 for a lamp in the dark" }
+          }
+        },
+        "room": {
+          "type": "object", "required": ["brightness", "tint", "tintStrength"], "additionalProperties": false,
+          "description": "The grade of the reader's real room (on Quest, the passthrough's colour controls)",
+          "properties": {
+            "brightness": { "type": "number", "minimum": -1, "maximum": 1, "description": "Change of the room's brightness: -0.4 is 40 % darker" },
+            "tint": { "$ref": "#/$defs/hexColor" },
+            "tintStrength": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "occlusion": { "type": "number", "minimum": 0, "maximum": 1, "description": "Contact-shadow and ambient-occlusion strength for the place's props: more for enclosed interiors" }
+      }
+    },
     "hexColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
     "vec2": {
       "type": "object",
@@ -177,6 +314,21 @@
         "durationOverride": { "type": "number", "minimum": 0, "description": "Seconds; when absent the reader computes voices + 1.5 s per bubble, min 3 s, min 20 s for immersive modes, never below the longest animation" },
         "startTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when this panel becomes active, precomputed by the pipeline: one clock drives the episode, the panel whose [startTime, endTime) holds the clock is the active one, the ones after it have not played yet" },
         "endTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the next panel takes over; endTime - startTime is the panel's duration" },
+        "frames": {
+          "type": "array",
+          "description": "The comic frames inside the panel in reading order, precomputed by the pipeline: when each is reached (a reader shows the ones ahead greyed). A frame with balloons is reached at its first balloon; one without holds the clock for a fixed time",
+          "items": {
+            "type": "object",
+            "required": ["index", "startOffset", "duration"],
+            "additionalProperties": false,
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "description": "The frame's index in the panel's scene (the layers' frame)" },
+              "startOffset": { "type": "number", "minimum": 0, "description": "Seconds after the panel appears" },
+              "duration": { "type": "number", "minimum": 0 },
+              "setting": { "type": "string", "description": "episode.settings[].id the frame is drawn in; absent for a frame with no place (a title, credits)" }
+            }
+          }
+        },
         "mood": { "type": "string", "description": "Free text from the understanding pass; drives ambience and music prompts" },
         "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" } },
         "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" } },

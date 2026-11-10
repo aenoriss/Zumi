@@ -56,6 +56,88 @@ class MusicTrack(Model):
     loopStart: float | None = None
     loopEnd: float | None = None
     mood: str | None = None
+    setting: str | None = None
+    duration: float | None = None
+
+
+class Setting(Model):
+    id: str
+    name: str
+    description: str | None = None
+    indoor: bool | None = None
+    timeOfDay: str | None = None
+    weather: str | None = None
+
+
+class Span(Model):
+    from_: str = Field(alias="from")
+    to: str
+    setting: str | None = None
+    mood: Literal["light", "tense", "grave", "epic", "tender"]
+    role: Literal["lead", "under", "source", "out"]
+    colour: str | None = None
+
+
+class Placement(Model):
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    mode: Literal["point", "wide"]
+
+
+class Score(Model):
+    envelope: dict[str, list[list[float]]]  # track id -> [[seconds, gain], ...]
+    placement: list[Placement] = Field(default_factory=list)
+    spans: list[Span] = Field(default_factory=list)
+
+
+HEX = r"^#[0-9a-f]{6}$"
+
+
+class Ambient(Model):
+    sky: str = Field(pattern=HEX)
+    horizon: str = Field(pattern=HEX)
+    ground: str = Field(pattern=HEX)
+
+
+class KeyLight(Model):
+    yaw: float
+    pitch: float
+    color: str = Field(pattern=HEX)
+    strength: float = Field(ge=0, le=1)
+
+
+class RoomGrade(Model):
+    brightness: float = Field(ge=-1, le=1)
+    tint: str = Field(pattern=HEX)
+    tintStrength: float = Field(ge=0, le=1)
+
+
+class PlaceLight(Model):
+    ambient: Ambient
+    key: KeyLight
+    room: RoomGrade
+    occlusion: float = Field(ge=0, le=1)
+
+
+class PlaceMesh(Model):
+    setting: str
+    front: str = Field(pattern=r"^episode/places/[a-z0-9_-]+/front\.glb$")
+    back: str = Field(pattern=r"^episode/places/[a-z0-9_-]+/back\.glb$")
+    hDeg: float = Field(gt=0)
+    vDeg: float = Field(gt=0)
+    light: PlaceLight | None = None
+
+
+class PlaceShow(Model):
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    setting: str
+
+
+class Places(Model):
+    fade: float = Field(1.0, ge=0)
+    meshes: list[PlaceMesh]
+    timeline: list[PlaceShow]
 
 
 class Episode(Model):
@@ -67,6 +149,9 @@ class Episode(Model):
     music: list[MusicTrack] = Field(default_factory=list)
     durationHint: float | None = None
     layout: Layout | None = None
+    settings: list[Setting] = Field(default_factory=list)
+    places: Places | None = None
+    score: Score | None = None
 
 
 class Voice(Model):
@@ -108,6 +193,13 @@ class Bubble(Model):
     endTime: float | None = None
 
 
+class FrameTiming(Model):
+    index: int
+    startOffset: float
+    duration: float
+    setting: str | None = None
+
+
 class StripPlacement(Model):
     y: int
     h: int
@@ -124,6 +216,7 @@ class Panel(Model):
     durationOverride: float | None = None
     startTime: float | None = None  # from the episode's start, precomputed
     endTime: float | None = None
+    frames: list[FrameTiming] = Field(default_factory=list)  # the comic frames inside the panel, when each is reached
     mood: str | None = None
     layers: list[Layer]
     bubbles: list[Bubble] = Field(default_factory=list)
@@ -144,4 +237,4 @@ class Manifest(Model):
     panels: list[Panel]
 
     def to_json(self) -> str:
-        return self.model_dump_json(indent=2, exclude_none=True)
+        return self.model_dump_json(indent=2, exclude_none=True, by_alias=True)

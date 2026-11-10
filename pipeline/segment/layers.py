@@ -6,8 +6,8 @@ earlier steps saved (boxstore.Box).
     uv run python layers.py <episode.zumi> <out dir> [--panels 3,7] [--no-erase] [--dry]     the same on saved masks
 
 Inside, in order: plan (the cards, their depths and the bubbles' placement, from the art, the masks and the depth
-model; writes nothing), erase_boxes (the plate: what is behind every card painted by FLUX Erase; the paid adapter
-flux_erase/erase_image under the shared daily cap), render (the plan drawn on the plate: cards.json, the card PNGs,
+model; writes nothing), erase_boxes (the plate: what is behind every card painted by FLUX Erase, bfl.flux_erase under
+the shared daily cap), render (the plan drawn on the plate: cards.json, the card PNGs,
 bubbles.json). Depth: Depth Anything 3 on each frame alone (frame_infer), which only orders the cards.
 
 The flat layers (user, 2026-10-25): each box is a few textured rectangles facing the camera, and the depth model
@@ -48,31 +48,30 @@ history; their outputs in .data/out/dataset/erase_review/). Per box, from its pl
 Writes plates/<pid>/band-plate.png (the whole box, the art outside the cards) and band-raw[-fK].npz (the paid
 outputs, keyed on the mask: a rerun with the same mask pays nothing), then mesh/<pid>.cards.json ({w, h, fov, layers:
 [{png, bbox, z, kind, name}]}, far to near), mesh/<pid>.card-N.png (each cropped to its bbox), mesh/<pid>.bubbles.json
-and mesh/<pid>.json (size and fov, as the browser viewer reads it).
+and mesh/<pid>.json (size and fov, as the browser viewer reads it). Each plate and each box's layers are stamped
+(plates/stamps.json, mesh/stamps.json; build): a box whose layers are current is not drawn again.
 """
 from __future__ import annotations
 
-import base64
-import functools
 import hashlib
 import io
-import os
 import sys
-import time
 import types
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
 from PIL import Image
 from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt as edt, find_objects, label
 
-from boxstore import Box
+import fresh
+from bfl import DILATE, flux_erase
+from boxstore import Box, image_stamp
+from fresh import digest
 from chapter import Chapter
 from masks import MIN_FRAME_PX, PART_MIN, Found, stamp, union
-from spend import BudgetExceeded, paid_map, record, reserve, spent_today
+from spend import BudgetExceeded, paid_map, spent_today
 from view import FOV, WINDOW_Z, focal
 
 # Depths (user, 2026-10-26: the headset values of docs/research/relief-depth-budget-2026-10.md, which replaced the
@@ -295,7 +294,7 @@ def depths(levels: list[int], reliefs: list[float], back: float = 0.0) -> tuple[
 def back_range_ok(M: np.ndarray, area: np.ndarray, covered: np.ndarray) -> bool:
     """Whether a frame's background has a depth range of its own: it covers BACK_MIN_SHARE of the frame (the cards
     grown 4 px, their feathered outlines are not background) and spans BACK_MIN_SPREAD of the frame's depth spread.
-    Thresholds from P&C 39 p2, p8, p13, p24 (experiments/backdrop_depth.py): the street and the tavern 88% / 59% of
+    Thresholds from P&C 39 p2, p8, p13, p24 (experiments/backdrop_depth.py, in git history at fcbe58a): the street and the tavern 88% / 59% of
     the frame and 100% / 93% of its spread, the close-ups 5-41% and 30-65%."""
     from scipy.ndimage import binary_dilation
     bg = area & ~binary_dilation(covered, iterations=4)
@@ -614,7 +613,7 @@ def _scene(img: np.ndarray, chars: list[np.ndarray], objects: list[dict], g: np.
     lettering: the lettering, taken out of the backdrop (it comes back as cards of the original bubbles).
     Returns (backdrops, cards per backdrop far to near, under: where the backdrop will show the plate, D: depth per
     pixel of the nearest layer, 0 on the page, what the lettering is placed against, the depth view, log info).
-    trace: when given, one dict per frame with its depth, masks and levels (experiments/backdrop_depth.py)."""
+    trace: when given, one dict per frame with its depth, masks and levels, for inspecting a box's depth."""
     from scipy.ndimage import binary_dilation, distance_transform_edt
     h, w = g.shape
     art = ~g
@@ -998,64 +997,9 @@ def place_lettering(pid: str, img, letters: list[Found], depth: np.ndarray, vali
 
 
 # =====================================================================================================
-# The paid adapter (was flux_erase.py): FLUX Erase (Black Forest Labs API, May 2026): image + binary mask in, no
-# prompt; trained for removal, it also takes the shadows the mask misses. BFL_API_KEY in pipeline/.env. Every call
-# reserves its worst case under the shared daily cap (spend.py, model calls and erases together) and raises
-# BudgetExceeded before sending if it could pass it; its credits go into .data/spend/bfl.jsonl (1 credit = 0.01 USD).
+# The erase call (FLUX Erase through bfl.py: image + binary mask in, no prompt; trained for removal, it also takes the
+# shadows the mask misses), one per box.
 # =====================================================================================================
-
-ROOT = Path(__file__).resolve().parents[1]  # pipeline/
-API = "https://api.bfl.ai/v1"
-RESERVE_USD = 0.06  # per call: the most one erase has cost (5.8 credits)
-DILATE = 8          # px the API grows the mask by itself (dilate_pixels)
-MAX_TRIES = 6       # on HTTP 429 (more than 24 requests in flight, docs.bfl.ai integration guidelines): back off
-
-
-@functools.lru_cache(maxsize=1)
-def key():
-    for line in (ROOT / ".env").read_text().splitlines():
-        if line.startswith("BFL_API_KEY="):
-            return line.split("=", 1)[1].strip()
-    return os.environ["BFL_API_KEY"]
-
-
-def b64(im):
-    b = io.BytesIO()
-    im.save(b, format="PNG")
-    return base64.b64encode(b.getvalue()).decode()
-
-
-def flux_erase(img: Image.Image, mask: Image.Image, dilate: int = DILATE):
-    """One API call: (output image, seconds, credits). Raises BudgetExceeded before sending if the cap would break."""
-    with reserve(RESERVE_USD, "FLUX Erase"):  # raises OfflineCall in an offline run
-        return _flux_post(img, mask, dilate)
-
-
-def _flux_post(img, mask, dilate):
-    h = {"x-key": key(), "accept": "application/json"}
-    body = {"image": b64(img), "mask": b64(mask), "dilate_pixels": dilate, "output_format": "png"}
-    for k in range(MAX_TRIES):
-        r = requests.post(f"{API}/flux-tools/erase-v1", headers=h, timeout=60, json=body)
-        if r.status_code != 429:
-            break
-        time.sleep(2 ** k)
-    r.raise_for_status()
-    job = r.json()
-    t = time.perf_counter()
-    while True:
-        time.sleep(1.0)
-        p = requests.get(job.get("polling_url") or f"{API}/get_result", headers=h, params={"id": job["id"]}, timeout=60).json()
-        if p["status"] == "Ready":
-            break
-        if p["status"] not in ("Pending", "Processing", "Queued"):
-            raise RuntimeError(f"FLUX Erase: {p['status']} {p}")
-        if time.perf_counter() - t > 300:
-            raise TimeoutError("FLUX Erase took over 5 min")
-    cost = job.get("cost", p.get("cost"))
-    record("bfl", (cost or 0) / 100, credits=cost, size=img.size)
-    out = Image.open(io.BytesIO(requests.get(p["result"]["sample"], timeout=120).content)).convert("RGB")
-    return out, round(time.perf_counter() - t, 1), cost
-
 
 def erase_image(rgb: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, str]:
     """The model's whole output for rgb (H x W x 3) and its mask, in one call: the image padded to the nearest trained
@@ -1358,17 +1302,21 @@ def erase_box(box: Box, img: np.ndarray, plan: Plan, dry: bool = False, log=prin
     return res
 
 
-def erase_boxes(jobs: list[tuple[Box, np.ndarray, Plan]], dry: bool = False, workers: int = WORKERS,
+def erase_boxes(jobs: list[tuple[Box, np.ndarray, Plan, str]], dry: bool = False, workers: int = WORKERS,
                 log=print) -> None:
-    """erase_box on every (box, image, plan), WORKERS boxes at a time (spend.paid_map): a call is 5-9 s of waiting on
-    BFL, so in sequence 29 boxes took ~4 min. Each box's lines are printed together when it is done. The daily cap
-    (every call in flight is reserved) stops the boxes not yet sent; a refused box (BFL moderation) skips only
-    itself."""
+    """erase_box on every (box, image, plan, its inputs_stamp), WORKERS boxes at a time (spend.paid_map): a call is
+    5-9 s of waiting on BFL, so in sequence 29 boxes took ~4 min. Each box's lines are printed together when it is
+    done. A plate made is stamped with the plan's inputs (Box "plate"), as is a box with nothing to erase; a box the
+    daily cap stops (every call in flight is reserved), or one refused (BFL moderation: it skips only itself), keeps
+    its old plate and stamp."""
     def one(k):
-        box, img, plan = jobs[k]
+        box, img, plan, s = jobs[k]
         lines = [box.pid]
         try:
-            erase_box(box, img, plan, dry, log=lines.append)
+            if erase_box(box, img, plan, dry, log=lines.append) is not None:
+                box.made("plate", s)
+            elif not dry:
+                box.made("plate", digest(s, "nothing to erase"))
         except BudgetExceeded:
             raise
         except Exception as e:
@@ -1439,23 +1387,69 @@ def frame_infer(model, rgb: np.ndarray) -> np.ndarray:
 # The step
 # =====================================================================================================
 
+def inputs_stamp(box: Box, img: Image.Image) -> str:
+    """What a box's layers are made from besides the plate (plate_state): the box image, its saved lettering,
+    character, frame and object masks by content, and this module's constants (the depth model's id, and the view's
+    and the masks' constants it imports, among them). No money is spent on the layers themselves (the erase's paid
+    outputs are kept by their mask, _call), so the module's constants are taken whole."""
+    return digest(image_stamp(img), box.content("lettering"), box.content("characters"), box.content("frames"),
+                  box.content("objects"), fresh.recipe(sys.modules[__name__], skip=("WORKERS",)))
+
+
+def plate_state(box: Box, inputs: str) -> str:
+    """What render would draw a box's backdrop on now, the second half of its layers' stamp: "plate <content>" for
+    a plate the erase made from these inputs (the box's "plate" stamp is `inputs`), "nothing to erase" when the erase
+    found no card in them, "old plate <content>" for a plate made from other inputs (an erase since refused, failed
+    or stopped by the cap; a --no-erase run), "art" without a plate."""
+    made = box.stamp_of("plate")
+    if made == digest(inputs, "nothing to erase"):
+        return "nothing to erase"
+    if not box.has_plate():
+        return "art"
+    return ("plate " if made == inputs else "old plate ") + box.plate_content()
+
+
+def erased(state: str) -> bool:
+    """The layers were drawn on a plate the erase made from their own inputs (or there was nothing to erase)."""
+    return state.startswith("plate ") or state == "nothing to erase"
+
+
 def build(jobs: list[tuple], erase: bool = True, dry: bool = False, log=print) -> None:
     """Steps 3 and 4 for the boxes given as (box, image, letters, chars): each box's plan (plan), the erase on all of
     them at once (erase_boxes: paid, boxes in parallel; the daily cap stops it cleanly, the boxes it stops keep their
     old plate or the art), then each plan drawn on its plate (render). erase False pays for no erase: the layers are
     drawn on the art, or on a plate an earlier run paid for, and the objects stay painted on it. dry: only saved
-    erase outputs are used and nothing is drawn. The depth model is loaded once here and the GPU cache cleared after
-    the erase."""
+    erase outputs are used and nothing is drawn.
+    A box whose layers are current is skipped whole, its files untouched: the stamp saved with them (Box "layers")
+    is its inputs (inputs_stamp) and the plate they were drawn on (plate_state), and with erase on only layers drawn
+    on a plate erased from those same inputs count, so a box the erase refused or the cap stopped, drawn on its old
+    plate, is planned and erased again next run (the erase's saved outputs make that free when its mask is the
+    same). Skipping matters beyond time: speakers.json is stamped with the bytes of cards.json, and drawing a box
+    again could drop the speaker corrections made on it. The depth model is loaded only when some box is not
+    current, and the GPU cache cleared after the erase."""
+    todo = []
+    for box, img, letters, chars in jobs:
+        s = inputs_stamp(box, img)
+        state = plate_state(box, s)
+        if (not erase or erased(state)) and box.current("layers", digest(s, state)):
+            continue
+        todo.append((box, img, letters, chars, s))
+    log(f"{len(jobs) - len(todo)} of {len(jobs)} boxes current, not drawn again; {len(todo)} to plan"
+        + (" and erase" if erase and todo else ""))
+    if not todo:
+        return
     import torch
     model = load_depth()
     depth_fn = lambda rgb: frame_infer(model, rgb)  # noqa: E731
-    plans = [(box, img, plan(box, img, letters, chars, depth_fn, objects=erase)) for box, img, letters, chars in jobs]
+    plans = [(box, img, plan(box, img, letters, chars, depth_fn, objects=erase), s)
+             for box, img, letters, chars, s in todo]
     if erase:
-        erase_boxes([(box, np.asarray(img), p) for box, img, p in plans], dry, log=log)
+        erase_boxes([(box, np.asarray(img), p, s) for box, img, p, s in plans], dry, log=log)
         torch.cuda.empty_cache()
     if not dry:
-        for box, img, p in plans:
+        for box, img, p, s in plans:
             log(f"{box.pid} layers: {render(box, p, img, depth_fn)}")
+            box.made("layers", digest(s, plate_state(box, s)))
 
 
 def main():

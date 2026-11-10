@@ -50,6 +50,144 @@ namespace Zumi.Format
         public float durationHint;
         /// <summary>Null means carousel.</summary>
         public Layout layout;
+        /// <summary>The places the episode is drawn in; a frame names its setting (FrameTiming.setting).</summary>
+        public List<Setting> settings = new();
+        /// <summary>Settings' surroundings shown through the walls, and which one shows when. Null: none.</summary>
+        public Places places;
+        /// <summary>The music resolved by the pipeline: per-track gain envelopes a reader interpolates. When present,
+        /// follow it and ignore musicCue.</summary>
+        public Score score;
+    }
+
+    [Serializable]
+    public sealed class Setting
+    {
+        public string id;
+        public string name;
+        public string description;
+        public bool? indoor;
+        public string timeOfDay;
+        public string weather;
+    }
+
+    [Serializable]
+    public sealed class Places
+    {
+        /// <summary>Seconds of each half of a swap: the open place fades out, then the next fades in.</summary>
+        public float fade = 1f;
+        public List<PlaceMesh> meshes = new();
+        /// <summary>In time order on the episode clock; no place outside it.</summary>
+        public List<PlaceShow> timeline = new();
+    }
+
+    [Serializable]
+    public sealed class PlaceMesh
+    {
+        /// <summary>EpisodeInfo.settings[].id.</summary>
+        public string setting;
+        /// <summary>episode/places/&lt;setting&gt;/front.glb: eye at the origin, the view's centre down -z, y up.</summary>
+        public string front;
+        /// <summary>The surface behind the front's near objects, seen through its gaps.</summary>
+        public string back;
+        public float hDeg;
+        public float vDeg;
+        /// <summary>How the place lights the reader's room while it is open; null in hand-made files.</summary>
+        public PlaceLight light;
+    }
+
+    /// <summary>Measured from the place's painted view. Colours are sRGB hex light colours (brightest channel full).
+    /// Unity: ambient -> RenderSettings trilight (sky, equator, ground); key -> one directional light; room ->
+    /// OVRPassthroughLayer brightness and colour map; occlusion -> the props' contact shadows. Blend over places.fade.</summary>
+    [Serializable]
+    public sealed class PlaceLight
+    {
+        public PlaceAmbient ambient;
+        public PlaceKeyLight key;
+        public RoomGrade room;
+        public float occlusion;
+    }
+
+    [Serializable]
+    public sealed class PlaceAmbient
+    {
+        public string sky;
+        public string horizon;
+        public string ground;
+    }
+
+    [Serializable]
+    public sealed class PlaceKeyLight
+    {
+        /// <summary>Degrees from straight ahead (the key wall), positive to the right.</summary>
+        public float yaw;
+        /// <summary>Degrees above the horizon.</summary>
+        public float pitch;
+        public string color;
+        /// <summary>0 for an evenly lit place, 1 for a lamp in the dark.</summary>
+        public float strength;
+    }
+
+    [Serializable]
+    public sealed class RoomGrade
+    {
+        /// <summary>Change of the real room's brightness: -0.4 is 40 % darker.</summary>
+        public float brightness;
+        public string tint;
+        public float tintStrength;
+    }
+
+    [Serializable]
+    public sealed class PlaceShow
+    {
+        public float start;
+        public float end;
+        public string setting;
+    }
+
+    [Serializable]
+    public sealed class MusicPlacement
+    {
+        public float start;
+        public float end;
+        /// <summary>"point" or "wide".</summary>
+        public string mode;
+    }
+
+    [Serializable]
+    public sealed class Score
+    {
+        /// <summary>music[].id -> knots [seconds, gain] in time order; linear between knots, 0 outside them.</summary>
+        public Dictionary<string, List<List<float>>> envelope = new();
+        /// <summary>How the music sits in the room over time: "point" = from a point inside the place behind the key
+        /// wall (music heard in the scene), "wide" = spread across the open walls (lead, underscore).</summary>
+        public List<MusicPlacement> placement = new();
+        public List<Span> spans = new();
+
+        /// <summary>A track's gain at t seconds on the episode clock.</summary>
+        public static float GainAt(List<List<float>> knots, float t)
+        {
+            if (knots == null || knots.Count == 0 || t < knots[0][0] || t > knots[knots.Count - 1][0]) return 0f;
+            for (int i = 1; i < knots.Count; i++)
+                if (t <= knots[i][0])
+                {
+                    float t0 = knots[i - 1][0], t1 = knots[i][0];
+                    float u = t1 > t0 ? (t - t0) / (t1 - t0) : 1f;
+                    return knots[i - 1][1] + (knots[i][1] - knots[i - 1][1]) * u;
+                }
+            return knots[knots.Count - 1][1];
+        }
+    }
+
+    [Serializable]
+    public sealed class Span
+    {
+        /// <summary>p&lt;panel&gt;/b&lt;bubble&gt; or p&lt;panel&gt;/f&lt;frame&gt;.</summary>
+        public string from;
+        public string to;
+        public string setting;
+        public string mood;
+        public string role;
+        public string colour;
     }
 
     public enum LayoutMode { scroll, carousel }
@@ -85,6 +223,8 @@ namespace Zumi.Format
         public float? loopStart;
         public float? loopEnd;
         public string mood;
+        public string setting;
+        public float? duration;
     }
 
     public enum MusicTransition { crossfade, fadeOutIn, cut }
@@ -97,6 +237,8 @@ namespace Zumi.Format
         public MusicTransition transition = MusicTransition.crossfade;
         public float seconds = 2.5f;
         public float startAt;
+        /// <summary>Seconds after the panel appears before the cue fires.</summary>
+        public float at;
     }
 
     [Serializable]
@@ -147,6 +289,9 @@ namespace Zumi.Format
         /// the panel holding the episode clock in [startTime, endTime) is the active one. Null in hand-made files.</summary>
         public float? startTime;
         public float? endTime;
+        /// <summary>The comic frames inside the panel in reading order and when each is reached, precomputed:
+        /// a reader greys the frames ahead of the clock. Empty in hand-made files.</summary>
+        public List<FrameTiming> frames = new();
         public string mood;
         public List<Layer> layers = new();
         public List<Bubble> bubbles = new();
@@ -156,6 +301,18 @@ namespace Zumi.Format
         public string panorama;
         public string scene;
         public List<Interaction> interactions = new();
+    }
+
+    [Serializable]
+    public sealed class FrameTiming
+    {
+        /// <summary>The frame's index in the panel's scene (the layers' frame).</summary>
+        public int index;
+        /// <summary>Seconds after the panel appears.</summary>
+        public float startOffset;
+        public float duration;
+        /// <summary>episode.settings[].id the frame is drawn in; null for a frame with no place.</summary>
+        public string setting;
     }
 
     [Serializable]

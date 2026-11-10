@@ -10,15 +10,16 @@ Per processed box the panel becomes renderMode "scene3d" with panels/<id>/scene.
 Unlit materials (KHR_materials_unlit): the art is already lit. Bubbles go into the manifest as the schema allows
 (id, text, kind from Transcribe, position = normalised centre, speakerId = the cast id of the speaker from the
 speaker records and the identity, audio = the line recorded in that voice as panels/<id>/voice/<bubble>.mp3), in
-the box's reading order with a startOffset and durationHint each (timing: the clips' lengths, a reading time for
-bubbles without one, GAP_S between them) and the panel's durationOverride set to the time its bubbles take, so the
-reader paces the panel by its voices; their measured style and placement (shape, colours, font size, depth: layers.place_lettering)
+the clock's order with their times from the episode clock (clock.py: startOffset, durationHint, startTime, endTime;
+the panel's durationOverride, frames, startTime and endTime), so the reader paces the episode without logic of its
+own; their measured style and placement (shape, colours, font size, depth: layers.place_lettering)
 and Transcribe's delivery and pace go into panels/<id>/bubbles.style.json next to the scene, until the schema has
-them. The manifest's cast is the series cast as of this episode (character_identity): id, name, the Inworld voice
-it was designed with; a look sharing another character's voice carries that voice. The lettering is also in the
-scene, as cards of the original bubbles. The original flat layer stays as the panel's fallback.
+them. The manifest's cast is the series cast as of this episode (character_identity): id, name, the voice it was
+designed with on the episode's voice backend (voices.py: ZUMI_TTS, else Inworld; its engine, voice id and lines); a
+look sharing another character's voice carries that voice. The lettering is also in the scene, as cards of the
+original bubbles. The original flat layer stays as the panel's fallback.
 
-    python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>
+    python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>        (ZUMI_TTS=gemini for Gemini's lines)
 """
 from __future__ import annotations
 
@@ -32,80 +33,37 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import clock
+import voices as VO
 from boxstore import Box, Episode, pid_of
 from view import focal
 from workers import pmap
 
 KIND = {"speech": "speech", "thought": "thought", "caption": "caption", "sfx": "shout", "shout": "shout"}
-VOICE_ENGINE = "inworld-tts-2"
-GAP_S = 0.6        # between one bubble's end and the next's start, as audio/episode.mp3 spaces the lines
-READ_CPS = 15.0    # reading speed for a bubble without a clip (a caption, a sound effect): seconds = chars / READ_CPS
-READ_MIN_S = 1.5   # and at least this long
-TAIL_S = 1.0       # after the last bubble before the panel may move on
 
 
-PANEL_MIN_S = 3.0  # a panel with nothing to say (no bubbles, or not processed) holds the clock this long
-
-
-def timeline(panels: list[dict]) -> float:
-    """One clock for the episode, precomputed so a reader needs no pacing logic: each panel's startTime and endTime
-    from the episode's start, in index order, its duration what timing() set (durationOverride) or PANEL_MIN_S;
-    each bubble's startTime and endTime from its startOffset and durationHint. Returns the episode's length."""
-    t = 0.0
-    for p in sorted(panels, key=lambda p: p["index"]):
-        d = p.get("durationOverride") or PANEL_MIN_S
-        p["startTime"], p["endTime"] = round(t, 2), round(t + d, 2)
-        for b in p.get("bubbles", []):
-            if "startOffset" in b:
-                b["startTime"] = round(t + b["startOffset"], 2)
-                b["endTime"] = round(b["startTime"] + b.get("durationHint", 0), 2)
-        t += d
-    return round(t, 2)
-
-
-def timing(bubbles: list[dict], seconds: dict[int, float]) -> float:
-    """startOffset and durationHint on each bubble entry in reading order, from the clips' lengths (seconds: bubble id
-    -> clip seconds) and a reading time for bubbles without one; returns the panel's duration: the time its bubbles
-    take, plus TAIL_S. The reader then moves on when the voices are done instead of its floor of 20 s a scene."""
-    t = 0.0
-    for e in bubbles:
-        n = int(e["id"][1:])
-        d = seconds.get(n) or max(READ_MIN_S, len(e["text"]) / READ_CPS)
-        e["startOffset"], e["durationHint"] = round(t, 2), round(d, 2)
-        t += d + GAP_S
-    return round(t - GAP_S + TAIL_S, 2) if bubbles else 0.0
-
-
-def voices(ep: Episode) -> tuple[dict, list[dict], dict]:
-    """What the voice steps saved for the episode: ({card id: cast id}, the manifest's cast entries for the
-    characters of this episode, {(pid, bubble): line record}). Empty when identity or lines were not made."""
-    ident_f = ep.out / "identity" / "identity.json"
-    if not ident_f.exists():
+def voices(ep: Episode, tts) -> tuple[dict, list[dict], dict]:
+    """What the voice steps saved for the episode on the voice backend tts: ({card id: cast id}, the manifest's cast
+    entries for the characters of this episode, the line index voices.lines gives). Empty when identity or lines were
+    not made."""
+    import character_identity as CI
+    got = CI.load(ep)
+    if got is None:
         return {}, [], {}
-    ident = json.loads(ident_f.read_text(encoding="utf-8"))
-    cast_f = ep.run / "cast" / ident["series"] / "cast.json"
-    chars = json.loads(cast_f.read_text(encoding="utf-8"))["characters"] if cast_f.exists() else []
-    by_id = {c["id"]: c for c in chars}
-
-    def voice_of(cid: str, hops: int = 0) -> dict:
-        v = (by_id.get(cid) or {}).get("voice") or {}
-        if v.get("same_voice_as") and hops < 4:
-            return voice_of(v["same_voice_as"], hops + 1)
-        return v
-
+    ident, cast_store = got
+    by_id = {c["id"]: c for c in cast_store.chars}
     cast = []
     for cid in sorted(set(ident["cards"].values()), key=lambda k: int(k[1:])):
         c = by_id.get(cid)
         if not c:
             continue
         entry = {"id": cid, "name": c["name"]}
-        v = voice_of(cid)
-        if v.get("id"):
-            entry["voice"] = {"engine": VOICE_ENGINE, "voiceId": v["id"], "description": v.get("description") or ""}
+        owner, vid = VO.voice_of(by_id, cid, tts.VOICE_ID)
+        if vid:
+            entry["voice"] = {"engine": tts.ENGINE, "voiceId": vid,
+                              "description": ((by_id.get(owner) or {}).get("voice") or {}).get("description") or ""}
         cast.append(entry)
-    lines_f = ep.out / "audio" / "lines.json"
-    lines = {(l["pid"], l["bubble"]): l for l in json.loads(lines_f.read_text(encoding="utf-8"))} if lines_f.exists() else {}
-    return ident["cards"], cast, lines
+    return ident["cards"], cast, VO.lines(ep, tts)
 
 
 def mp3_bytes(wav: Path) -> bytes:
@@ -246,9 +204,12 @@ def main():
     done = 0
     jobs = [(Box(ep_out, pid_of(stem, i)), tmp / f"{p['id']}.glb") for i, p in enumerate(man["panels"])]
     built = pmap(_build, jobs)  # one GLB per box, boxes across processes
-    card_char, cast, lines = voices(Episode(ep_out, stem))
+    tts = VO.backend()  # the voice backend the episode was recorded on (ZUMI_TTS, else Inworld)
+    card_char, cast, lines = voices(Episode(ep_out, stem), tts)
+    clk = clock.build(Episode(ep_out, stem), len(man["panels"]), tts)  # the episode clock, fresh from the saved steps
     voiced, speaking = 0, set()
-    for (box, glb), p, ok in zip(jobs, man["panels"], built):
+    for (box, glb), p, ok, cp in zip(jobs, man["panels"], built, clk["panels"]):
+        p["startTime"], p["endTime"] = cp["startTime"], cp["endTime"]
         if not ok:
             continue
         p["renderMode"] = "scene3d"
@@ -257,14 +218,13 @@ def main():
         bd = box.bubbles()
         if bd is not None:
             W, H = bd["w"], bd["h"]
-            speaker, order = {}, {}
+            speaker = {}
             for r in box.speakers() or []:
-                order[r["bubble"]] = r["order"]  # the box's reading order (speakers.reading_order)
                 if r.get("speakers"):
                     s = r["speakers"][0]
                     speaker[r["bubble"]] = card_char.get(s if "/" in s else f"{box.pid}/{s}")
-            p["bubbles"], seconds = [], {}
-            for b in sorted(bd["bubbles"], key=lambda b: (order.get(b["id"], 10**6), b["bbox"][1])):
+            p["bubbles"] = []
+            for b in bd["bubbles"]:
                 x0, y0, x1, y1 = b["bbox"]
                 entry = {"id": f"b{b['id']}", "text": b.get("text") or "",
                          "position": {"x": round((x0 + x1) / 2 / W, 4), "y": round((y0 + y1) / 2 / H, 4)}}
@@ -274,21 +234,41 @@ def main():
                     entry["speakerId"] = speaker[b["id"]]
                     speaking.add(speaker[b["id"]])
                 line = lines.get((box.pid, b["id"]))
-                if line and (ep_out / "audio" / line["file"]).exists():
+                if line:
                     entry["audio"] = f"panels/{p['id']}/voice/b{b['id']}.mp3"
-                    seconds[b["id"]] = float(line.get("seconds") or 0)
-                    added[entry["audio"]] = mp3_bytes(ep_out / "audio" / line["file"])
+                    added[entry["audio"]] = mp3_bytes(Path(line["path"]))
                     voiced += 1
                 p["bubbles"].append(entry)
-            p["durationOverride"] = timing(p["bubbles"], seconds)
+            when = {b["id"]: (n, b) for n, b in enumerate(cp["bubbles"])}  # the clock's order, frame by frame
+            for e in p["bubbles"]:
+                e.update({k: v for k, v in when[e["id"]][1].items() if k != "id"})
+            p["bubbles"].sort(key=lambda b: when[b["id"]][0])
             style = {k: v for k, v in bd.items() if k not in ("letters", "transcribed")}  # the pipeline's own
             style["bubbles"] = [{k: v for k, v in b.items() if k != "segmented_as"} for b in bd["bubbles"]]
             added[f"panels/{p['id']}/bubbles.style.json"] = json.dumps(style, indent=1).encode()
+        p["durationOverride"], p["frames"] = cp["duration"], cp["frames"]
         done += 1
     cast = [c for c in cast if c["id"] in speaking or "voice" in c]  # the characters a reader meets: speakers, voices
     if cast:
         man["cast"] = cast
-    man["episode"]["durationHint"] = timeline(man["panels"])
+    man["episode"]["durationHint"] = clk["duration"]
+    import score
+    import settings
+    st = settings.load(Episode(ep_out, stem))
+    if st:  # step 10a: the settings and each frame's setting; 10c: the places shown through the walls
+        settings.into(man, st)
+        import places
+        places.into(man, Episode(ep_out, stem), clk, st.get("frame_setting") or {}, added)
+    sc = score.load(Episode(ep_out, stem))
+    if sc:  # step 10b: the tracks and the music envelope on this clock
+        score.music_into(man, sc, ep_out, added)
+    # the manifest alone beside the episode's outputs: the parallax viewer plays the episode from it (cast, timeline,
+    # speakers, clips, animations) without opening the .zumi
+    (ep_out / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
+    for path, data in added.items():  # and the tracks at the paths the manifest names, for the same viewer
+        if path.startswith("episode/music/"):
+            (ep_out / path).parent.mkdir(parents=True, exist_ok=True)
+            (ep_out / path).write_bytes(data)
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             if item.filename == "manifest.json" or item.filename in added:

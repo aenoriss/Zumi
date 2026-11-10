@@ -28,25 +28,20 @@ Steps 7 and 8 of episode.py; both read only what earlier steps saved (cards.json
       boxes' speaker records (apply_speakers; the earlier link kept under "was"), and speakers.assign_box keeps them
       when the rules run again. On 302 labelled balloons of 3 held-out episodes, fresh: rules 85.8%, after the
       reader 90-92% (2026-11-06).
-   Writes <episode>/identity/identity.json, stamped with the cards and speakers it read: a rerun on the same layers
-   pays nothing. The series cast lives in <run>/cast/<series>/ (cast.json, exemplars.npz, card thumbnails, voices/),
+   Writes <episode>/identity/identity.json, stamped with the cards and speakers it read and the reader's recipe (the
+   task of its pass, the model, the effort; identity_stamp): a rerun on the same layers pays nothing. The series cast lives in <run>/cast/<series>/ (cast.json, exemplars.npz, card thumbnails, voices/),
    beside the run's dataset/. A rerun founds the episode's characters again under new ids and gives them back the
    voices they had, by the cards they share (inherit_voices).
-8. Voices (voices_step): every character of the episode with at least MIN_LINES lines and no voice in the cast gets the
-   description Gemini 3.8 Flash TTS voice design takes (display name, gender, language code, one or two sentences of
-   permanent traits, no age for a minor: the model refuses it; emotion goes per line), from one Sonnet call that
-   reads the episode. Another look of a person links to that person's voice (same_voice_as, user 2026-11-04). Then
-   design_voices creates each described voice once on Inworld TTS-2 (inworld.design_voice: designed from the
-   description with the character's own lines as the preview script, published as a voice id; its sample in
-   <cast>/voices/K<n>.wav), and record_lines speaks every balloon with a speaker in its character's voice, the
-   delivery note from the balloon's kind and Transcribe's reading of the drawing (style_of) and the scene's
-   previous balloons as context, to <episode>/audio/<pid>.b<bubble>.wav with audio/lines.json as the index: a line
-   recorded with the same words, voice and note is kept, one whose balloon lost its speaker is dropped; a balloon
-   of marks alone ("...") is not voiced. episode_audio joins the lines into audio/episode.mp3 for listening.
-   Gemini 3.8 Flash TTS was the first backend (2026-11-05): its 100 requests a day on the paid tier and the
-   flatter delivery sent it away (user, 2026-11-06); its voice ids stay in the cast as id_gemini.
+8. Voices (voices_step): every character of the episode with at least MIN_LINES lines and no voice in the cast gets a
+   voice description (display name, gender, language code, one or two sentences of permanent traits, no age for a
+   minor: the voice models refuse it; emotion goes per line), from one Sonnet call that reads the episode. Another
+   look of a person links to that person's voice (same_voice_as, user 2026-11-04). Then voices.py designs each
+   described voice once and records every voiced balloon on the episode's voice backend (Inworld TTS-2 by default,
+   Gemini 3.8 Flash TTS with ZUMI_TTS=gemini; each keeps its own voice ids in the cast and its own lines folder).
+   A character the reader leaves out is kept in <episode>/identity/voices/stamps.json with the lines it was asked
+   about: it is asked again only when its lines or the reader's recipe change, not on every run.
 
-Paid calls go through openrouter.ask_json and inworld under the shared daily cap. Measured (P&C 39, 2026-11-05/06):
+Paid calls go through openrouter.ask_json and the voice backends under the shared daily cap. Measured (P&C 39, 2026-11-05/06):
 identity 0.15-0.22 USD, voices reader 0.11, a voice design about 0.015, a line about 0.0025 (list price, the
 delivery note's characters billed too).
 
@@ -69,10 +64,10 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
-import inworld as IW  # noqa: E402
+import fresh  # noqa: E402
+import voices as VO  # noqa: E402
 from boxstore import Box, Episode  # noqa: E402
 from openrouter import BudgetExceeded, Truncated, ask_json, image_part  # noqa: E402
-from spend import paid_map  # noqa: E402
 
 MODEL = "anthropic/claude-sonnet-5.5"
 REASONING = "high"       # at high the reader stops thinking on its own (2-8k of its 14k tokens used, 2026-11-05); at
@@ -877,6 +872,30 @@ def cast_root(ep: Episode) -> Path:
     return ep.run / "cast"
 
 
+def load(ep: Episode) -> tuple[dict, "Cast"] | None:
+    """What identity_step saved for the episode: (identity.json's content, the series cast), None before it ran."""
+    f = ep.out / "identity" / "identity.json"
+    if not f.exists():
+        return None
+    ident = json.loads(f.read_text(encoding="utf-8"))
+    return ident, Cast(cast_root(ep), ident["series"])
+
+
+def pass_of(cast: Cast, episode: str) -> int:
+    """The pass the episode's reader runs: 2 when the series has characters from other episodes, else 1."""
+    return 2 if any(c["first"] != episode for c in cast.chars) else 1
+
+
+def reader_recipe(mode: int) -> str:
+    """What shapes the identity reader's answer besides its material: its pass's task, the model, the effort."""
+    return fresh.digest(PASS1_TASK if mode == 1 else PASS2_TASK, MODEL, REASONING)
+
+
+def identity_stamp(cards: Cards, mode: int) -> str:
+    """identity.json's stamp: the cards and speakers read (Cards.stamp) and the reader's recipe."""
+    return fresh.digest(cards.stamp, reader_recipe(mode))
+
+
 def identity_step(ep: Episode, chapter, series: str) -> dict | None:
     """Step 7: the episode's cards given cast characters (pass 1 when the series has no cast from other episodes,
     pass 2 otherwise), saved to <episode>/identity/identity.json and the series cast; the reader's speaker
@@ -891,13 +910,17 @@ def identity_step(ep: Episode, chapter, series: str) -> dict | None:
     f = out / "identity.json"
     cast = Cast(cast_root(ep), series)
     old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-    if old.get("stamp") == cards.stamp and ep.stem in cast.d["episodes"]:
+    mode = pass_of(cast, ep.stem)
+    if old.get("stamp") == identity_stamp(cards, mode) and ep.stem in cast.d["episodes"]:
         print("  current (same cards and speakers): nothing to do")
         return old
-    if old.get("where") and ep.stem in cast.d["episodes"] and (carried := same_cards(old, cards)) is not None:
+    if old.get("where") and old.get("recipe") == reader_recipe(mode) and ep.stem in cast.d["episodes"] and \
+            (carried := same_cards(old, cards)) is not None:
         # the layers were rebuilt and the cards renumbered (a lettering mask gone), the characters themselves the
-        # same: the identity carries over by each card's place in its box, no reading needed (2026-11-06)
-        old["cards"], old["where"], old["stamp"] = carried, {c.id: [c.box, list(c.bbox)] for c in cards.cards}, cards.stamp
+        # same: the identity carries over by each card's place in its box, no reading needed (2026-11-06). A changed
+        # recipe never carries over: the reader reads again
+        old["cards"], old["where"] = carried, {c.id: [c.box, list(c.bbox)] for c in cards.cards}
+        old["stamp"] = identity_stamp(cards, mode)
         f.write_text(json.dumps(old, indent=1, ensure_ascii=False), encoding="utf-8")
         print("  cards renumbered, the same characters: identity carried over")
         return old
@@ -953,7 +976,8 @@ def identity_step(ep: Episode, chapter, series: str) -> dict | None:
         c = chars.setdefault(cid, {"name": cast.char(cid)["name"], "cards": 0, "lines": 0})
         c["cards"] += 1
         c["lines"] += len(cards.cards[n].lines)
-    res = {"episode": ep.stem, "series": series, "pass": mode, "stamp": cards.stamp,
+    res = {"episode": ep.stem, "series": series, "pass": mode, "stamp": identity_stamp(cards, mode),
+           "recipe": reader_recipe(mode),
            "cards": {c.id: cid for c, cid in zip(cards.cards, ids)}, "characters": chars,
            "where": {c.id: [c.box, list(c.bbox)] for c in cards.cards},
            "reader": {k: reply.get(k) for k in ("edits", "groups", "moves", "names", "notes") if k in reply}
@@ -1023,7 +1047,7 @@ def inherit_voices(cast: Cast, old_cards: dict, old_voices: dict, cards: Cards, 
 
 VOICE_TASK = """# Task: design a voice for each speaking character
 
-The episode's characters will be voiced by a text-to-speech model, Gemini 3.8 Flash TTS. Its voice design creates one persistent voice per character from a short text description. Write that description for every character listed in `voices.md`, the way a casting director would after reading the comic.
+The episode's characters will be voiced by a text-to-speech model. Its voice design creates one persistent voice per character from a short text description. Write that description for every character listed in `voices.md`, the way a casting director would after reading the comic.
 
 ## Material (below, in this order)
 - `page-NN.png`: the episode in reading order. Read every page. Each character card is tagged `K<n> c<card>`.
@@ -1065,21 +1089,24 @@ Reply with ONE JSON object:
 
 
 def voices_step(ep: Episode, chapter, identity: dict) -> None:
-    """Step 8: a voice for every character of the episode with at least MIN_LINES lines and none in the cast yet,
-    from one reader call, saved in the series cast (character "voice"); then every described voice of the cast not
-    designed yet is designed on Gemini (design_voices)."""
+    """Step 8: a voice description for every character of the episode with at least MIN_LINES lines and none in the
+    cast yet, from one reader call, saved in the series cast (character "voice"); then the voices are designed and
+    the lines recorded on the episode's voice backend (record: voices.py)."""
     cast = Cast(cast_root(ep), identity["series"])
     cards = read_cards(ep, len(chapter))
     ids = [identity["cards"].get(c.id) for c in cards.cards]
     lines = {}
     for n, cid in enumerate(ids):
         lines.setdefault(cid, []).extend(cards.cards[n].lines)
-    todo = [cid for cid in sorted(lines, key=lambda c: -len(lines[c]))
-            if cid and len(lines[cid]) >= MIN_LINES and cast.char(cid) and not cast.char(cid)["voice"]]
-    print(f"  {len(todo)} characters to voice ({sum(1 for c in cast.chars if c['voice'])} in the series have one)")
+    asked = asked_of(ep)
+    unvoiced = [cid for cid in sorted(lines, key=lambda c: -len(lines[c]))
+                if cid and len(lines[cid]) >= MIN_LINES and cast.char(cid) and not cast.char(cid)["voice"]]
+    todo = [cid for cid in unvoiced if not asked.current(cid, voices_stamp(lines[cid]))]
+    print(f"  {len(todo)} characters to voice ({sum(1 for c in cast.chars if c['voice'])} in the series have one" +
+          (f"; {len(unvoiced) - len(todo)} left out by the reader on the same lines" if len(unvoiced) > len(todo) else "")
+          + ")")
     if not todo:
-        design_voices(cast)
-        record_lines(ep, len(chapter), identity, cast)
+        record(ep, chapter, identity, cast)
         return
     col = {cid: PAL[i % len(PAL)] for i, cid in enumerate(sorted(set(filter(None, ids))))}
     parts = [(f"page-{k:02d}.png", p) for k, p in enumerate(
@@ -1119,178 +1146,30 @@ def voices_step(ep: Episode, chapter, identity: dict) -> None:
             continue
         done.append(c["id"])
     cast.save()
+    for cid in todo:  # a character the reply leaves out is not asked again on the same lines
+        if cid not in done:
+            asked.made(cid, voices_stamp(lines[cid]))
     print(f"  voices for {len(done)} of {len(todo)}: " + "; ".join(
-        f"{cid} " + (cast.char(cid)["voice"].get("description") or f"= {cast.char(cid)['voice']['same_voice_as']}")
-        for cid in done))
-    design_voices(cast)
-    record_lines(ep, len(chapter), identity, cast)
+        [f"{cid} " + (cast.char(cid)["voice"].get("description") or f"= {cast.char(cid)['voice']['same_voice_as']}")
+         for cid in done] + [f"{cid} left out" for cid in todo if cid not in done]))
+    record(ep, chapter, identity, cast)
 
 
-def design_voices(cast: Cast) -> None:
-    """Every described voice of the cast without a designed one, designed on Inworld (inworld.design_voice, the
-    character's own lines as the preview script) and published: the voice id in the cast (voice "id"), its sample in
-    <cast>/voices/K<n>.wav. A description the service refuses is printed and tried again on the next run; the cap
-    stops the rest for the next run."""
-    todo = [c for c in cast.chars if c["voice"] and c["voice"].get("description") and not c["voice"].get("id")]
-    if not todo:
-        return
-    (cast.dir / "voices").mkdir(parents=True, exist_ok=True)
-    made, cost = 0, 0.0
-    for c in todo:
-        v = c["voice"]
-        preview = " ".join(c.get("lines") or [])[:400] or v["description"]
-        try:
-            got = IW.design_voice(v["description"], v.get("display_name") or c["name"], preview,
-                                  v.get("language_code") or "en-US", tag=f"{cast.d['series']} voice {c['id']}")
-        except BudgetExceeded as e:
-            print(f"  voices not designed ({e}); the next run designs them")
-            break
-        except RuntimeError as e:
-            print(f"  {c['id']} {c['name']}: {e}")
-            continue
-        v["id"], v["design_cost"] = got["id"], got["cost"]
-        (cast.dir / "voices" / f"{c['id']}.wav").write_bytes(got["sample"])
-        made, cost = made + 1, cost + got["cost"]
-    cast.save()
-    print(f"  {made} of {len(todo)} voices designed ({cost:.4f} USD at list price): " +
-          ", ".join(f"{c['id']} {c['name']}" for c in todo if c['voice'].get('id')))
+def asked_of(ep: Episode) -> fresh.Stamps:
+    """Which characters the voices reader was asked about, {character: voices_stamp of its lines then}."""
+    return fresh.Stamps(ep.out / "identity" / "voices" / "stamps.json")
 
 
-STYLE = {"shout": "shouting", "thought": "thinking to themself, a quiet inner voice", "whisper": "whispering"}
+def voices_stamp(lines: list[str]) -> str:
+    """What a character is asked about with: its lines in the episode and the voices reader's recipe."""
+    return fresh.digest(lines, VOICE_TASK, MODEL, REASONING)
 
 
-def style_of(r: dict) -> str | None:
-    """A line's delivery note for the voice model: what the balloon's kind says (STYLE) and what Transcribe read in
-    the drawing (the record's delivery: emotion and manner), joined; None when neither says anything."""
-    return ", ".join(s for s in (STYLE.get(r.get("kind")), (r.get("delivery") or "").strip()) if s) or None
-LINE_WORKERS = 4  # speech calls in flight (Inworld's free plan allows 5 concurrent)
-PACE = {"slow": 0.9, "fast": 1.1}  # a line's tempo as Transcribe read it, times the character's rate (user, 2026-11-06)
-CONTEXT_LINES = 2  # balloons before a line, any speaker, sent as the scene so far (inworld.speech context)
-
-
-def record_lines(ep: Episode, n_boxes: int, identity: dict, cast: Cast) -> None:
-    """Every spoken balloon with a speaker card (speakers.json: kind not sfx; the card in the box, or in another box
-    by the reader's correction) as audio in its character's designed voice, the delivery from the balloon's kind
-    and Transcribe's note on the drawing (style_of), to <episode>/audio/<pid>.b<bubble>.wav
-    and audio/lines.json (one record per balloon: who, voice, text, style, seconds, cost). A balloon already recorded
-    with the same text, voice and style is kept; one whose character has no designed voice is skipped, counted."""
-    out = ep.out / "audio"
-    index = out / "lines.json"
-    have = {(l["pid"], l["bubble"]): l for l in json.loads(index.read_text(encoding="utf-8"))} if index.exists() else {}
-
-    def voice_of(cid: str | None, hops: int = 0) -> tuple[str, str | None]:
-        """(the character whose voice is used, its voice id or None): looks sharing a voice point at its owner."""
-        c = cast.char(cid) if cid else None
-        v = (c or {}).get("voice") or {}
-        if v.get("same_voice_as") and hops < 4:
-            return voice_of(v["same_voice_as"], hops + 1)
-        return cid or "", v.get("id")
-
-    def rate_of(cid: str, pace: str | None) -> float:
-        """The line's speaking rate: the character's (its cast record's "rate", else the backend's default) times
-        the line's pace as Transcribe read it (PACE: slow 0.9, fast 1.1)."""
-        v = (cast.char(cid) or {}).get("voice") or {}
-        return round(float(v.get("rate") or IW.SPEAKING_RATE) * PACE.get(pace or "", 1.0), 3)
-
-    todo, kept, unvoiced, wanted, spoken = [], 0, {}, set(), []
-    for i in range(n_boxes):
-        box = ep.box(i)
-        for r in sorted(box.speakers() or [], key=lambda r: r["order"]):
-            text = (r.get("text") or "").strip()
-            if r.get("kind") == "sfx" or not text:
-                continue
-            context = " ".join(spoken[-CONTEXT_LINES:]) or None  # the scene so far, whoever spoke
-            spoken.append(text)
-            if not r.get("speakers"):
-                continue
-            if not re.search(r"[^\W_]", text):  # a balloon of marks alone ("...", "?!!"): a reaction, no words to say
-                continue
-            s = r["speakers"][0]  # a card of the box, or "<pid>/<key>" of another box (the reader's correction)
-            cid = identity["cards"].get(s if "/" in s else f"{r['pid']}/{s}")
-            who, vid = voice_of(cid)
-            if not vid:
-                unvoiced[who or "?"] = unvoiced.get(who or "?", 0) + 1
-                continue
-            line = {"pid": r["pid"], "bubble": r["bubble"], "box": i, "order": r["order"], "character": cid, "voice": who,
-                    "voice_id": vid, "text": text, "style": style_of(r), "context": context,
-                    "rate": rate_of(who, r.get("pace")),
-                    "file": f"{r['pid']}.b{r['bubble']}.wav"}
-            wanted.add((line["pid"], line["bubble"]))
-            old = have.get((line["pid"], line["bubble"]))
-            # current when the same words go to the same designed voice at the same rate (a rerun renumbers the
-            # characters, K12 to K11, while the voice they inherited is the same one)
-            if old and all(old.get(k) == line[k] for k in ("voice_id", "text", "style", "rate")) and (out / old["file"]).exists():
-                kept += 1
-                continue
-            todo.append(line)
-    stale = [k for k in have if k not in wanted]  # recorded earlier, no longer a voiced balloon (its speaker changed)
-    for k in stale:
-        (out / have.pop(k)["file"]).unlink(missing_ok=True)
-    print(f"  {len(todo)} lines to record, {kept} current" + (f", {len(stale)} dropped" if stale else "") +
-          (f"; no voice for {sum(unvoiced.values())}: " + ", ".join(f"{k} {n}" for k, n in unvoiced.items())
-           if unvoiced else ""))
-    if stale:
-        index.write_text(json.dumps(sorted(have.values(), key=lambda l: (l["box"], l["order"])), indent=1,
-                                    ensure_ascii=False), encoding="utf-8")
-    if not todo:
-        return
-    out.mkdir(parents=True, exist_ok=True)
-    vid = {cid: voice_of(cid)[1] for cid in {l["voice"] for l in todo}}
-
-    def one(n: int) -> dict:
-        l = todo[n]
-        wav, cost = IW.speech(l["text"], vid[l["voice"]], l["style"], tag=f"{ep.stem} line {l['pid']} b{l['bubble']}",
-                              context=l.get("context"), rate=l["rate"])
-        (out / l["file"]).write_bytes(wav)
-        import soundfile as sf
-        info = sf.info(out / l["file"])
-        return l | {"seconds": round(info.duration, 2), "cost": round(cost, 5)}
-
-    def save(n: int, l: dict) -> None:  # after each line: a run stopped half-way keeps what it recorded
-        have[(l["pid"], l["bubble"])] = l
-        lines = sorted(have.values(), key=lambda l: (l["box"], l["order"]))
-        index.write_text(json.dumps(lines, indent=1, ensure_ascii=False), encoding="utf-8")
-
-    done, stopped = paid_map(one, range(len(todo)), workers=LINE_WORKERS, on_done=save)
-    cost = sum(done[n]["cost"] for n in done)
-    secs = sum(done[n]["seconds"] for n in done)
-    print(f"  {len(done)} lines recorded, {secs:.0f} s of audio, {cost:.4f} USD at list price" +
-          (f"; {len(stopped)} stopped by the cap: the next run records them" if stopped else ""))
-    if done or stale:
-        episode_audio(ep)
-
-
-GAP_S = 0.6  # silence between lines in the episode's listening file
-
-
-def episode_audio(ep: Episode) -> Path | None:
-    """The episode's recorded lines joined in reading order with GAP_S of silence between them, as
-    <episode>/audio/episode.mp3 for listening and sharing, with episode.txt beside it (the time, speaker and text
-    of each line). Written after each recording run; None when there are no lines."""
-    import numpy as np
-    import soundfile as sf
-    index = ep.out / "audio" / "lines.json"
-    if not index.exists():
-        return None
-    lines = json.loads(index.read_text(encoding="utf-8"))
-    parts, cues, t, sr = [], [], 0.0, 24000
-    for l in lines:
-        f = ep.out / "audio" / l["file"]
-        if not f.exists():
-            continue
-        data, rate = sf.read(f)
-        if rate != sr:
-            continue
-        cues.append(f"{int(t // 60)}:{t % 60:04.1f} {l['voice']:>4} {l['text'][:80]}")
-        parts += [data, np.zeros(int(GAP_S * sr))]
-        t += len(data) / sr + GAP_S
-    if not parts:
-        return None
-    out = ep.out / "audio" / "episode.mp3"
-    sf.write(out, np.concatenate(parts), sr, format="MP3")
-    out.with_suffix(".txt").write_text("\n".join(cues), encoding="utf-8")
-    print(f"  episode audio: {len(cues)} lines, {t / 60:.1f} min, {out.name}")
-    return out
+def record(ep: Episode, chapter, identity: dict, cast: Cast) -> None:
+    """The described voices designed and every voiced balloon recorded on the episode's voice backend (voices.py)."""
+    tts = VO.backend()
+    VO.design_voices(cast, tts)
+    VO.record_lines(ep, len(chapter), identity, cast, tts)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,18 @@ for (const file of targets) {
     if (p.musicCue && p.musicCue.track !== "none" && !trackIds.has(p.musicCue.track)) errors.push(`panel ${p.id}: musicCue names unknown track ${p.musicCue.track}`);
     for (const i of p.interactions ?? []) if (!layerIds.has(i.target)) errors.push(`panel ${p.id} interaction ${i.id}: unknown target ${i.target}`);
   }
+  const places = m.episode?.places;
+  if (places) {
+    const settingIds = new Set(m.episode.settings?.map((s) => s.id));
+    const placeIds = new Set(places.meshes.map((p) => p.setting));
+    for (const p of places.meshes) if (!settingIds.has(p.setting)) errors.push(`place ${p.setting}: unknown setting`);
+    let end = 0;
+    for (const s of places.timeline) {
+      if (!placeIds.has(s.setting)) errors.push(`places timeline at ${s.start} s names unpacked place ${s.setting}`);
+      if (s.start < end || s.end < s.start) errors.push(`places timeline at ${s.start} s is out of order`);
+      end = s.end;
+    }
+  }
   const layout = m.episode?.layout;
   if (layout?.mode === "scroll") {
     let cursor = 0;

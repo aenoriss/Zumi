@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SPEND = ROOT / ".data/spend"
 LEDGERS = {"openrouter": SPEND / "openrouter.jsonl", "bfl": SPEND / "bfl.jsonl", "gemini": SPEND / "gemini.jsonl",
-           "inworld": SPEND / "inworld.jsonl"}
+           "inworld": SPEND / "inworld.jsonl", "fal": SPEND / "fal.jsonl"}
 DAILY_CAP_USD = float(os.environ.get("ZUMI_DAILY_USD", 2.0))
 WORKERS = 16  # calls in flight per step: they wait on remote models, not on cores (openrouter backs off on 429s)
 _LOCK = threading.Lock()
@@ -58,10 +58,13 @@ def paid_map(fn, items, workers: int = WORKERS, on_done=None) -> tuple[dict, lis
     """fn(item) for every item, `workers` at a time (the steps' calls wait on remote models). Once fn raises
     BudgetExceeded (the cap, or an offline run), items not yet started are not started: they and the refused one are
     returned as stopped, for the step to say what that means (one scene for now, not saved, not sent). Any other
-    exception propagates. on_done(item, result): called as each finishes. Returns ({item: result}, [stopped])."""
+    exception stops the map the same way, and is raised once the items already running have finished.
+    on_done(item, result): called as each finishes, for every item that finished whatever happened to the others, so
+    a step that saves there keeps what it paid for (until 2026-11-10 an error left the loop while the queued items
+    still ran, and their paid results reached no one). Returns ({item: result}, [stopped])."""
     stop = threading.Event()
     told = threading.Lock()
-    results, stopped = {}, []
+    results, stopped, errors = {}, [], []
 
     def one(item):
         if stop.is_set():
@@ -74,6 +77,11 @@ def paid_map(fn, items, workers: int = WORKERS, on_done=None) -> tuple[dict, lis
                     print(f"STOP: {e}")
                 stop.set()
             return item, False, None
+        except Exception as e:
+            with told:
+                errors.append(e)
+                stop.set()
+            return item, None, None
 
     with ThreadPoolExecutor(workers) as ex:
         for fut in as_completed([ex.submit(one, it) for it in items]):
@@ -81,9 +89,15 @@ def paid_map(fn, items, workers: int = WORKERS, on_done=None) -> tuple[dict, lis
             if ok:
                 results[item] = res
                 if on_done is not None:
-                    on_done(item, res)
-            else:
+                    try:
+                        on_done(item, res)
+                    except Exception as e:  # a failed save stops the map like a failed call
+                        errors.append(e)
+                        stop.set()
+            elif ok is False:
                 stopped.append(item)
+    if errors:
+        raise errors[0]
     return results, stopped
 
 

@@ -1,8 +1,9 @@
 """Step 2c, the objects: every movable thing in front of the backdrop per box, picked by one small vision call
 (choose_objects: Claude Haiku names each as a SAM text prompt with a point on it and its relations: on, held,
 front, except), masked by SAM 3.1 (masks_for_objects: the mask of that name holding the point), reviewed like the
-characters and the lettering (review_loop, task "objects"), saved (Box.save_objects) and reused on reruns. The
-layers step cuts each out of the backdrop as a card of its own (the erase paints behind it).
+characters and the lettering (review_loop, task "objects"), saved (Box.save_objects) and reused on reruns while
+their stamp (box_stamp) is current. The layers step cuts each out of the backdrop as a card of its own (the erase
+paints behind it).
 
     find(ep, seg, imgs, chars, review_on, log)     the step for an episode's boxes (episode.py's 2c)
     per = masks_for_objects(seg, img, picked)      [{"name", "point", "mask", "score", and the relations}]
@@ -22,10 +23,11 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import distance_transform_edt
 
-from boxstore import OBJECT_META_KEYS, Episode
-from masks import Found, save_masks, union
+from boxstore import OBJECT_META_KEYS, Episode, image_stamp
+from fresh import digest
+from masks import Found, save_masks, stamp, union
 from openrouter import Truncated, ask_json, image_part
-from review_loop import review
+from review_loop import recipe as review_recipe, review
 from sam import THRESHOLD, Segmenter
 from spend import paid_map
 
@@ -148,6 +150,8 @@ def main():
 MODEL = "anthropic/claude-haiku-5.5"
 EFFORT = "high"
 MAX_SIDE = 1568          # the model's own downscale limit: a bigger image only costs upload
+PICK_TOKENS = 3000       # for the answer (plus the gateway's reasoning allowance): on a busy box (P&C 39 p12, ~27
+                         # objects) a 1500 answer budget cut it short
 
 
 def grid_image(img: Image.Image, step: int | None = None) -> Image.Image:
@@ -288,10 +292,8 @@ def choose_objects(img: Image.Image, chars: np.ndarray | None = None, tag: str =
     w, h = img.size
     step = 100 if max(w, h) <= 2400 else 200
     prompt = OBJECTS_PROMPT.format(w=w, h=h, step=step)
-    # 3000 for the answer (plus the gateway's reasoning allowance): on a busy box (P&C 39 p12, ~27 objects) a 1500
-    # answer budget cut it short
     res, cost = ask_json(MODEL, [{"type": "text", "text": prompt}, image_part(grid_image(img, step), max_side=MAX_SIDE)],
-                         tag, 3000, EFFORT)
+                         tag, PICK_TOKENS, EFFORT)
     near = None
     if chars is not None and chars.any():
         dist, (iy, ix) = distance_transform_edt(chars, return_indices=True)
@@ -331,13 +333,36 @@ def choose_objects(img: Image.Image, chars: np.ndarray | None = None, tag: str =
 # The step
 # =====================================================================================================
 
-def find(ep: Episode, seg: Segmenter | None, imgs: dict, chars: dict, review_on: bool, log: dict) -> None:
-    """The objects of every box in imgs ({index: image}; chars: its character masks) that has none saved: picked
-    (choose_objects, calls in parallel under the daily cap), masked (masks_for_objects; the Segmenter made here when
-    none is given and a box has objects), reviewed when review_on, saved (Box.save_objects). A box whose pick fails
-    (the cap, a reply cut off) is not saved, so the next run asks again. Each review's record goes into log under
-    "p<i> objects". The first version listed big furniture only (it chose what to erase): the vase on ToG 228 p6's
-    side table stayed painted on the backdrop."""
+def box_stamp(img: Image.Image, chars: list[Found]) -> str:
+    """What a box's saved objects were made from (Box "objects"): its image, its character masks (the pick moves its
+    points off them), the pick's prompt, model, effort and budgets, and the constants that turn a pick into masks."""
+    return digest(image_stamp(img), stamp(chars), OBJECTS_PROMPT, MODEL, EFFORT, MAX_SIDE, PICK_TOKENS, SNAP_PX,
+                  NEAR_PX, DUP_IOU, SYNONYMS, MAX_ALT, THRESHOLD)
+
+
+def _line(per: list[dict]) -> str:
+    return str([o["name"] + (" @ " + o["on"] if o.get("on") else "") + (" [held]" if o.get("held") else "")
+                + (" [front]" if o.get("front") else "") for o in per] or "none")
+
+
+def find(ep: Episode, seg, imgs: dict, chars: dict, review_on: bool, log: dict) -> None:
+    """The objects of every box in imgs ({index: image}; chars: its character masks) whose saved objects are not
+    current (box_stamp): picked (choose_objects, calls in parallel under the daily cap), masked (masks_for_objects,
+    on seg: the run's SAM, which episode.py loads when a box first uses it) and saved as each pick comes back, so an error
+    later loses no pick that was paid for. Then, when review_on, the saved objects not yet reviewed in full are
+    reviewed (review_loop) and saved again as each review ends; a review stamp ("objects-review", over the objects'
+    stamp and review_loop.recipe) marks those done, so objects saved under --no-review, or whose review the daily cap
+    stopped, are reviewed by a later run without being picked again. A box whose pick fails (the cap, a reply cut
+    off) is not saved, so the next run asks again. Each review's record goes into log under "p<i> objects". The
+    first version listed big furniture only (it chose what to erase): the vase on ToG 228 p6's side table stayed
+    painted on the backdrop."""
+    stamps = {i: box_stamp(imgs[i], chars[i]) for i in imgs}
+    rev = {i: digest(stamps[i], review_recipe("objects")) for i in imgs}
+    to_pick = [i for i in imgs if not ep.box(i).current("objects", stamps[i])]
+    todo = {i: ep.box(i).objects() for i in imgs if i not in to_pick and review_on
+            and not ep.box(i).current("objects-review", rev[i])}
+    print(f"  {len(to_pick)} of {len(imgs)} boxes to pick, {len(todo)} more to review")
+
     def pick(i):
         img = imgs[i]
         try:
@@ -346,30 +371,46 @@ def find(ep: Episode, seg: Segmenter | None, imgs: dict, chars: dict, review_on:
             print(f"p{i}: objects not chosen ({e}); not saved")
             return None
 
-    picked, _ = paid_map(pick, [i for i in imgs if not ep.box(i).has_objects()])  # the cap: the rest next run
-    todo = {}
-    for i, objs in picked.items():
+    def picked(i, objs):
         if objs is None:
-            continue
-        if objs:
-            seg = seg or Segmenter()
-        todo[i] = masks_for_objects(seg, imgs[i], objs) if objs else []
+            return
+        per = masks_for_objects(seg, imgs[i], objs) if objs else []
+        box = ep.box(i)
+        box.save_objects(per)
+        box.made("objects", stamps[i])
+        if per:
+            box.unmade("objects-review")
+            todo[i] = per
+        else:  # nothing to review
+            box.made("objects-review", rev[i])
+        print(f"p{i}: objects {_line(per)}" + (", to review" if per and review_on else ""))
+
+    paid_map(pick, to_pick, on_done=picked)  # the cap: the rest next run
+    if not review_on:
+        return
 
     def check(i):
         per = todo[i]
-        if not per or not review_on:
+        if not per:
             return per, None
-        new, lg = review(seg, imgs[i], [Found(o["mask"], o["score"], "object", o["name"]) for o in per], "objects",
-                         f"{ep.stem} p{i} objects")
+        new, lg = review(seg, imgs[i], [Found(o["mask"], o.get("score", 1.0), "object", o["name"]) for o in per],
+                         "objects", f"{ep.stem} p{i} objects")
         return reviewed(new, per), lg
 
-    done, _ = paid_map(check, list(todo))
-    for i, (per, lg) in sorted(done.items()):
-        ep.box(i).save_objects(per)
+    def checked(i, res):
+        per, lg = res
+        box = ep.box(i)
+        if lg is not None and lg.applied:
+            box.save_objects(per)
+        if lg is None or lg.complete:
+            box.made("objects-review", rev[i])
         if lg is not None:
             log[f"p{i} objects"] = lg.record()
         fixes = f", review: {lg.applied}" if lg is not None and lg.applied else ""
-        print(f"p{i}: objects {[o['name'] + (' @ ' + o['on'] if o.get('on') else '') + (' [held]' if o.get('held') else '') + (' [front]' if o.get('front') else '') for o in per] or 'none'}{fixes}")
+        stop = "" if lg is None or lg.complete else ", review stopped by the daily cap: reviewed again next run"
+        print(f"p{i}: objects {_line(per)}{fixes}{stop}")
+
+    paid_map(check, sorted(todo), on_done=checked)
 
 
 if __name__ == "__main__":

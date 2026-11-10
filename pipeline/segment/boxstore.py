@@ -13,8 +13,12 @@ paths or formats.
     out/parallax/mesh/<pid>.speakers.json            who speaks each bubble (speakers.assign_box), stamped with
                                                      the cards.json it was made from
     out/parallax/plates/<pid>/                       the band erase's plate and paid outputs (layers.erase_box)
-    out/transcripts.json                             Transcribe's results per box index
+    out/transcripts.json                             Transcribe's results per box index, each stamped (its "letters"
+                                                     and "recipe")
     out/run.json                                     the run log: each review's fixes and cost, each step's time
+    out/masks/stamps.json, parallax/mesh/stamps.json, parallax/plates/stamps.json
+                                                     the stamps (fresh.py) of the masks, the layers and the plates,
+                                                     per box and output (Box.stamp_of, current, made, unmade)
 
     ep = Episode(out, stem); box = ep.box(i); box.letters(); box.frames().page; box.scene().layers; box.bubbles()
 """
@@ -22,15 +26,59 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
+from fresh import Stamps
 from masks import Found, load_masks, save_masks, stamp, top_key
 
 OBJECT_META_KEYS = ("on", "held", "front", "except", "animal")
+# each stamped output: the folder its stamps live in (beside its files) and the files that must exist for it.
+# "<task>-review" is the review of that task's masks, done in full (review_loop): kept apart from the segmentation's
+# own stamp so a review the daily cap stopped is done again later without segmenting the box again
+STAMPED = {"lettering": ("masks", ("lettering.npz",)), "lettering-review": ("masks", ("lettering.npz",)),
+           "characters": ("masks", ("characters.npz",)), "characters-review": ("masks", ("characters.npz",)),
+           "objects": ("masks", ("objects3.npz", "objects3.json")),
+           "objects-review": ("masks", ("objects3.npz", "objects3.json")),
+           "layers": ("parallax/mesh", (".cards.json",)), "plate": ("parallax/plates", ())}
+_STAMPS: dict[Path, Stamps] = {}  # one Stamps per stamps.json in a process: two would each write their own keys only
+_STAMPS_LOCK = threading.Lock()
+
+
+def stamps_in(folder: Path) -> Stamps:
+    f = Path(folder) / "stamps.json"
+    with _STAMPS_LOCK:
+        if f not in _STAMPS:
+            _STAMPS[f] = Stamps(f)
+        return _STAMPS[f]
+
+
+def image_stamp(img: Image.Image) -> str:
+    """A box image's identity by its pixels (the .zumi holds it compressed; its bytes there are not the input)."""
+    a = np.asarray(img.convert("RGB"))
+    return hashlib.sha1(str(a.shape).encode() + a.tobytes()).hexdigest()[:16]
+
+
+def content_stamp(path: Path) -> str | None:
+    """A saved file's identity by what it holds: an .npz by its arrays (np.savez writes the time into the archive, so
+    the same masks saved again have other bytes), anything else by its bytes; None when it does not exist."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    h = hashlib.sha1()
+    if path.suffix == ".npz":
+        with np.load(path) as d:
+            for k in sorted(d.files):
+                a = d[k]
+                h.update(f"{k}{a.dtype}{a.shape}".encode())
+                h.update(np.ascontiguousarray(a).tobytes())
+    else:
+        h.update(path.read_bytes())
+    return h.hexdigest()[:16]
 
 
 def pid_of(stem: str, i: int) -> str:
@@ -174,6 +222,39 @@ class Box:
     def _mask_file(self, what: str) -> Path:
         return self.out / "masks" / f"{self.pid}-{what}.npz"
 
+    # ---- stamps (fresh.py): what each saved output was made from
+    def _stamped(self, what: str) -> tuple[Stamps, str, list[Path]]:
+        folder, ends = STAMPED[what]
+        d = self.out / folder
+        sep = "" if folder == "parallax/mesh" else "-"
+        return stamps_in(d), f"{self.pid}-{what}", [d / f"{self.pid}{sep}{e}" for e in ends]
+
+    def stamp_of(self, what: str) -> str | None:
+        """The stamp saved for this box's output `what` (a STAMPED key), None when none is."""
+        st, key, _ = self._stamped(what)
+        return st.get(key)
+
+    def current(self, what: str, stamp: str) -> bool:
+        """The output `what` is saved and was made from `stamp`."""
+        st, key, files = self._stamped(what)
+        return st.current(key, stamp, *files)
+
+    def made(self, what: str, stamp: str) -> None:
+        st, key, _ = self._stamped(what)
+        st.made(key, stamp)
+
+    def unmade(self, what: str) -> None:
+        st, key, _ = self._stamped(what)
+        st.drop(key)
+
+    def content(self, what: str) -> str | None:
+        """A saved mask file's identity by its arrays (content_stamp): "lettering", "characters", "frames", or
+        "objects" (the masks and their relations)."""
+        if what == "objects":
+            f = self._mask_file("objects3")
+            return None if not f.exists() else f"{content_stamp(f)}{content_stamp(f.with_suffix('.json'))}"
+        return content_stamp(self._mask_file(what))
+
     # ---- segmentation masks
     def letters(self) -> list[Found] | None:
         f = self._mask_file("lettering")
@@ -186,20 +267,12 @@ class Box:
     def save_letters(self, found: list[Found]) -> None:
         save_masks(self._mask_file("lettering"), found)
 
-    def letters_stamp(self) -> str | None:
-        """The saved lettering's stamp (masks.stamp): what bubbles.json and the transcript were made from."""
-        found = self.letters()
-        return None if found is None else stamp(found)
-
     def save_characters(self, found: list[Found]) -> None:
         save_masks(self._mask_file("characters"), found)
 
     # ---- objects
-    def has_objects(self) -> bool:
-        return self._mask_file("objects3").exists()
-
     def objects(self) -> list[dict]:
-        """The saved objects: [{"name", "mask", "on", "held", "front", "except", "animal"}], [] when none."""
+        """The saved objects: [{"name", "mask", "score", "on", "held", "front", "except", "animal"}], [] when none."""
         f = self._mask_file("objects3")
         if not f.exists():
             return []
@@ -208,8 +281,9 @@ class Box:
         # paired by position P&C 39 p10's bottle took the table's "front" and the table the cup's "on"
         meta = {md["name"]: md for md in json.loads(mf.read_text(encoding="utf-8"))} if mf.exists() else {}
         # files saved before 2026-10-30 kept the name in the kind
-        named = [(m.name or m.kind, m.mask) for m in load_masks(f)]
-        return [{"name": n, "mask": m, **{k: v for k, v in meta.get(n, {}).items() if k != "name"}} for n, m in named]
+        named = [(m.name or m.kind, m.mask, m.score) for m in load_masks(f)]
+        return [{"name": n, "mask": m, "score": s, **{k: v for k, v in meta.get(n, {}).items() if k != "name"}}
+                for n, m, s in named]
 
     def save_objects(self, per: list[dict]) -> None:
         """per: [{"name", "mask", "score", and the relations}]."""
@@ -351,6 +425,10 @@ class Box:
     def has_plate(self) -> bool:
         return self._plate_file.exists()
 
+    def plate_content(self) -> str | None:
+        """The saved plate's identity by its bytes (what the layers' stamp names as drawn on)."""
+        return content_stamp(self._plate_file)
+
     def plate(self) -> np.ndarray | None:
         """The band erase's plate (the whole box, the art outside its cards), or None before the erase."""
         return np.asarray(Image.open(self._plate_file).convert("RGB")) if self.has_plate() else None
@@ -368,10 +446,12 @@ class Box:
         """This box's result in out/transcripts.json ({} when Transcribe has not run on it)."""
         return load_transcripts(self.out).get(self.index, {})
 
-    def transcript_current(self, letters: list[Found]) -> bool:
-        """Whether Transcribe's result for this box was made from these lettering masks (their stamp), or there is
-        no lettering to read: a box segmented again is read again."""
-        return not letters or self.transcript().get("letters") == stamp(letters)
+    def transcript_current(self, letters: list[Found], recipe: str) -> bool:
+        """Whether Transcribe's result for this box was made from these lettering masks (their stamp) by this recipe
+        (transcribe.recipe: its prompts and models), or there is no lettering to read: a box segmented again, or
+        under a changed prompt, is read again."""
+        tr = self.transcript()
+        return not letters or (tr.get("letters") == stamp(letters) and tr.get("recipe") == recipe)
 
 
 class Episode:
@@ -392,10 +472,12 @@ class Episode:
     def transcripts(self) -> dict[int, dict]:
         return load_transcripts(self.out)
 
-    def save_transcripts(self, results: dict[int, dict], letters: dict[int, list[Found]]) -> None:
+    def save_transcripts(self, results: dict[int, dict], letters: dict[int, list[Found]], recipe: str) -> None:
         """Transcribe's results ({box index: result}) saved, each stamped with the lettering masks it was read from
-        (letters[i]), so Box.transcript_current and Box.bubbles can tell a current result from a stale one."""
-        save_transcripts(self.out, {i: {**r, "letters": stamp(letters[i])} for i, r in results.items()})
+        (letters[i]) and the recipe that read them, so Box.transcript_current and Box.bubbles can tell a current
+        result from a stale one (Box.bubbles joins on the masks alone: their numbering is what it needs)."""
+        save_transcripts(self.out, {i: {**r, "letters": stamp(letters[i]), "recipe": recipe}
+                                    for i, r in results.items()})
 
     def save_run_log(self, review: dict, times: dict) -> None:
         """out/run.json, merged into the previous runs': each segmentation task's review per box ("p<i> <task>":

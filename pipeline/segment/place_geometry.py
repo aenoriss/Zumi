@@ -1,0 +1,291 @@
+"""A place's geometry (CONTEXT.md: Place): a setting's wide view lifted to the meshes the reader shows through its walls.
+MoGe-3 (Ruicheng/moge-3-vitl, MIT) on the local GPU; it needs a PyTorch build the segment environment cannot hold, so
+this module runs in pipeline/.venv-moge as a subprocess of places.py, one command per stage, on one place folder:
+
+    front DIR   view.png -> its span (measure_span), its depth (pano_depth) as distance-full.npy, then show
+    show DIR    (no model) the central SHOWN_DEG of the view (shown.png), front.glb (cut at depth edges), distance.npy,
+                erase-mask.png (the near objects, for the erase), depth.png, geometry.json
+    back DIR    shown.png, distance.npy, plate.png (the erase's output) -> back.glb (the near objects taken out, the
+                plate regraded to the view's colour, never cut, BACK_PUSH farther), back-texture.png
+
+The wide view is read as a window of an equirectangular panorama around the seat: FLUX 3 keeps verticals straight and
+curves horizontals. Meshes are in three.js axes: the eye at the origin, the view's centre down -z, y up, metres at
+MoGe's scale (the reader scales the place to its room).
+
+    .venv-moge/Scripts/python.exe segment/place_geometry.py front <episode>/places/tavern-main
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("HF_HOME", "D:/hf-cache")
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
+
+MODEL = "Ruicheng/moge-3-vitl"
+STRIDE_PX = 720        # the front mesh has one vertex every width / STRIDE_PX px (3 px on a 2160-px view: ~0.5 M
+                       # faces, 14 MB; 2 px made 1.1 M and 29 MB), so a sharper view keeps the same mesh
+BACK_STRIDE_PX = 540   # the back layer's: it is only seen through gaps
+RTOL = 0.06            # a face whose farthest corner is this share farther than its nearest is cut (at 0.12 stool
+                       # rims stretched into streaks at a 1.5 m head move)
+SNAP = 7               # px window (on a 2160-px view, scaled with the width) in which an edge pixel's distance snaps
+MERGE = (1440, 720)    # MoGe's panorama merge size for the full canvas: 1920 x 960 ran out of memory here
+SKY_FAR = 4.0          # sky (invalid in every view) at this many times the 95th percentile of the rest
+CLOSE_WINDOW = 0.12    # near_objects' window, a share of the width (on an equirectangular view a wall's inverse
+                       # distance bulges, and a quarter of the width took wall centres)
+NEAR_SHARE = 0.06      # a pixel this much nearer than the opened surface belongs to a near object
+OBJ_GROW = 4           # px the near objects are grown (on a 2160-px view, scaled), so their anti-aliased rims go too
+ERASE_GROW = 6         # px more for the erase's mask (scaled likewise), so it takes the objects' contact shadows
+MATCH_SIGMA = 40       # px: the colour correction field's scale; finer is detail, which stays the plate's
+MATCH_WIDE = 160       # px: the wider field used where the fine one has no shared pixels nearby
+BACK_PUSH = 1.03       # the back layer's distance times this: just behind whatever the front mesh shows
+SHOWN_DEG = (140.0, 72.0)  # the most of a view a place shows across and up-down: the tavern's first 2:1 view, the
+                           # user's reference (140 x 71); a wider view is cropped to it, centred straight ahead
+WORK_W = 2160        # depth, span and masks are computed on a copy this wide; a sharper view only sharpens the
+                       # front's texture (MoGe ran out of GPU memory on a 5792-px view)
+SHAPES = {  # the constants each stage's files are shaped by: places.py stamps a stage's outputs with their values
+    "front": ("MODEL", "STRIDE_PX", "RTOL", "SNAP", "MERGE", "SKY_FAR", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW",
+              "ERASE_GROW", "SHOWN_DEG", "WORK_W"),
+    "back": ("BACK_STRIDE_PX", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW", "ERASE_GROW", "MATCH_SIGMA", "MATCH_WIDE",
+             "BACK_PUSH"),
+}
+
+
+def recipe(stage: str) -> dict:
+    """{constant: value} for what shapes a stage's files (SHAPES), read by places.py in its own environment."""
+    return {k: globals()[k] for k in SHAPES[stage]}
+
+
+def _work(img: Image.Image) -> Image.Image:
+    w, h = img.size
+    return img if w <= WORK_W else img.resize((WORK_W, round(h * WORK_W / w)), Image.LANCZOS)
+
+
+def _px(n: int, w: int) -> int:
+    """A pixel size tuned on 2160-px views, at this view's width."""
+    return max(1, round(n * w / 2160))
+
+
+def _model():
+    import torch
+    from moge.model.v3 import MoGeModel
+    with torch.device("cuda"):  # built on the GPU: on the CPU it needs ~1.5 GB of commit this machine may not have
+        return MoGeModel.from_pretrained(MODEL).eval()
+
+
+def measure_span(model, img: Image.Image) -> tuple[float, float]:
+    """(horizontal, vertical) degrees the wide view spans: MoGe's FOV on the central quarter and third of the width
+    gives the angle per pixel at the centre, times the size. (The tavern: 144 and 142 degrees from those crops; the
+    first guess, 180 x 90, stretched the sides; user, 2026-11-08.)"""
+    import torch
+    w, h = img.size
+    rates = []
+    for share in (0.25, 0.33):
+        cw = int(w * share)
+        x0 = (w - cw) // 2
+        t = torch.tensor(np.asarray(img.crop((x0, 0, x0 + cw, h)), dtype=np.float32) / 255).permute(2, 0, 1).cuda()
+        with torch.no_grad():
+            o = model.infer(t)
+        rates.append(float(o["intrinsics"][0, 0]) * cw)  # focal length in px: px per radian at the centre
+    f = float(np.mean(rates))
+    return round(float(np.degrees(w / f)), 1), round(float(np.degrees(h / f)), 1)
+
+
+def dirs(h: int, w: int, h_deg: float, v_deg: float) -> np.ndarray:
+    """Unit rays (h, w, 3) in OpenCV axes (x right, y down, z forward): the centre column straight ahead."""
+    lon = ((np.arange(w) + 0.5) / w - 0.5) * np.radians(h_deg)
+    lat = (0.5 - (np.arange(h) + 0.5) / h) * np.radians(v_deg)
+    lon, lat = np.meshgrid(lon, lat)
+    return np.stack([np.sin(lon) * np.cos(lat), -np.sin(lat), np.cos(lon) * np.cos(lat)], -1)
+
+
+def pano_depth(model, img: Image.Image, h_deg: float, v_deg: float) -> np.ndarray:
+    """MoGe-3 distance per pixel, as MoGe's own infer_panorama does it with the v3 model: the view padded onto a full
+    360 x 180 canvas, cut into 20 views of 90 degrees (one per icosahedron vertex), each inferred with its known FOV and
+    masked to the pixels that came from the image, merged by MoGe's Poisson solve, cropped back; sky far away."""
+    import cv2
+    import torch
+    import utils3d_moge as utils3d
+    from moge.utils.panorama import get_panorama_cameras, merge_panorama_depth, split_panorama_image
+    rgb = np.asarray(img.convert("RGB"))
+    h, w = rgb.shape[:2]
+    W, H = round(w * 360 / h_deg), round(h * 180 / v_deg)
+    x0, y0 = (W - w) // 2, (H - h) // 2
+    canvas = np.zeros((H, W, 3), np.uint8)
+    canvas[y0:y0 + h, x0:x0 + w] = rgb
+    known = np.zeros((H, W, 3), np.uint8)
+    known[y0:y0 + h, x0:x0 + w] = 255
+    extr, intr = get_panorama_cameras()
+    views = split_panorama_image(canvas, extr, intr, 512)
+    vknown = split_panorama_image(known, extr, intr, 512)
+    dists, masks = [], []
+    for i in range(len(views)):
+        k = vknown[i][..., 0] > 127
+        if k.mean() < 0.05:
+            dists.append(np.ones(k.shape, np.float32))
+            masks.append(np.zeros(k.shape, bool))
+            continue
+        t = torch.tensor(views[i][None] / 255, dtype=torch.float32, device="cuda").permute(0, 3, 1, 2)
+        fx, _ = np.rad2deg(utils3d.np.intrinsics_to_fov(np.array(intr[i:i + 1])))
+        with torch.no_grad():
+            o = model.infer(t, fov_x=torch.tensor(fx, dtype=torch.float32, device="cuda"), apply_mask=False)
+        dists.append(o["points"][0].norm(dim=-1).cpu().numpy())
+        masks.append(o["mask"][0].cpu().numpy().astype(bool) & k)
+    d, m = merge_panorama_depth(MERGE[0], MERGE[1], dists, masks, extr, intr)
+    d = cv2.resize(d.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)[y0:y0 + h, x0:x0 + w]
+    m = cv2.resize(m.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST)[y0:y0 + h, x0:x0 + w] > 0
+    if (~m).any() and m.any():
+        d = np.where(m, d, SKY_FAR * np.percentile(d[m], 95))
+    return d
+
+
+def snap_edges(pts: np.ndarray) -> np.ndarray:
+    """MoGe ramps depth across an outline over a few pixels, in steps too small to cut, and those faces stretch into
+    streaks when the head moves: where the near and far sides within SNAP px differ by more than RTOL, each pixel's
+    distance snaps to the side it is closer to, so the ramp becomes one jump the cut finds."""
+    from scipy.ndimage import maximum_filter, minimum_filter
+    d = np.linalg.norm(pts, axis=-1)
+    size = _px(SNAP, d.shape[1]) | 1
+    lo, hi = minimum_filter(d, size=size), maximum_filter(d, size=size)
+    d2 = np.where(hi > lo * (1 + RTOL), np.where(d - lo < hi - d, lo, hi), d)
+    return pts * (d2 / np.clip(d, 1e-6, None))[..., None]
+
+
+def grid_mesh(pts: np.ndarray, img: Image.Image, stride: int, rtol: float | None, out: Path,
+              texture: Image.Image | None = None) -> tuple[int, int]:
+    """A textured grid over a point map of img's size, one vertex every stride px, two triangles per square of
+    neighbours, texture (default img, any resolution) on it; faces across a jump of more than rtol cut (None: none).
+    Returns (vertices, faces)."""
+    import trimesh
+    w, h = img.size
+    pts = pts[::stride, ::stride]
+    gh, gw = pts.shape[:2]
+    verts = pts.reshape(-1, 3) * [1, -1, -1]  # OpenCV (x right, y down, z forward) -> three (y up, -z forward)
+    ys, xs = np.mgrid[0:gh, 0:gw]
+    uvs = np.stack([(xs.ravel() * stride + 0.5) / w, 1 - (ys.ravel() * stride + 0.5) / h], -1)
+    r = np.linalg.norm(pts, axis=-1).ravel()
+    idx = np.arange(gh * gw).reshape(gh, gw)
+    a, b, c, d = idx[:-1, :-1], idx[:-1, 1:], idx[1:, :-1], idx[1:, 1:]
+    faces = np.concatenate([np.stack([a, c, b], -1).reshape(-1, 3), np.stack([b, c, d], -1).reshape(-1, 3)])
+    if rtol is not None:
+        rf = r[faces]
+        faces = faces[rf.max(1) / np.maximum(rf.min(1), 1e-6) <= 1 + rtol]
+    m = trimesh.Trimesh(vertices=verts, faces=faces, process=False,
+                        visual=trimesh.visual.TextureVisuals(uv=uvs, material=trimesh.visual.material.PBRMaterial(
+                            baseColorTexture=texture or img, metallicFactor=0.0, roughnessFactor=1.0, doubleSided=True)))
+    m.export(out)
+    return len(verts), len(faces)
+
+
+def near_objects(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(the near-object mask, the surface behind them as a distance): on the inverse distance, linear across a flat
+    surface, a grey opening over CLOSE_WINDOW removes every peak narrower than the window (stools, tables, posts) while
+    floors, walls and ceilings pass through; the image padded with an odd mirror, which continues a ramp straight (a
+    plain mirror made the near floor a peak at the border)."""
+    from scipy.ndimage import binary_dilation, grey_opening
+    inv = 1.0 / np.clip(d, 1e-3, None)
+    k = max(3, int(CLOSE_WINDOW * d.shape[1]))
+    p = k // 2 + 1
+    opened = grey_opening(np.pad(inv, p, mode="reflect", reflect_type="odd"), size=(k, k))[p:-p, p:-p]
+    obj = binary_dilation(inv > opened * (1 + NEAR_SHARE), iterations=_px(OBJ_GROW, d.shape[1]))
+    return obj, 1.0 / np.clip(opened, 1e-6, None)
+
+
+def match_colour(plate: np.ndarray, orig: np.ndarray, known: np.ndarray) -> np.ndarray:
+    """The plate regraded to the view: FLUX Erase re-renders the whole image (on the tavern, outside the mask: green and
+    blue 11 % and 10 % low, brightness 0.88 to 1.12 by region). A per-channel gain field, view / plate, from the pixels
+    both show (known) by normalised blurring at MATCH_SIGMA, MATCH_WIDE where the fine one has no support."""
+    from scipy.ndimage import gaussian_filter
+    w = known.astype(np.float32)
+    s1, s2 = _px(MATCH_SIGMA, plate.shape[1]), _px(MATCH_WIDE, plate.shape[1])
+    out = np.empty_like(plate)
+    for c in range(3):
+        o, p = orig[..., c] + 1.0, plate[..., c] + 1.0
+        fields = [(gaussian_filter(o * w, s) / np.maximum(gaussian_filter(p * w, s), 1e-3), gaussian_filter(w, s))
+                  for s in (s1, s2)]
+        (fine, dfine), (wide, _) = fields
+        t = np.clip(dfine / 0.2, 0, 1)
+        out[..., c] = p * np.clip(fine * t + wide * (1 - t), 0.5, 2.0) - 1.0
+    return out.clip(0, 255)
+
+
+def depth_png(dist: np.ndarray, path: Path) -> None:
+    inv = 1 / np.clip(dist, 1e-3, None)
+    lo, hi = np.percentile(inv, [2, 98])
+    Image.fromarray((np.clip((inv - lo) / (hi - lo), 0, 1) * 255).astype(np.uint8)).save(path)
+
+
+def front(d: Path) -> dict:
+    from scipy.ndimage import binary_dilation
+    img = _work(Image.open(d / "view.png").convert("RGB"))
+    model = _model()
+    h_deg, v_deg = measure_span(model, img)
+    dist = pano_depth(model, img, h_deg, v_deg)  # on the whole view, for MoGe's context
+    pts = snap_edges(dirs(img.height, img.width, h_deg, v_deg) * dist[..., None])
+    np.save(d / "distance-full.npy", np.linalg.norm(pts, axis=-1).astype(np.float32))
+    (d / "geometry.json").write_text(json.dumps({"view_deg": [h_deg, v_deg]}), encoding="utf-8")
+    return show(d)
+
+
+def show(d: Path) -> dict:
+    """The place shown, from front's depth (no model): the central SHOWN_DEG of the view, so every place bleeds the
+    same way onto the side walls and ceiling (spans came out 115-324 degrees; at 324 magic-vision covered the side
+    walls whole, user 2026-11-08) -> shown.png, front.glb, distance.npy, erase-mask.png, depth.png, geometry.json."""
+    from scipy.ndimage import binary_dilation
+    view_deg = json.loads((d / "geometry.json").read_text(encoding="utf-8"))["view_deg"]
+    h_deg, v_deg = view_deg
+    full = Image.open(d / "view.png").convert("RGB")
+    img = _work(full)
+    w, h = img.size
+    dist = np.load(d / "distance-full.npy")
+    fx, fy = min(1.0, SHOWN_DEG[0] / h_deg), min(1.0, SHOWN_DEG[1] / v_deg)
+    x0, y0 = round(w * (1 - fx) / 2), round(h * (1 - fy) / 2)
+    X0, Y0 = round(full.width * (1 - fx) / 2), round(full.height * (1 - fy) / 2)
+    full = full.crop((X0, Y0, full.width - X0, full.height - Y0))
+    full.save(d / "shown.png")
+    img, dist = img.crop((x0, y0, w - x0, h - y0)), dist[y0:h - y0, x0:w - x0]
+    h_deg, v_deg = round(h_deg * img.width / w, 1), round(v_deg * img.height / h, 1)
+    w, h = img.size
+    pts = snap_edges(dirs(h, w, h_deg, v_deg) * dist[..., None])
+    nv, nf = grid_mesh(pts, img, max(1, round(w / STRIDE_PX)), RTOL, d / "front.glb", texture=full)
+    dist = np.linalg.norm(pts, axis=-1).astype(np.float32)
+    np.save(d / "distance.npy", dist)
+    obj, _ = near_objects(dist)
+    mask = binary_dilation(obj, iterations=_px(ERASE_GROW, w))
+    Image.fromarray((mask * 255).astype(np.uint8)).save(d / "erase-mask.png")
+    depth_png(dist, d / "depth.png")
+    meta = {"h_deg": h_deg, "v_deg": v_deg, "view_deg": view_deg, "px_per_deg": round(full.width / h_deg, 1),
+            "near_m": round(float(np.percentile(dist, 5)), 3), "median_m": round(float(np.median(dist)), 3),
+            "far_m": round(float(np.percentile(dist, 95)), 3),
+            "front": {"vertices": nv, "faces": nf, "mb": round((d / "front.glb").stat().st_size / 1e6, 1)},
+            "near_share": round(float(obj.mean()), 3)}
+    (d / "geometry.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    return meta
+
+
+def back(d: Path) -> dict:
+    from scipy.ndimage import binary_dilation, gaussian_filter
+    meta = json.loads((d / "geometry.json").read_text(encoding="utf-8"))
+    dist = np.load(d / "distance.npy")  # the shown window at work size: the back layer is only seen through gaps
+    img = Image.open(d / "shown.png").convert("RGB").resize((dist.shape[1], dist.shape[0]), Image.LANCZOS)
+    w, h = img.size
+    obj, behind = near_objects(dist)
+    shell = np.where(obj, gaussian_filter(behind, _px(8, w)), dist)
+    orig = np.asarray(img, np.float32)
+    plate = np.asarray(Image.open(d / "plate.png").convert("RGB").resize((w, h), Image.LANCZOS), np.float32)
+    known = ~binary_dilation(obj, iterations=_px(ERASE_GROW + 8, w))
+    tex = Image.fromarray(match_colour(plate, orig, known).astype(np.uint8))  # the whole back layer: one image, no paste
+    tex.save(d / "back-texture.png")
+    nv, nf = grid_mesh(dirs(h, w, meta["h_deg"], meta["v_deg"]) * (shell * BACK_PUSH)[..., None], tex,
+                       max(1, round(w / BACK_STRIDE_PX)), None, d / "back.glb")
+    meta["back"] = {"vertices": nv, "faces": nf, "mb": round((d / "back.glb").stat().st_size / 1e6, 1)}
+    (d / "geometry.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    return meta
+
+
+if __name__ == "__main__":
+    stage, folder = sys.argv[1], Path(sys.argv[2])
+    print(json.dumps({"front": front, "show": show, "back": back}[stage](folder)))

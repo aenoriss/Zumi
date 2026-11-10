@@ -29,10 +29,12 @@ from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_fill_holes
 
 from shape import dialogue_like, letter_shaped, letter_stats, tile_area
+from fresh import digest
 from masks import COLOURS, SMALL, Found, clean
 from openrouter import BudgetExceeded, Truncated, ask_json, image_part
 
 REVIEW_MODEL, REVIEW_EFFORT = "anthropic/claude-haiku-5.5", "high"
+ROUNDS = 3  # at most this many rounds a review
 DENSE = 8  # this many character masks under masks.SMALL of the panel each: judged together as possible background
 LABEL = {"bubble": "speech bubble", "caption": "caption box", "sfx": "sound effect", "character": "character", "crowd": "crowd"}
 # Characters drawn together who act as one become one mask, kind "crowd" (user, 2026-11-01: characters that talk
@@ -177,6 +179,14 @@ PROMPT_KIND = {"speech bubble": "bubble", "caption box": "caption", "letters": "
                "furniture": "object", "object": "object", "item": "object"}
 
 
+def recipe(task: str) -> str:
+    """What shapes a review of `task` besides the masks it is given, for the stamp of a reviewed box (episode.py,
+    objects.py): the model and its effort, the task's prompts and actions, the rounds and the rules for dense
+    panels, and how the masks are marked for the model. The wording built inside review() and _check() is not
+    named here, so a change to it reviews nothing again."""
+    return digest(REVIEW_MODEL, REVIEW_EFFORT, TASK[task], ROUNDS, DENSE, SMALL, LABEL, PROMPT_KIND, COLOURS)
+
+
 @dataclass
 class Log:
     calls: int = 0
@@ -185,6 +195,12 @@ class Log:
     rejected: list = field(default_factory=list)
     truncated: list = field(default_factory=list)  # calls that spent the whole budget: no answer, taken as no change
     stopped: list = field(default_factory=list)    # calls the daily cap refused: nothing sent, taken as no change
+
+    @property
+    def complete(self) -> bool:
+        """No call was stopped by the daily cap (or an offline run): the review was done in full. A reply cut off
+        counts as done: it was paid for, and asking again would likely be cut off again."""
+        return not self.stopped
 
     def record(self) -> dict:
         """The log as the run log keeps it (out/run.json, Episode.save_run_log)."""
@@ -357,7 +373,7 @@ def parse_verdict(v: dict, n: int, size: tuple[int, int], allowed=ACTIONS) -> di
 
 
 def review(seg, img: Image.Image, els: list[Found], task: str, tag: str, judge: Judge | None = None,
-           rounds: int = 3) -> tuple[list[Found], Log]:
+           rounds: int = ROUNDS) -> tuple[list[Found], Log]:
     """The masks of one panel reviewed for `task` ("lettering", "characters", "objects"): seg, the run's
     sam.Segmenter, carries out the fixes; judge (default Judge(): Haiku 5.5, high reasoning) proposes and checks them.
     Up to `rounds` rounds; a round runs only when the previous one changed pixels, any mask may be acted on again,

@@ -37,14 +37,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_dilation, binary_fill_holes, label
 
+import fresh
 from boxstore import Box
 from chapter import Chapter
 from masks import Found, top_order
@@ -100,6 +102,17 @@ def window(*fs: Found, pad: int = 0) -> tuple[slice, slice] | None:
 def area(f: Found) -> int:
     y0, y1, x0, x1 = f.bbox()
     return int(f.mask[y0:y1, x0:x1].sum())
+
+
+def recipe() -> str:
+    """What shapes a box's lettering besides its image, for the stamp of its masks (episode.py): this module's
+    constants and passes, the exemplar bank's picks, and the constants of the SAM wrapper and the shape rules. No
+    money is spent here, but a box segmented again is reviewed and read again (paid), so only constants count, not
+    every edit of the code."""
+    import sam
+    import shape
+    return fresh.digest(fresh.recipe(sys.modules[__name__]), [asdict(p) for p in PASSES], BANK,
+                        fresh.recipe(sam, skip=("BATCH",)), fresh.recipe(shape))
 
 
 class Bank:

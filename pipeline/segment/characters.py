@@ -12,6 +12,7 @@ standing in front of the crowd keeps its own mask.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_dilation, distance_transform_edt, label
 
+import fresh
 from chapter import Chapter
 from masks import COLOURS, PART_MIN, SMALL, Found, clean
 from sam import Segmenter
@@ -31,6 +33,16 @@ MIN_SHARE = 0.002  # masks under this share of the panel are specks
 CROWD_MARGIN = 4  # px around each character taken out of a crowd mask (exclusive): its outline goes with it
 SPECK_PX_MAX, SPECK_SHARE, SPECK_PX = 400, 0.8, 8  # a mask's piece of at most this many px, mostly within SPECK_PX of
                                                     # another mask, is that one's edge pixels (exclusive)
+
+
+def recipe() -> str:
+    """What shapes a box's character masks besides its image, for the stamp of its masks (episode.py): this module's
+    constants (exclusive's too) and the SAM wrapper's; as for the lettering, constants only, since a box segmented
+    again is reviewed again (paid)."""
+    import masks
+    import sam
+    return fresh.digest(fresh.recipe(sys.modules[__name__], skip=("COLOURS",)), fresh.recipe(sam, skip=("BATCH",)),
+                        fresh.recipe(masks, skip=("COLOURS",)))
 
 
 def same_instance(a: np.ndarray, b: np.ndarray) -> bool:

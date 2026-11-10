@@ -4,7 +4,7 @@ the cards, and identity across boxes is a step of its own.
 
     pictures = update(ep, imgs, letters)             # the step: the boxes whose transcript is stale, read and saved
     result, picture = read(img, masks, kinds, tag)   # one box
-    results, pictures = read_boxes({i: (img, masks, kinds, tag)})   # many, in parallel (spend.paid_map)
+    results, pictures, stopped = read_boxes({i: (img, masks, kinds, tag)})   # many, in parallel (spend.paid_map)
     uv run python transcribe.py <episode.zumi> <episode out dir> <out dir> --panels 1,2,3 [--models a,b]
 
 One call per box with two images: the box with each element outlined and numbered, and each element cropped at full
@@ -15,7 +15,8 @@ the balloon and the words: the voice step's style note for the line) and doubt (
 where typing often goes wrong); enforce turns those into the one keep the layers use. A box with a doubted element
 is read once more by SECOND_MODEL, whose kind wins for those elements (read). Paid calls go through
 openrouter.ask_json (the shared daily cap); a reply cut off at its budget, or with no JSON in it, gives an empty
-result marked "error".
+result marked "error", which update does not save (2026-11-10: saved, it stood as current and the box was never read
+again). A saved result is stamped with the masks it read and recipe() (the prompts and models).
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import binary_dilation, binary_erosion
 
 from boxstore import Episode
+from fresh import digest
 from openrouter import Truncated, ask_json, image_part
 from spend import paid_map, spent_today
 
@@ -100,10 +102,12 @@ small letters by a balloon) is not spoken by anyone: sfx.
 kind of the whole word.
 - "text": exactly the words inside this element's own coloured outline in image 2, line breaks as single spaces, \
 keeping punctuation. Faded words in image 2 lie outside the outline and belong to another element: never include them.
-- "delivery": for speech, shout and thought, a few words on how the character says or thinks this line, for the \
-voice actor: the emotion and the manner, read from the character's face and posture in image 1, the balloon's \
-shape and the lettering's weight, and the words themselves (for example "cold, mocking", "shouting through tears", \
-"tired, half-joking", "flat, bored"). Only what this moment shows, nothing about the voice itself. null for sfx, \
+- "delivery": for speech, shout and thought, a short direction for the voice actor on how the character says or \
+thinks this line, in terms of the voice: the emotion, and the volume, pace, pitch and manner that go with it, read \
+from the character's face and posture in image 1, the balloon's shape and the lettering's weight, and the words \
+themselves (for example "cold and mocking, low and even", "shouting through tears, breaking", "tired, half-joking, \
+trailing off", "flat, bored, quiet"). Only what this moment shows, said as sound, never as a look (not "frowning": \
+what a frown does to the voice). Nothing about the voice itself. null for sfx, \
 captions and in-world text.
 - "pace": for speech, shout and thought, the tempo this line is said at as the drawing and the words show it: "slow" \
 (a halting line, pauses or dashes, a weary or solemn moment, a drawn-out word), "fast" (a burst, a rush, an \
@@ -215,26 +219,47 @@ def read(img: Image.Image, masks: list[np.ndarray], kinds: list[str], tag: str,
     return result, report(img, masks, result, tag)
 
 
-def read_boxes(jobs: dict[int, tuple[Image.Image, list[np.ndarray], list[str], str]],
-               model: str = MODEL) -> tuple[dict[int, dict], dict[int, Image.Image]]:
-    """read() on many boxes at once (spend.paid_map), {box index: (img, masks, kinds, tag)} -> (results, pictures).
-    The boxes the daily cap stops are left out, for the next run to read."""
-    done, _ = paid_map(lambda i: read(*jobs[i], model), list(jobs))
-    return {i: r for i, (r, _) in done.items()}, {i: p for i, (_, p) in done.items()}
+def recipe() -> str:
+    """What shapes a box's result besides its masks (its stamp beside the masks', Box.transcript_current): the
+    prompts, both models with their reasoning effort, the answer's budget and the outline colours the model is shown.
+    Not SECOND_USD: it decides how many boxes get a second opinion, not what one says."""
+    return digest(SYSTEM, INSTRUCTIONS, MODEL, REASONING.get(MODEL), SECOND_MODEL, REASONING.get(SECOND_MODEL),
+                  MAX_TOKENS, COLOURS)
+
+
+def read_boxes(jobs: dict[int, tuple[Image.Image, list[np.ndarray], list[str], str]], model: str = MODEL,
+               on_done=None) -> tuple[dict[int, dict], dict[int, Image.Image], list[int]]:
+    """read() on many boxes at once (spend.paid_map), {box index: (img, masks, kinds, tag)} -> (results, pictures,
+    the boxes the daily cap stopped, for the next run to read). on_done(i, result): as each box is read."""
+    done, stopped = paid_map(lambda i: read(*jobs[i], model), list(jobs),
+                             on_done=None if on_done is None else lambda i, rp: on_done(i, rp[0]))
+    return {i: r for i, (r, _) in done.items()}, {i: p for i, (_, p) in done.items()}, stopped
 
 
 def update(ep: Episode, imgs: dict[int, Image.Image], letters: dict[int, list]) -> dict[int, Image.Image]:
-    """Step 5 for an episode: every box whose transcript was not made from its current lettering
-    (Box.transcript_current) is read (read_boxes, in parallel) and saved stamped with that lettering
-    (Episode.save_transcripts); a box the daily cap refuses is skipped, the others are kept. Returns the report
-    picture per box read."""
+    """Step 5 for an episode: every box whose transcript was not made from its current lettering by the current
+    recipe (Box.transcript_current) is read (read_boxes, in parallel), each saved as it comes, stamped with that
+    lettering and recipe (Episode.save_transcripts), so an error later in the batch loses none that were paid for. A
+    box the daily cap refuses is skipped, and so is a reply cut off or without JSON (its "error"): not saved, it is
+    read again next run instead of standing as a box with nothing to say. Returns the report picture per box read."""
+    rec = recipe()
     jobs = {i: (img, [f.mask for f in letters[i]], [f.kind for f in letters[i]], f"{ep.stem} p{i}")
-            for i, img in imgs.items() if not ep.box(i).transcript_current(letters[i])}
+            for i, img in imgs.items() if not ep.box(i).transcript_current(letters[i], rec)}
     print(f"  {len(jobs)} of {len(imgs)} boxes to read ({len(imgs) - len(jobs)} current or without lettering)")
     with _second_lock:
         _second["usd"] = 0.0
-    results, pictures = read_boxes(jobs)
-    ep.save_transcripts(results, letters)
+    failed = []
+
+    def save(i, r):
+        if r.get("error"):
+            failed.append(i)
+        else:
+            ep.save_transcripts({i: r}, letters, rec)
+
+    results, pictures, stopped = read_boxes(jobs, on_done=save)
+    if failed or stopped:
+        print(f"  not saved, read again next run: {len(failed)} with no answer ({sorted(failed)}), {len(stopped)} "
+              f"stopped by the daily cap or an offline run ({sorted(stopped)})")
     n = sum(1 for r in results.values() for e in r.get("elements", []) if e.get("doubt"))
     m = sum(1 for r in results.values() for e in r.get("elements", []) if e.get("kind_by") == "sonnet")
     print(f"  {n} elements doubted, {m} retyped by {SECOND_MODEL.split('/')[-1]} for {_second['usd']:.3f} USD"
@@ -294,7 +319,7 @@ def run(model: str, zumi: Path, episode_out: Path, out: Path, picks: list[int]) 
         if found:
             jobs[i] = (ch.image(i), [f.mask for f in found], [f.kind for f in found], f"{ch.stem} p{i}")
     s0 = spent_today()
-    results, pictures = read_boxes(jobs, model)
+    results, pictures, _ = read_boxes(jobs, model)
     (out / slug).mkdir(parents=True, exist_ok=True)
     for i, picture in pictures.items():
         picture.save(out / slug / f"{ch.pid(i)}.png")

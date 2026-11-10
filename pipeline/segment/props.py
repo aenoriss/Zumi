@@ -40,11 +40,12 @@ from scipy.ndimage import binary_fill_holes, label
 
 import clock
 import fal
+import fresh
 import places
 import prop_mesh
 import settings
 from boxstore import Episode
-from openrouter import ask_json, image_part
+from openrouter import Truncated, ask_json, image_part
 from spend import BudgetExceeded
 
 MODEL = "anthropic/claude-sonnet-5.5"
@@ -187,34 +188,45 @@ def script(ep: Episode, frame_ids: list[str]) -> str:
     return "\n".join(out) or "(nothing is said)"
 
 
-def pick(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -> dict:
-    """The props of one place (pick.json), read once per same material."""
-    d = ep.out / "props" / sid
-    d.mkdir(parents=True, exist_ok=True)
+def pick_material(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -> tuple[list, str, int]:
+    """What the pick call sees: ([(source, image as sent)], the text before the images, the props allowed)."""
     view = ep.out / "places" / sid / "shown.png"
     imgs = [("view", _fit(Image.open(view)))] + [(fid, _fit(im)) for fid, im in setting_frames(ep, frame_setting, sid)]
     n = max_props(seconds)
-    text = script(ep, [fid for fid, _ in imgs[1:]])
-    task = TASK.format(n=n)
     sizes = "\n".join(f"- Image {k}: {'the painted view' if src == 'view' else 'comic frame ' + src}, "
                       f"{im.width} x {im.height} px" for k, (src, im) in enumerate(imgs, 1))
-    stamp = hashlib.sha1((task + sizes + text + MODEL).encode() + b"".join(im.tobytes()[:4096] for _, im in imgs)).hexdigest()[:12]
+    text = (TASK.format(n=n) + f"\n## The place\n{_place_text(ep, sid)}\nOpen for {seconds:.0f} s.\n\n"
+            f"## The images\n{sizes}\n\n## The script\n{script(ep, [fid for fid, _ in imgs[1:]])}\n")
+    return imgs, text, n
+
+
+def pick_stamp(imgs: list, text: str) -> str:
+    """pick.json's stamp: the whole text and every image's pixels as the call sees them, the model and its effort."""
+    return fresh.digest(text, [hashlib.sha256(im.tobytes()).hexdigest() for _, im in imgs], MODEL, REASONING)
+
+
+def pick(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -> dict:
+    """The props of one place (pick.json), read once per pick_stamp. A prop's name is made safe from the reply's
+    (settings.slug) and numbered when it collides: it names the prop's files."""
+    d = ep.out / "props" / sid
+    d.mkdir(parents=True, exist_ok=True)
+    view = ep.out / "places" / sid / "shown.png"
+    imgs, text, n = pick_material(ep, sid, seconds, frame_setting)
+    stamp = pick_stamp(imgs, text)
     f_json = d / "pick.json"
     if f_json.exists():
         old = json.loads(f_json.read_text(encoding="utf-8"))
         if old.get("stamp") == stamp:
             return old
-    for k, (_, im) in enumerate(imgs, 1):
-        im.save(d / f"img{k}.jpg", quality=92)
-    content = [{"type": "text", "text": task + f"\n## The place\n{_place_text(ep, sid)}\nOpen for {seconds:.0f} s.\n\n"
-                                       f"## The images\n{sizes}\n\n## The script\n{text}\n"}]
+    content = [{"type": "text", "text": text}]
     for k, (_, im) in enumerate(imgs, 1):
         content += [{"type": "text", "text": f"Image {k}:"}, image_part(im, max_side=SIDE)]
     reply, cost = ask_json(MODEL, content, f"{ep.stem} props {sid}", ANSWER_TOKENS, REASONING, brief=False)
-    props = []
+    for k, (_, im) in enumerate(imgs, 1):
+        im.save(d / f"img{k}.jpg", quality=92)
     w, h = imgs[0][1].size
     full = Image.open(view).width / w   # the box is read on the view as sent and kept in the view's own pixels
-    props, seen = [], []
+    props, seen, names = [], [], set()
     for p in reply.get("props") or []:
         if len(p.get("box") or []) != 4:
             continue
@@ -223,8 +235,13 @@ def pick(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -
         y0, y1 = sorted((max(0, min(h, y0)), max(0, min(h, y1))))
         if x1 - x0 < 8 or y1 - y0 < 8:
             continue
-        seen.append({"name": p.get("name"), "image": 1, "box": [x0, y0, x1, y1]})
-        props.append({"name": p.get("name"), "what": p.get("what"), "noun": p.get("noun"),
+        name = base = settings.slug(p.get("name"), f"prop-{len(props) + 1}")
+        k = 2
+        while name in names:
+            name, k = f"{base}-{k}", k + 1
+        names.add(name)
+        seen.append({"name": name, "image": 1, "box": [x0, y0, x1, y1]})
+        props.append({"name": name, "what": p.get("what"), "noun": p.get("noun"),
                       "box": [round(v * full) for v in (x0, y0, x1, y1)],
                       "height_m": p.get("height_m"), "surface": p.get("surface"), "why": p.get("why")})
     data = {"stamp": stamp, "setting": sid, "seconds": round(seconds, 1), "max": n,
@@ -310,20 +327,15 @@ def cut_of(seg, img: Image.Image, box, prompts: list[str]) -> tuple[Image.Image 
     return cut.resize((round(cut.width * s), round(cut.height * s)), Image.LANCZOS), best[2]
 
 
-def _named(pk: dict) -> list[dict]:
-    """The pick's props, each with a name (the pick may leave one out)."""
-    return [{**p, "name": p.get("name") or f"prop-{k}"} for k, p in enumerate(pk["props"], 1)]
-
-
 def stamps_of(view: str, p: dict) -> dict[str, str]:
     """What each of a prop's files is made from, {rung: stamp}: each stamp covers the one before it and its own
-    rung's recipe, so a change anywhere reaches every file after it. view: the view's digest (places.digest)."""
-    cut = places.digest(view, p["box"], p.get("noun"), p["what"], [PAD, PROB, FILL, PINHOLE, SIDE])
-    paint = places.digest(cut, PROMPT, p["what"], REPAINT_MODEL, REPAINT_SEED, LIGHT, [WHITE, DARK])
-    raw = places.digest(paint, LIFT_SEEDS, TEXTURE, SIMPLIFY)
+    rung's recipe, so a change anywhere reaches every file after it. view: the view's digest (fresh.digest)."""
+    cut = fresh.digest(view, p["box"], p.get("noun"), p["what"], [PAD, PROB, FILL, PINHOLE, SIDE])
+    paint = fresh.digest(cut, PROMPT, p["what"], REPAINT_MODEL, REPAINT_SEED, LIGHT, [WHITE, DARK])
+    raw = fresh.digest(paint, LIFT_SEEDS, TEXTURE, SIMPLIFY)
     # The finish costs nothing, so any edit of prop_mesh.py makes it again rather than guessing which edits change
     # its bytes.
-    glb = places.digest(raw, Path(prop_mesh.__file__))
+    glb = fresh.digest(raw, fresh.source(prop_mesh))
     return {"cut": cut, "paint": paint, "raw": raw, "glb": glb}
 
 
@@ -396,10 +408,10 @@ def build(ep: Episode, picks: dict[str, dict]) -> dict[str, dict]:
     for sid, pk in picks.items():
         d = ep.out / "props" / sid
         d.mkdir(parents=True, exist_ok=True)
-        view = places.digest(ep.out / "places" / sid / "shown.png")
+        view = fresh.digest(ep.out / "places" / sid / "shown.png")
         f = d / "stamps.json"
         old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-        props[sid] = _named(pk)
+        props[sid] = pk["props"]
         for name in set(old) - {p["name"] for p in props[sid]}:  # a prop no longer picked: its files go
             for _, suffix in RUNGS:
                 (d / f"{name}{suffix}").unlink(missing_ok=True)
@@ -474,7 +486,7 @@ def props_step(ep: Episode, only: list[str] | None = None) -> dict | None:
     for sid in only or [s for s in secs if places.built(ep.out / "places" / s)]:
         try:
             picks[sid] = pick(ep, sid, secs.get(sid, 0.0), fs)
-        except BudgetExceeded as e:
+        except (BudgetExceeded, Truncated) as e:  # the cap, an offline run, a reply cut off: the next run asks again
             print(f"  props {sid}: no pick, {e}")
             continue
         _say(sid, picks[sid])
