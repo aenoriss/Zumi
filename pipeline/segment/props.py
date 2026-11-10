@@ -16,10 +16,13 @@ the pick: SAM 3.1 on the local GPU cuts the object out of the view inside its bo
 4B repaints the cutout alone, whole and evenly lit, on a flat ground (<name>-paint.png, about 0.015 USD); BiRefNet
 mattes the repaint and TRELLIS lifts it to a GLB (<name>-raw.glb, 0.02 USD), lifted once more with another seed when
 it stands on a plate the picture never showed; then, with no call, its loose pieces are dropped and its texture is
-brought to the cutout's colours, non-metal (<name>.glb, prop_mesh.py). A file already there is kept; stamps.json
-holds what each prop's files were made from (the view, the box, what it is), and a prop whose pick changed is made
-again from the cut. A prop that cannot be made (no SAM instance, the cap, an offline run, a failed call) is skipped
-with its reason and the others go on. The built props are listed in props.json with their height and surface.
+brought to the cutout's colours, non-metal (<name>.glb, prop_mesh.py). stamps.json holds, per prop and per file,
+a stamp of what the file is made from: the file before it and its own recipe (the cut: the view, the box, the
+prompts and the cut constants; the repaint: its prompt, model, seed and grounds; the lift: its seeds and TRELLIS
+settings; the finish: prop_mesh.py). A file whose stamp still holds is kept; one missing or stale is made again,
+and every file after it with it. A prop that cannot be made (no SAM instance, the cap, an offline run, a failed
+call) is skipped with its reason and the others go on. The built props are listed in props.json with their height
+and surface.
 
     python props.py <chapter.zumi> <episode out dir> [setting ...]
 """
@@ -59,8 +62,13 @@ PINHOLE = 0.002     # holes under this share of the mask are filled, larger ones
 LIGHT = 65          # mean CIE lightness above which an object counts as light: repainted on dark grey, not on white
 REPAINT_MODEL = "flux-2-klein-4b"
 REPAINT_SEED = 1    # the seed validated on the 2026-11-10 props
+WHITE = ("pure white", (255, 255, 255))  # the repaint's grounds (name in the prompt, rgb): white, or dark grey
+DARK = ("dark grey", (70, 70, 70))       # under a light object (ground_of)
 LIFT_SEEDS = (11, 22)  # TRELLIS seeds: the first lift, then one retry when it has a plate (2026-11-10)
-FILES = ("-cut.png", "-paint.png", "-raw.glb", ".glb")  # a prop's files, removed together when its pick changes
+TEXTURE = 1024        # TRELLIS texture side, as validated 2026-11-10: the cutouts it copies are 1024 px long
+SIMPLIFY = 0.95       # TRELLIS mesh_simplify (share of faces removed), as validated 2026-11-10: a prop is small in the room
+RUNGS = (("cut", "-cut.png"), ("paint", "-paint.png"), ("raw", "-raw.glb"), ("glb", ".glb"))  # a prop's files, each
+                                                                                             # made from the one before
 # The repaint prompt rewritten in the plate test (2026-11-10) without its "complete what is hidden" sentence: the
 # pick only takes objects the view paints whole, and on a whole axe that sentence drew a second head (2026-11-10).
 PROMPT = ("The {what} from the reference image, redrawn alone and whole. It is the same object: its shape, proportions, "
@@ -266,7 +274,7 @@ def ground_of(cut: Image.Image) -> tuple[str, tuple[int, int, int]]:
     chair on white gave the matte nothing to tell the gaps of its scrollwork from the chair (2026-11-10)."""
     a = np.asarray(cut.convert("RGBA"))
     light = prop_mesh.to_lab(a[..., :3][a[..., 3] > 127])[:, 0].mean() > LIGHT
-    return ("dark grey", (70, 70, 70)) if light else ("pure white", (255, 255, 255))
+    return DARK if light else WHITE
 
 
 def cut_of(seg, img: Image.Image, box, prompts: list[str]) -> tuple[Image.Image | None, str | None]:
@@ -307,18 +315,42 @@ def _named(pk: dict) -> list[dict]:
     return [{**p, "name": p.get("name") or f"prop-{k}"} for k, p in enumerate(pk["props"], 1)]
 
 
-def _stamp(view: str, p: dict) -> str:
-    """What a prop's files are made from: the view (by content), its box on it and the words the cut and the repaint
-    read."""
-    return places.digest(view, p["box"], p["what"], p.get("noun"))
+def stamps_of(view: str, p: dict) -> dict[str, str]:
+    """What each of a prop's files is made from, {rung: stamp}: each stamp covers the one before it and its own
+    rung's recipe, so a change anywhere reaches every file after it. view: the view's digest (places.digest)."""
+    cut = places.digest(view, p["box"], p.get("noun"), p["what"], [PAD, PROB, FILL, PINHOLE, SIDE])
+    paint = places.digest(cut, PROMPT, p["what"], REPAINT_MODEL, REPAINT_SEED, LIGHT, [WHITE, DARK])
+    raw = places.digest(paint, LIFT_SEEDS, TEXTURE, SIMPLIFY)
+    # The finish costs nothing, so any edit of prop_mesh.py makes it again rather than guessing which edits change
+    # its bytes.
+    glb = places.digest(raw, Path(prop_mesh.__file__))
+    return {"cut": cut, "paint": paint, "raw": raw, "glb": glb}
 
 
-def _finish(d: Path, sid: str, p: dict) -> dict:
-    """One prop from its cut to its model, each missing file made in turn: its props.json entry."""
+def _todo(d: Path, name: str, saved: dict, now: dict) -> list[str]:
+    """The rungs of a prop to make, in order: from the first whose file is missing or whose saved stamp is not the
+    one computed now, to the last. Their files are deleted and their stamps dropped from `saved`."""
+    k = next((i for i, (r, suffix) in enumerate(RUNGS)
+              if saved.get(r) != now[r] or not (d / f"{name}{suffix}").exists()), len(RUNGS))
+    for r, suffix in RUNGS[k:]:
+        (d / f"{name}{suffix}").unlink(missing_ok=True)
+        saved.pop(r, None)
+    return [r for r, _ in RUNGS[k:]]
+
+
+def _made(d: Path, stamps: dict, name: str, rung: str, now: dict) -> None:
+    """A rung's stamp saved, once its file is written."""
+    stamps.setdefault(name, {})[rung] = now[rung]
+    (d / "stamps.json").write_text(json.dumps(stamps, indent=1), encoding="utf-8")
+
+
+def _finish(d: Path, sid: str, p: dict, todo: list[str], made, last: dict) -> dict:
+    """One prop from its cut to its model, the rungs in `todo` made in turn (made(rung) once each file is written):
+    its props.json entry. last: its entry from the run that made the files kept."""
     name, tag = p["name"], f"prop {sid}/{p['name']}"
     cut = Image.open(d / f"{name}-cut.png").convert("RGBA")
-    pp = d / f"{name}-paint.png"
-    if not pp.exists():
+    pp, raw, out = d / f"{name}-paint.png", d / f"{name}-raw.glb", d / f"{name}.glb"
+    if "paint" in todo:
         from bfl import flux2
         ground, rgb = ground_of(cut)
         flat = Image.new("RGB", cut.size, rgb)
@@ -326,30 +358,32 @@ def _finish(d: Path, sid: str, p: dict) -> dict:
         img, _ = flux2(PROMPT.format(what=p["what"], ground=ground), [flat], SIDE, SIDE, model=REPAINT_MODEL,
                        tag=f"{tag} repaint", seed=REPAINT_SEED)
         img.save(pp)
-    raw = d / f"{name}-raw.glb"
-    lifts = 0
-    if not raw.exists():
+        made("paint")
+    lifts = last.get("lifts", 0)
+    if "raw" in todo:
         paint = Image.open(pp).convert("RGB")
         rgba = paint.convert("RGBA")
         rgba.putalpha(Image.fromarray((fal.birefnet(paint) * 255).astype(np.uint8)))
-        glb = None
+        glb, lifts = None, 0
         for seed in LIFT_SEEDS:
             try:
-                glb = fal.trellis(rgba, seed, f"{tag} lift s{seed}")
+                glb = fal.trellis(rgba, seed, TEXTURE, SIMPLIFY, f"{tag} lift s{seed}")
             except BudgetExceeded:
                 if glb is None:
                     raise
                 break  # the retry refused: the first lift is kept, plate and all, rather than paid for and lost
             lifts += 1
-            if not prop_mesh.plate(prop_mesh.load(glb)[0])[0]:
+            if not prop_mesh.on_plate(glb)[0]:
                 break
         raw.write_bytes(glb)
+        made("raw")
     b = raw.read_bytes()
-    is_plate, ratio = prop_mesh.plate(prop_mesh.load(b)[0])
-    main, dropped = prop_mesh.drop_loose(b)
-    out = d / f"{name}.glb"
-    if not out.exists() or out.stat().st_mtime < raw.stat().st_mtime:
-        out.write_bytes(prop_mesh.retex(main, cut))
+    is_plate, ratio = prop_mesh.on_plate(b)
+    dropped = last.get("loose_dropped")
+    if "glb" in todo:
+        fin, dropped = prop_mesh.finish(b, cut)
+        out.write_bytes(fin)
+        made("glb")
     return {"name": name, "what": p["what"], "height_m": p.get("height_m"), "surface": p.get("surface"),
             "model": out.name, "plate": bool(is_plate), "plate_ratio": ratio, "loose_dropped": dropped,
             "lifts": lifts}
@@ -358,22 +392,25 @@ def _finish(d: Path, sid: str, p: dict) -> dict:
 def build(ep: Episode, picks: dict[str, dict]) -> dict[str, dict]:
     """Every picked prop of the given places made into a model (see the module docstring); per place the saved
     <episode>/props/<setting>/props.json: the built props and the skipped ones with why."""
-    props = {}
+    props, stamps, now = {}, {}, {}
     for sid, pk in picks.items():
         d = ep.out / "props" / sid
         d.mkdir(parents=True, exist_ok=True)
         view = places.digest(ep.out / "places" / sid / "shown.png")
         f = d / "stamps.json"
         old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-        new = {p["name"]: _stamp(view, p) for p in _named(pk)}
-        for name in set(old) | set(new):  # files made from another pick, or of a prop no longer picked, go
-            if old.get(name) != new.get(name):
-                for suffix in FILES:
-                    (d / f"{name}{suffix}").unlink(missing_ok=True)
-        f.write_text(json.dumps(new, indent=1), encoding="utf-8")
         props[sid] = _named(pk)
+        for name in set(old) - {p["name"] for p in props[sid]}:  # a prop no longer picked: its files go
+            for _, suffix in RUNGS:
+                (d / f"{name}{suffix}").unlink(missing_ok=True)
+        stamps[sid] = {}
+        for p in props[sid]:
+            now[sid, p["name"]] = stamps_of(view, p)
+            stamps[sid][p["name"]] = dict(old.get(p["name"]) or {})
+            _todo(d, p["name"], stamps[sid][p["name"]], now[sid, p["name"]])
+        f.write_text(json.dumps(stamps[sid], indent=1), encoding="utf-8")
     skipped: dict[str, list] = {sid: [] for sid in picks}
-    need = [(sid, p) for sid, ps in props.items() for p in ps if not (ep.out / "props" / sid / f"{p['name']}-cut.png").exists()]
+    need = [(sid, p) for sid, ps in props.items() for p in ps if "cut" not in stamps[sid][p["name"]]]
     if need:  # one SAM for the run, loaded only when a prop has no cut yet
         from sam import Segmenter
         seg = Segmenter()
@@ -384,7 +421,9 @@ def build(ep: Episode, picks: dict[str, dict]) -> dict[str, dict]:
                 skipped[sid].append({"name": p["name"], "why": "no SAM instance in its box"})
                 print(f"  prop {sid}/{p['name']}: no SAM instance in its box, skipped")
                 continue
-            c.save(ep.out / "props" / sid / f"{p['name']}-cut.png")
+            d = ep.out / "props" / sid
+            c.save(d / f"{p['name']}-cut.png")
+            _made(d, stamps[sid], p["name"], "cut", now[sid, p["name"]])
             print(f"  prop {sid}/{p['name']}: cut {c.size[0]} x {c.size[1]} by '{by}'")
         del seg
         import torch
@@ -392,12 +431,17 @@ def build(ep: Episode, picks: dict[str, dict]) -> dict[str, dict]:
     out = {}
     for sid, ps in props.items():
         d = ep.out / "props" / sid
+        f = d / "props.json"
+        last = {e["name"]: e for e in json.loads(f.read_text(encoding="utf-8")).get("props", [])} if f.exists() else {}
         built = []
         for p in ps:
-            if not (d / f"{p['name']}-cut.png").exists():
+            name, nw = p["name"], now[sid, p["name"]]
+            todo = _todo(d, name, stamps[sid][name], nw)
+            if "cut" in todo:
                 continue
             try:
-                built.append(_finish(d, sid, p))
+                built.append(_finish(d, sid, p, todo, lambda r, name=name, nw=nw: _made(d, stamps[sid], name, r, nw),
+                                     last.get(name, {})))
             except (BudgetExceeded, requests.RequestException, RuntimeError, TimeoutError) as e:
                 # one prop failing stops none of the others: the cap, an offline run, a failed or refused call
                 skipped[sid].append({"name": p["name"], "why": str(e)[:300]})

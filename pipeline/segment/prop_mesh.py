@@ -8,11 +8,10 @@ take the cutout's value at the same lightness rank, so highlights get the cutout
 shadow hue. TRELLIS's GLBs state no metalness, which viewers read as metal: the finished material is non-metal and
 fully rough, as a painting is.
 
-    load(glb) -> (positions, uvs, faces, texture)      the GLB's one mesh primitive and its base-colour image
-    render(glb, size, yaw, pitch) -> (rgb, hit, texels) unlit orthographic, z-buffered, nearest texel
-    plate(positions) -> (is a plate, ratio)            a ground slab TRELLIS added under the object
-    drop_loose(glb) -> (glb, pieces dropped)           small floating pieces removed
-    retex(glb, cutout) -> glb                          texture to the cutout's colours, non-metal
+    on_plate(glb) -> (is a plate, ratio)       a ground slab TRELLIS added under the object
+    finish(glb, cutout) -> (glb, pieces dropped) small floating pieces removed, then the texture brought to the
+                                                cutout's colours, non-metal
+    to_lab(rgb) -> lab                          sRGB to CIE Lab
 """
 from __future__ import annotations
 
@@ -54,7 +53,7 @@ def to_lab(rgb: np.ndarray) -> np.ndarray:
     return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
 
 
-def to_rgb(lab: np.ndarray) -> np.ndarray:
+def _to_rgb(lab: np.ndarray) -> np.ndarray:
     fy = (lab[..., 0] + 16) / 116
     f = np.stack([fy + lab[..., 1] / 500, fy, fy - lab[..., 2] / 200], -1)
     xyz = np.where(f > 0.2069, f ** 3, (f - 16 / 116) / 7.787) * np.array([0.9505, 1.0, 1.089])
@@ -63,7 +62,8 @@ def to_rgb(lab: np.ndarray) -> np.ndarray:
     return np.round(255 * np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)).astype(np.uint8)
 
 
-def load(glb: bytes):
+def _load(glb: bytes):
+    """(positions, uvs, faces, texture): the GLB's one mesh primitive and its base-colour image."""
     j, binc = _split(glb)
 
     def acc(i):
@@ -79,10 +79,10 @@ def load(glb: bytes):
     return acc(p["attributes"]["POSITION"]), acc(p["attributes"]["TEXCOORD_0"]), acc(p["indices"]).reshape(-1, 3).astype(np.int64), tex
 
 
-def render(glb: bytes, size: int = 512, yaw: float = 0.0, pitch: float = 20.0):
-    """(rgb, hit mask, texel index per hit pixel): the texture as painted, no light, the model centred and filling
-    the picture."""
-    P, UV, F, T = load(glb)
+def _render(glb: bytes, size: int = 512, yaw: float = 0.0, pitch: float = 20.0):
+    """(rgb, hit mask, texel index per hit pixel): unlit orthographic, z-buffered, nearest texel; the texture as
+    painted, the model centred and filling the picture."""
+    P, UV, F, T = _load(glb)
     cy, sy, cp, sp = np.cos(np.radians(yaw)), np.sin(np.radians(yaw)), np.cos(np.radians(pitch)), np.sin(np.radians(pitch))
     R = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]]) @ np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     Q = (P - (P.max(0) + P.min(0)) / 2) @ R.T
@@ -118,7 +118,19 @@ def render(glb: bytes, size: int = 512, yaw: float = 0.0, pitch: float = 20.0):
     return img, hit, (ty[hit], tx[hit])
 
 
-def plate(P: np.ndarray) -> tuple[bool, float]:
+def on_plate(glb: bytes) -> tuple[bool, float]:
+    """(stands on a plate, ratio) of a lifted GLB."""
+    return _plate(_load(glb)[0])
+
+
+def finish(glb: bytes, cutout: Image.Image) -> tuple[bytes, int]:
+    """(the finished GLB, pieces dropped): a raw GLB's loose pieces dropped, then its texture brought to the
+    cutout's colours (RGBA), non-metal."""
+    main, dropped = _drop_loose(glb)
+    return _retex(main, cutout), dropped
+
+
+def _plate(P: np.ndarray) -> tuple[bool, float]:
     """A bottom slab (the lowest PLATE_LOW of the height) reaching farther out than anything above it: (is one,
     ratio). TRELLIS sometimes stands the object on a round plate the picture never showed."""
     y = P[:, 1]
@@ -129,7 +141,7 @@ def plate(P: np.ndarray) -> tuple[bool, float]:
     return ratio > PLATE, round(ratio, 2)
 
 
-def drop_loose(glb: bytes) -> tuple[bytes, int]:
+def _drop_loose(glb: bytes) -> tuple[bytes, int]:
     """(the GLB with only its main pieces, how many pieces were dropped). Pieces are the mesh's connected parts once
     vertices at one position are welded; a piece under SHARE of the largest piece's surface is dropped."""
     j, binc = _split(glb)
@@ -165,13 +177,13 @@ def drop_loose(glb: bytes) -> tuple[bytes, int]:
     return _pack(j, binc), int((~keep).sum())
 
 
-def retex(glb: bytes, ref: Image.Image) -> bytes:
+def _retex(glb: bytes, ref: Image.Image) -> bytes:
     """The GLB with its texture brought to the colours of `ref` (the cutout, RGBA), measured on the texels seen from
     YAWS, and its materials non-metal and fully rough."""
-    T = load(glb)[3]
+    T = _load(glb)[3]
     seen = np.zeros(T.shape[:2], bool)
     for yaw in YAWS:
-        ty, tx = render(glb, SEEN_SIDE, yaw, 30)[2]
+        ty, tx = _render(glb, SEEN_SIDE, yaw, 30)[2]
         seen[ty, tx] = True
     r = np.asarray(ref.convert("RGBA"))
     rl = to_lab(r[..., :3][r[..., 3] > 127])
@@ -189,7 +201,7 @@ def retex(glb: bytes, ref: Image.Image) -> bytes:
         gain = min((rl[:, k] - np.interp(rq, mid, rm)).std() / max((v[:, k] - np.interp(vq, mid, sm)).std(), 1e-6), 1.5)
         lab[..., k] = (lab[..., k] - np.interp(q, mid, sm)) * gain + np.interp(q, mid, rm)
     buf = io.BytesIO()
-    Image.fromarray(to_rgb(lab)).save(buf, "PNG")
+    Image.fromarray(_to_rgb(lab)).save(buf, "PNG")
     png = buf.getvalue() + b"\0" * (-len(buf.getvalue()) % 4)
     j, binc = _split(glb)
     bv = j["bufferViews"][j["images"][0]["bufferView"]]
