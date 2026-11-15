@@ -26,9 +26,22 @@ import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
 MODEL = "Ruicheng/moge-3-vitl"
-STRIDE_PX = 720        # the front mesh has one vertex every width / STRIDE_PX px (3 px on a 2160-px view: ~0.5 M
-                       # faces, 14 MB; 2 px made 1.1 M and 29 MB), so a sharper view keeps the same mesh
-BACK_STRIDE_PX = 540   # the back layer's: it is only seen through gaps
+STRIDE_PX = 720        # the front mesh is thinned (adaptive) from a grid of one vertex every width / STRIDE_PX px (3 px
+                       # on a 2160-px view), so a sharper view keeps the same mesh
+BACK_STRIDE_PX = 540   # the back layer's grid
+FRONT_TOL = 1.0        # px (at QUEST_PPD) the painting may sit off its place on the thinned front mesh. Measured
+                       # 2026-11-15 on the tavern, village and terrace against the full grid (492 k faces, 14-15 MB):
+                       # 0.25 -> 132-160 k faces, 0.5 -> 105-122 k, 1 -> 82-90 k (5.3-6.2 MB), 2 -> 58-65 k, 4 -> 39-46 k;
+                       # outlines from the seat identical at every level. At 1 a render from the seat keeps 44.6-48.5 dB
+                       # PSNR and one 0.3 to the side or up 37.7-41.7 dB; at 4 (33-39 and 28-32 dB) floor boards and
+                       # roof lines shift
+BACK_TOL = 2.0         # the back layer's, coarser: it is only seen through gaps. 2 -> 28-47 k faces (2.8-4.6 MB, the
+                       # grid: 288 k, 8.5-10.2 MB); with the front at 1 a place is 110-129 k faces and the pair's
+                       # render 0.3 off the seat keeps 38.3-43.8 dB (36.0-42.7 at 4). A coarser grid instead pulled
+                       # the layer's outline in by up to 88 px (2026-11-15)
+HEAD_MOVE = 0.3        # the head move adaptive allows for, in the mesh's units: 30 cm if the reader shows a place at
+                       # MoGe's scale, less of the room if it shows it larger
+QUEST_PPD = 25         # px per degree at the centre of a Quest 3's lens, what FRONT_TOL and BACK_TOL count in
 RTOL = 0.06            # a face whose farthest corner is this share farther than its nearest is cut (at 0.12 stool
                        # rims stretched into streaks at a 1.5 m head move)
 SNAP = 7               # px window (on a 2160-px view, scaled with the width) in which an edge pixel's distance snaps
@@ -47,10 +60,10 @@ SHOWN_DEG = (140.0, 72.0)  # the most of a view a place shows across and up-down
 WORK_W = 2160        # depth, span and masks are computed on a copy this wide; a sharper view only sharpens the
                        # front's texture (MoGe ran out of GPU memory on a 5792-px view)
 SHAPES = {  # the constants each stage's files are shaped by: places.py stamps a stage's outputs with their values
-    "front": ("MODEL", "STRIDE_PX", "RTOL", "SNAP", "MERGE", "SKY_FAR", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW",
-              "ERASE_GROW", "SHOWN_DEG", "WORK_W"),
-    "back": ("BACK_STRIDE_PX", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW", "ERASE_GROW", "MATCH_SIGMA", "MATCH_WIDE",
-             "BACK_PUSH"),
+    "front": ("MODEL", "STRIDE_PX", "FRONT_TOL", "HEAD_MOVE", "QUEST_PPD", "RTOL", "SNAP", "MERGE", "SKY_FAR",
+              "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW", "ERASE_GROW", "SHOWN_DEG", "WORK_W"),
+    "back": ("BACK_STRIDE_PX", "BACK_TOL", "HEAD_MOVE", "QUEST_PPD", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW",
+             "ERASE_GROW", "MATCH_SIGMA", "MATCH_WIDE", "BACK_PUSH"),
 }
 
 
@@ -154,28 +167,94 @@ def snap_edges(pts: np.ndarray) -> np.ndarray:
     return pts * (d2 / np.clip(d, 1e-6, None))[..., None]
 
 
-def grid_mesh(pts: np.ndarray, img: Image.Image, stride: int, rtol: float | None, out: Path,
-              texture: Image.Image | None = None) -> tuple[int, int]:
-    """A textured grid over a point map of img's size, one vertex every stride px, two triangles per square of
-    neighbours, texture (default img, any resolution) on it; faces across a jump of more than rtol cut (None: none).
-    Returns (vertices, faces)."""
-    import trimesh
-    w, h = img.size
+def grid(pts: np.ndarray, stride: int, rtol: float | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(vertices, faces, kept) of a grid over a point map: one vertex every stride px, two triangles per square of
+    neighbours (the upper-left ones, then the lower-right), faces across a jump of more than rtol cut (None: none);
+    kept marks, over all of them, the faces that stayed. Vertices in three's axes."""
     pts = pts[::stride, ::stride]
     gh, gw = pts.shape[:2]
     verts = pts.reshape(-1, 3) * [1, -1, -1]  # OpenCV (x right, y down, z forward) -> three (y up, -z forward)
-    ys, xs = np.mgrid[0:gh, 0:gw]
-    uvs = np.stack([(xs.ravel() * stride + 0.5) / w, 1 - (ys.ravel() * stride + 0.5) / h], -1)
-    r = np.linalg.norm(pts, axis=-1).ravel()
     idx = np.arange(gh * gw).reshape(gh, gw)
     a, b, c, d = idx[:-1, :-1], idx[:-1, 1:], idx[1:, :-1], idx[1:, 1:]
     faces = np.concatenate([np.stack([a, c, b], -1).reshape(-1, 3), np.stack([b, c, d], -1).reshape(-1, 3)])
+    kept = np.ones(len(faces), bool)
     if rtol is not None:
-        rf = r[faces]
-        faces = faces[rf.max(1) / np.maximum(rf.min(1), 1e-6) <= 1 + rtol]
+        rf = np.linalg.norm(verts, axis=1)[faces]
+        kept = rf.max(1) / np.maximum(rf.min(1), 1e-6) <= 1 + rtol
+    return verts, faces[kept], kept
+
+
+def adaptive(pts: np.ndarray, stride: int, rtol: float | None, tol: float) -> tuple[np.ndarray, np.ndarray]:
+    """(vertices, faces) of the grid (grid) with the vertices a reader would not miss left out. Every vertex on an
+    open border (the view's outline, the cuts at depth edges) stays, so outlines are the grid's own; the rest are
+    triangulated (Delaunay over the grid's columns and rows, which is the view from the seat: no face can fold over
+    another) and a vertex comes back, the worst of each triangle per round, while leaving it out would show: the
+    painting drawn more than tol px (at QUEST_PPD) from its place, from the seat (the texture is laid straight across
+    a face, the view is not) or after a head move of HEAD_MOVE (the face's depth against the vertex's)."""
+    from scipy.spatial import Delaunay
+    verts, faces, kept = grid(pts, stride, rtol)
+    gh, gw = pts[::stride, ::stride].shape[:2]
+    n = gh * gw
+    ys, xs = np.divmod(np.arange(n), gw)
+    # a slight shear makes each square's Delaunay diagonal the grid's own, so the triangulation holds every border edge
+    xy = np.stack([xs + 1e-3 * ys, ys], -1).astype(np.float64)
+    inv = 1 / np.linalg.norm(verts, axis=1)
+    ray = verts * inv[:, None]
+    ang = np.degrees(np.stack([np.arctan2(ray[:, 0], -ray[:, 2]), np.arcsin(ray[:, 1])], -1))
+    edges = np.sort(faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), 1)
+    code, count = np.unique(edges[:, 0] * n + edges[:, 1], return_counts=True)
+    border = code[count == 1]
+    chosen = np.zeros(n, bool)
+    chosen[border // n] = chosen[border % n] = True
+    used = np.zeros(n, bool)
+    used[faces] = True
+    while True:
+        idx = np.flatnonzero(chosen)
+        tri = Delaunay(xy[idx])
+        if len(tri.coplanar):
+            raise RuntimeError(f"adaptive: the triangulation left out {len(tri.coplanar)} vertices")
+        rest = np.flatnonzero(used & ~chosen)
+        simplex = tri.find_simplex(xy[rest])
+        rest, simplex = rest[simplex >= 0], simplex[simplex >= 0]
+        corners = idx[tri.simplices[simplex]]
+        p = verts[corners]  # each left-out vertex's face: its ray meets it at sum(beta * p)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            beta = np.stack([(ray[rest] * np.cross(p[:, (i + 1) % 3], p[:, (i + 2) % 3])).sum(1) for i in range(3)],
+                            -1) / (p[:, 0] * np.cross(p[:, 1], p[:, 2])).sum(1)[:, None]
+            near = beta.sum(1)  # 1 / the face's distance along the ray
+            drawn = ((beta / near[:, None])[..., None] * ang[corners]).sum(1)  # the direction painted there
+            err = QUEST_PPD * np.maximum(np.hypot(*(drawn - ang[rest]).T),
+                                         np.degrees(HEAD_MOVE * np.abs(near - inv[rest])))
+        bad = ~(err <= tol)
+        if not bad.any():
+            break
+        order = np.argsort(np.nan_to_num(err[bad], nan=np.inf))
+        worst = np.full(len(tri.simplices), -1)
+        worst[simplex[bad][order]] = rest[bad][order]  # the last written is each triangle's largest
+        chosen[worst[worst >= 0]] = True
+    f = idx[tri.simplices]
+    cx, cy = xs[f].mean(1), ys[f].mean(1)  # a triangle stays when the grid face under its centre did
+    i, j = np.clip(cy.astype(int), 0, gh - 2), np.clip(cx.astype(int), 0, gw - 2)
+    f = f[kept.reshape(2, gh - 1, gw - 1)[((cx - j) + (cy - i) > 1).astype(int), i, j]]
+    a, b, c = xy[f[:, 0]], xy[f[:, 1]], xy[f[:, 2]]
+    turned = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) > 0
+    f[turned] = f[turned][:, [0, 2, 1]]  # wound as the grid's
+    return verts, f
+
+
+def write_mesh(verts: np.ndarray, faces: np.ndarray, h_deg: float, v_deg: float, texture: Image.Image,
+               out: Path) -> tuple[int, int]:
+    """The mesh as a .glb with the view on it: a vertex's place on the texture is its direction from the eye (dirs,
+    inverted). Vertices no face uses are left out. Returns (vertices, faces)."""
+    import trimesh
+    used, faces = np.unique(faces, return_inverse=True)
+    verts, faces = verts[used], faces.reshape(-1, 3)
+    lon = np.arctan2(verts[:, 0], -verts[:, 2])
+    lat = np.arcsin(verts[:, 1] / np.linalg.norm(verts, axis=1))
+    uvs = np.stack([0.5 + lon / np.radians(h_deg), 0.5 + lat / np.radians(v_deg)], -1)
     m = trimesh.Trimesh(vertices=verts, faces=faces, process=False,
                         visual=trimesh.visual.TextureVisuals(uv=uvs, material=trimesh.visual.material.PBRMaterial(
-                            baseColorTexture=texture or img, metallicFactor=0.0, roughnessFactor=1.0, doubleSided=True)))
+                            baseColorTexture=texture, metallicFactor=0.0, roughnessFactor=1.0, doubleSided=True)))
     m.export(out)
     return len(verts), len(faces)
 
@@ -250,7 +329,8 @@ def show(d: Path) -> dict:
     h_deg, v_deg = round(h_deg * img.width / w, 1), round(v_deg * img.height / h, 1)
     w, h = img.size
     pts = snap_edges(dirs(h, w, h_deg, v_deg) * dist[..., None])
-    nv, nf = grid_mesh(pts, img, max(1, round(w / STRIDE_PX)), RTOL, d / "front.glb", texture=full)
+    nv, nf = write_mesh(*adaptive(pts, max(1, round(w / STRIDE_PX)), RTOL, FRONT_TOL), h_deg, v_deg, full,
+                        d / "front.glb")
     dist = np.linalg.norm(pts, axis=-1).astype(np.float32)
     np.save(d / "distance.npy", dist)
     obj, _ = near_objects(dist)
@@ -279,8 +359,9 @@ def back(d: Path) -> dict:
     known = ~binary_dilation(obj, iterations=_px(ERASE_GROW + 8, w))
     tex = Image.fromarray(match_colour(plate, orig, known).astype(np.uint8))  # the whole back layer: one image, no paste
     tex.save(d / "back-texture.png")
-    nv, nf = grid_mesh(dirs(h, w, meta["h_deg"], meta["v_deg"]) * (shell * BACK_PUSH)[..., None], tex,
-                       max(1, round(w / BACK_STRIDE_PX)), None, d / "back.glb")
+    pts = dirs(h, w, meta["h_deg"], meta["v_deg"]) * (shell * BACK_PUSH)[..., None]
+    nv, nf = write_mesh(*adaptive(pts, max(1, round(w / BACK_STRIDE_PX)), None, BACK_TOL), meta["h_deg"],
+                        meta["v_deg"], tex, d / "back.glb")
     meta["back"] = {"vertices": nv, "faces": nf, "mb": round((d / "back.glb").stat().st_size / 1e6, 1)}
     (d / "geometry.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta
