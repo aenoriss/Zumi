@@ -1,5 +1,5 @@
 {
-  "formatVersion": "1.0.0",
+  "formatVersion": "1.1.0",
   "generator": "hand-built fixture",
   "createdAt": "2026-10-17T00:00:00Z",
   "series": {
@@ -40,8 +40,8 @@
         { "id": "l2", "name": "ren", "image": "panels/p0/layers/l2.png", "depth": 0.9, "band": "foreground", "bbox": { "x": 0.2, "y": 0.3, "w": 0.35, "h": 0.65 } }
       ],
       "bubbles": [
-        { "id": "b0", "text": "The door was never locked.", "kind": "caption", "position": { "x": 0.5, "y": 0.08 }, "speakerId": "narrator", "audio": "panels/p0/voice/b0.ogg", "startOffset": 0.3 },
-        { "id": "b1", "text": "...so why did I wait?", "kind": "thought", "speakerId": "ren", "position": { "x": 0.72, "y": 0.35 }, "anchor": { "x": 0.38, "y": 0.42 }, "anchorLayer": "l2", "audio": "panels/p0/voice/b1.ogg", "startOffset": 2.4 }
+        { "id": "b0", "text": "The door was never locked.", "kind": "caption", "position": { "x": 0.5, "y": 0.08 }, "speakerId": "narrator", "audio": "panels/p0/voice/b0.wav", "startOffset": 0.3 },
+        { "id": "b1", "text": "...so why did I wait?", "kind": "thought", "speakerId": "ren", "position": { "x": 0.72, "y": 0.35 }, "anchor": { "x": 0.38, "y": 0.42 }, "anchorLayer": "l2", "audio": "panels/p0/voice/b1.wav", "startOffset": 2.4 }
       ],
       "animations": [
         { "id": "a0", "target": "l1", "track": "opacity", "duration": 1.2, "loop": true, "keyframes": [ { "t": 0, "v": 1 }, { "t": 0.5, "v": 0.6 }, { "t": 1, "v": 1 } ] },
@@ -57,7 +57,7 @@
       "mood": "inside the city behind the door, neon, impossible scale",
       "layers": [ { "id": "l0", "name": "city sphere", "image": "panels/p1/panorama.jpg", "depth": 0.0, "band": "background" } ],
       "panorama": "panels/p1/panorama.jpg",
-      "bubbles": [ { "id": "b0", "text": "Oh.", "kind": "speech", "speakerId": "ren", "position": { "x": 0.5, "y": 0.55 }, "audio": "panels/p1/voice/b0.ogg", "startOffset": 1.5 } ],
+      "bubbles": [ { "id": "b0", "text": "Oh.", "kind": "speech", "speakerId": "ren", "position": { "x": 0.5, "y": 0.55 }, "audio": "panels/p1/voice/b0.wav", "startOffset": 1.5 } ],
       "ambience": "panels/p1/ambience.ogg",
       "musicCue": { "track": "city", "transition": "crossfade", "seconds": 3 },
       "durationOverride": 24

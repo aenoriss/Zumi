@@ -56,20 +56,24 @@ the whole episode (identity and the voices pay for it): run them again without -
    and the turns of the conversation; a speaker may be any card of the episode or off-panel; the corrections go
    into the boxes' speaker records. identity/identity.json and the series cast (<run>/cast/<series>/); a rerun
    keeps the voices of the characters it founds again.
-8. Voices (character_identity.voices_step): a voice description for every character with at least 3 lines and no
+8. Voices (character_identity.voices_step): a voice description for every character who speaks and has no
    voice yet (one Sonnet call), each designed once on Gemini 3.8 Flash TTS and stored (a voice id and sample in
    the cast, gemini_tts.design_voice), then every balloon with a speaker recorded in its character's voice, the
    delivery note from the balloon's kind and Transcribe's reading of the drawing (<episode>/audio-gemini/
    <pid>.b<bubble>.wav and lines.json; only changed lines again; episode.mp3 joins them for listening). Gemini is
    the backend by the owner's decision of 2026-11-15 (Inworld TTS-2, the backend from 2026-11-06, stays with
    ZUMI_TTS=inworld). Its 100 requests a day are counted (gemini_tts.py): the voices are designed first, then the
-   lines recorded in reading order as far as the day goes. When lines or voices are left for another day, steps
-   8b-10d are not run (the clock times every balloon by its clip, and the music, places and props are paid for on
-   that clock) and the run exits 1 saying so; a run on another day records the rest and goes on.
+   lines recorded in reading order as far as the day goes. When any voiced line ends without audio (the daily
+   limit, the cap, a design the service refused, a character the reader gave no voice), steps 8b-10d are not run
+   (the clock times every balloon by its clip, and the music, places and props are paid for on that clock) and the
+   run exits 1 saying so; a later run designs and records the rest and goes on. Which lines are voiced: voices.py.
 8b. The episode clock (clock.clock_step, no paid call): when every panel, frame and balloon is on screen, from the
    layers, the balloons, the reading order and the lines' lengths; <episode>/clock/clock.json. The steps after it
-   and the export read their times from it (step 9, Motion, will change panel lengths and run before it).
-10. Settings and score (score.score_step; step 9, Motion, is still to build): the places each frame is drawn in (one
+   and the export read their times from it.
+9. Motion (motion.motion_step, no paid call): the accents the rules fire on that clock (a pop on a speech line
+   whose speaker changed, a cut on the first shout of a run, one impact per stretch of sound effects), saved as
+   <episode>/motion/motion.json for checking; the export decides them again on its own clock and writes the tracks.
+10. Settings and score (score.score_step): the places each frame is drawn in (one
    Sonnet call over contact sheets of the erased backdrops, settings.py), the music reviewer's spans with a mood and
    a role (one text-only Sonnet call), and one Lyria song per setting and mood used, cut to a loop (score.py). The
    export resolves them with the clock into per-track gain envelopes. About 0.55 USD an episode.
@@ -429,12 +433,14 @@ def main() -> None:
         ident = timed("7 identity", CI.identity_step, ep, ch, a.series or CI.series_of(ch.stem))
         if ident and not a.no_voices:
             waiting = timed("8 voices", CI.voices_step, ep, ch, ident)
-    if waiting:  # the voice backend's daily limit: the clock and what is paid for on it wait for every line
-        print(f"== 8b-10d not run: {waiting} voice requests wait for another day")
+    if waiting:  # voices or lines still missing: the clock and what is paid for on it wait for every line
+        print(f"== 8b-10d not run: {waiting} voices or voiced lines are still missing (see step 8)")
         late = False
     if late:  # the episode clock: when every panel, frame and balloon is on screen, for the steps after
         import clock
         timed("8b clock", clock.clock_step, ep, len(ch))
+        import motion
+        timed("9 motion", motion.motion_step, ep, len(ch))
     if late and not a.no_music:
         import score
         timed("10 settings + score", score.score_step, ep, len(ch))
@@ -447,7 +453,8 @@ def main() -> None:
         sheet(imgs[i], letters[i], chars[i], pictures.get(i), f"{ch.stem} panel {i}").save(a.out / "sheets" / f"{ch.pid(i)}.png")
     print({k: round(v, 1) for k, v in times.items()}, f"spent today {spent_today():.3f} USD")
     if waiting:
-        raise SystemExit(f"voices incomplete: daily TTS limit ({waiting} requests wait); run again on another day")
+        raise SystemExit(f"voices incomplete: {waiting} voices or voiced lines are missing (step 8 says why); "
+                         f"run again, on another day if it was the daily TTS limit")
 
 
 if __name__ == "__main__":

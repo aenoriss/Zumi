@@ -341,11 +341,12 @@ def stamps_of(view: str, p: dict) -> dict[str, str]:
 
 def _todo(d: Path, name: str, saved: dict, now: dict) -> list[str]:
     """The rungs of a prop to make, in order: from the first whose file is missing or whose saved stamp is not the
-    one computed now, to the last. Their files are deleted and their stamps dropped from `saved`."""
+    one computed now, to the last. Their stamps are dropped from `saved`; their files stay until the new ones are
+    written over them, so a run that cannot make them (offline, the cap, a refused call) destroys nothing paid for:
+    an offline dry run deleted an episode's six models before the call it then refused (2026-11-15)."""
     k = next((i for i, (r, suffix) in enumerate(RUNGS)
               if saved.get(r) != now[r] or not (d / f"{name}{suffix}").exists()), len(RUNGS))
-    for r, suffix in RUNGS[k:]:
-        (d / f"{name}{suffix}").unlink(missing_ok=True)
+    for r, _ in RUNGS[k:]:
         saved.pop(r, None)
     return [r for r, _ in RUNGS[k:]]
 
@@ -491,6 +492,48 @@ def props_step(ep: Episode, only: list[str] | None = None) -> dict | None:
             continue
         _say(sid, picks[sid])
     return build(ep, picks)
+
+
+def model_bounds(glb: bytes) -> tuple[list[float], list[float]]:
+    """(min, max) of a finished prop's vertices in its own units: TRELLIS centres the model in a unit cube, y up."""
+    j, _ = prop_mesh._split(glb)
+    acc = j["accessors"][j["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
+    return [round(float(v), 4) for v in acc["min"]], [round(float(v), 4) for v in acc["max"]]
+
+
+def into(man: dict, ep: Episode, added: dict[str, bytes]) -> None:
+    """The built props into an export, under the place they belong to (episode.places.meshes[].props, the places
+    the export packed): each prop's model at episode/places/<setting>/props/<name>.glb as it was built, its real
+    height, the surface it rests on and its bounds in the model's units. No positions: the reader places them. A
+    prop whose stamps no longer hold (made from an earlier view) is still packed, and named."""
+    for m in (man["episode"].get("places") or {}).get("meshes") or []:
+        sid = m["setting"]
+        d = ep.out / "props" / sid
+        if not (d / "props.json").exists():
+            continue
+        pk = d / "pick.json"
+        picked = {p["name"]: p for p in json.loads(pk.read_text(encoding="utf-8")).get("props", [])} if pk.exists() else {}
+        st = d / "stamps.json"
+        saved = json.loads(st.read_text(encoding="utf-8")) if st.exists() else {}
+        view = fresh.digest(ep.out / "places" / sid / "shown.png")
+        out, old = [], []
+        for p in json.loads((d / "props.json").read_text(encoding="utf-8")).get("props", []):
+            f = d / p["model"]
+            if not f.exists() or not p.get("height_m") or p.get("surface") not in ("floor", "table", "shelf"):
+                continue
+            glb = f.read_bytes()
+            lo, hi = model_bounds(glb)
+            path = f"episode/places/{sid}/props/{p['name']}.glb"
+            added[path] = glb
+            out.append({"name": p["name"], "description": p.get("what") or "", "model": path,
+                        "heightM": float(p["height_m"]), "surface": p["surface"], "bounds": {"min": lo, "max": hi}})
+            if p["name"] in picked and saved.get(p["name"]) != stamps_of(view, picked[p["name"]]):
+                old.append(p["name"])
+        if out:
+            m["props"] = out
+        if old:
+            print(f"  props {sid}: packed from an earlier build, their stamps no longer hold (props.py makes them "
+                  f"again): {', '.join(old)}")
 
 
 if __name__ == "__main__":

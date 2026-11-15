@@ -1,5 +1,5 @@
 {
-  "formatVersion": "1.0.0",
+  "formatVersion": "1.1.0",
   "generator": "hand-built fixture",
   "createdAt": "2026-10-18T00:00:00Z",
   "series": { "id": "scroll-sample", "title": "Scroll Sample", "creator": "Zumi team", "language": "en" },

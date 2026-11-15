@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zumi.app/schema/zumi-manifest/1.0.0",
+  "$id": "https://zumi.app/schema/zumi-manifest/1.1.0",
   "title": "Zumi episode manifest",
-  "description": "manifest.json at the root of a .zumi file (a zip). Assets are grouped per panel under panels/<panelId>/ and referenced by relative path from the root. Version 1.0.0, 2026-10-17. See docs/architecture/decisions.md section 3.",
+  "description": "manifest.json at the root of a .zumi file (a zip). Assets are grouped per panel under panels/<panelId>/ and per episode under episode/, and referenced by relative path from the root. Version 1.1.0, 2026-11-15 (1.0.0: 2026-10-17). This schema is the source of truth of the format; README.md holds the conventions it cannot state. See docs/architecture/decisions.md sections 2 and 3.",
   "type": "object",
   "required": ["formatVersion", "episode", "series", "cast", "panels"],
   "additionalProperties": false,
   "properties": {
-    "formatVersion": { "type": "string", "pattern": "^1\\.\\d+\\.\\d+$" },
+    "formatVersion": { "type": "string", "pattern": "^1\\.\\d+\\.\\d+$", "description": "The version of this schema the file was written to (the last path part of $id). A reader accepts any 1.x and ignores fields it does not know; a file may not name a version newer than the schema it is checked against" },
     "generator": { "type": "string", "description": "Tool and version that packed this file, e.g. zumi-pipeline 0.3.1" },
     "createdAt": { "type": "string", "format": "date-time" },
     "series": {
@@ -44,14 +44,14 @@
         "thumbnail": { "$ref": "#/$defs/episodeImagePath" },
         "music": {
           "type": "array",
-          "description": "Instrumental tracks available to this episode. The first one starts with panel 0 unless panel 0 names a cue. Panels switch tracks with musicCue.",
+          "description": "Instrumental tracks of this episode. With episode.score (every pipeline-made file) the score's envelope alone says which track sounds when. Without it (hand-made files) the first track starts with panel 0 unless panel 0 names a cue, and panels switch tracks with musicCue",
           "items": { "$ref": "#/$defs/musicTrack" }
         },
         "durationHint": { "type": "number", "minimum": 0, "description": "Seconds, the last panel's endTime when the pipeline precomputed the timeline, else the sum of panel durations; informational" },
         "layout": { "$ref": "#/$defs/layout" },
         "settings": {
           "type": "array",
-          "description": "The places the episode is drawn in (pipeline step 10): a frame names its setting in panels[].frames[].setting. Props and music hang on them",
+          "description": "The places the episode is drawn in (pipeline step 10): a frame names its setting in panels[].frames[].setting. Places, props and music hang on them",
           "items": {
             "type": "object",
             "required": ["id", "name"],
@@ -75,19 +75,7 @@
             "fade": { "type": "number", "minimum": 0, "description": "Seconds of each half of a swap" },
             "meshes": {
               "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["setting", "front", "back", "hDeg", "vDeg"],
-                "additionalProperties": false,
-                "properties": {
-                  "setting": { "type": "string", "pattern": "^[a-z0-9_-]+$", "description": "episode.settings[].id" },
-                  "front": { "$ref": "#/$defs/placePath", "description": "The view as a mesh, cut at depth edges; eye at the origin, the view's centre down -z, y up, MoGe's metres (scale it to the room)" },
-                  "back": { "$ref": "#/$defs/placePath", "description": "The surface behind the front's near objects, the same frame; shown through the front's gaps" },
-                  "hDeg": { "type": "number", "exclusiveMinimum": 0, "description": "Degrees the view spans across, centred straight ahead" },
-                  "vDeg": { "type": "number", "exclusiveMinimum": 0, "description": "Degrees it spans up and down, centred on the horizon" },
-                  "light": { "$ref": "#/$defs/placeLight" }
-                }
-              }
+              "items": { "$ref": "#/$defs/place" }
             },
             "timeline": {
               "type": "array",
@@ -107,18 +95,18 @@
         },
         "score": {
           "type": "object",
-          "description": "The music as the pipeline resolved it: per-track gain envelopes on the episode clock, which a reader interpolates linearly (a crossfade is one track falling while another rises), and the reviewer's spans as data. When present a reader follows the envelopes and ignores musicCue",
+          "description": "The music as the pipeline resolved it: per-track gain envelopes on the episode clock, and the reviewer's spans as data. When present a reader follows the envelopes and ignores musicCue and music[].gain. The envelope is final: it already holds each role's level, the ducking under every voiced line, every entrance, crossfade and fade, and the opening and closing of the place the track is heard through. A reader multiplies a track by its gain at the clock's time and does nothing else to its level: it must not duck under voices again. Playback position: a track is audible while its gain is above 0.001; its origin at clock time t is the time of the last knot at or before t whose gain is at most 0.001 and whose next knot's gain is above 0.001 (the start of the audible span t lies in), or its first knot's time when there is none; at t it plays its file at ((t - origin) modulo music[].duration) seconds, the whole file looping (the pipeline writes the loop body as the file and no loopStart/loopEnd). So a seek lands where straight play would be, and a track that fell silent starts from its beginning when it enters again",
           "required": ["envelope"],
           "additionalProperties": false,
           "properties": {
             "envelope": {
               "type": "object",
-              "description": "music[].id -> knots [[seconds, gain], ...] in time order; gain 0..1 is the track's level, linear between knots, 0 before the first and after the last",
+              "description": "music[].id -> knots [[seconds, gain], ...] in time order; gain 0..1 is the track's linear level, linear between knots, 0 before the first and after the last. A track with no knots never sounds",
               "additionalProperties": { "type": "array", "items": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2 } }
             },
             "placement": {
               "type": "array",
-              "description": "How the music sits in the room over time, by role (music is made for the open place and heard through its portal): point = from a point inside the place behind the key wall (music heard in the scene), wide = spread across the open walls (lead, underscore). In time order, seconds on the episode clock",
+              "description": "How the music sits in the room over time, by role (music is made for the open place and heard through its portal): point = from one point inside the place (music heard in the scene), wide = spread across the open walls (lead, underscore: in the reference its two channels from the front of the left and right walls). In time order, seconds on the episode clock; outside every entry, wide",
               "items": {
                 "type": "object",
                 "required": ["start", "end", "mode"],
@@ -126,7 +114,9 @@
                 "properties": {
                   "start": { "type": "number", "minimum": 0 },
                   "end": { "type": "number", "minimum": 0 },
-                  "mode": { "type": "string", "enum": ["point", "wide"] }
+                  "mode": { "type": "string", "enum": ["point", "wide"] },
+                  "yaw": { "type": "number", "description": "point only: the direction of the point from the seat, in the open place's frame as placeLight.key.yaw (degrees from straight ahead, positive to the right). The reference puts the point 2 m beyond the wall along it. The pipeline writes 0: nothing measures where the players stand" },
+                  "pitch": { "type": "number", "description": "point only: degrees above the horizon" }
                 }
               }
             },
@@ -152,7 +142,7 @@
     },
     "cast": {
       "type": "array",
-      "description": "Characters with voices. Snapshot of the series cast at publish time.",
+      "description": "The characters of this episode: everyone a character card is (a node's extras.cast, a bubble's speakerId), speaking or not. Snapshot of the series cast at publish time. A member without a voice does not speak in this episode",
       "items": {
         "type": "object",
         "required": ["id", "name"],
@@ -164,7 +154,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "engine": { "type": "string", "description": "e.g. gemini-tts, elevenlabs" },
+              "engine": { "type": "string", "description": "e.g. gemini-3.8-flash-tts" },
               "voiceId": { "type": "string" },
               "description": { "type": "string", "description": "The text the voice was designed from" }
             }
@@ -197,8 +187,9 @@
     },
     "episodeImagePath": { "type": "string", "pattern": "^(cover\\.(png|jpg)|thumbnail\\.(png|jpg)|refs/[^/]+\\.(png|jpg|jpeg|webp))$", "description": "Episode-level image: cover.png, thumbnail.png, or refs/<name>" },
     "panelImagePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(layers/[a-z0-9_-]+\\.png|panorama\\.(jpg|jpeg|png)|depth/[a-z0-9_-]+\\.png)$", "description": "Inside the panel's own folder: layers/<layerId>.png, panorama.jpg, depth/<layerId>.png" },
-    "panelAudioPath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/(voice/[a-z0-9_-]+\\.(ogg|mp3|wav)|ambience\\.(ogg|mp3|wav))$", "description": "Inside the panel's own folder: voice/<bubbleId>.ogg or ambience.ogg" },
-    "episodeAudioPath": { "type": "string", "pattern": "^episode/music/[a-z0-9_-]+\\.(ogg|mp3|wav)$" },
+    "voicePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/voice/[a-z0-9_-]+\\.wav$", "description": "panels/<panelId>/voice/<bubbleId>.wav: RIFF WAVE, PCM, 24 kHz, mono, 16-bit, a 44-byte header and nothing after the samples. PCM because Unity cannot decode MP3 or Ogg from memory; a reader copies the samples into a clip" },
+    "ambiencePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/ambience\\.(ogg|mp3|wav)$", "description": "Reserved: one loop per panel. The pipeline writes none" },
+    "episodeAudioPath": { "type": "string", "pattern": "^episode/music/[a-z0-9_-]+\\.(ogg|mp3|wav)$", "description": "The pipeline writes WAV (PCM): a loop body that closes without a seam, which a lossy codec's padding would break" },
     "musicTrack": {
       "type": "object",
       "required": ["id", "file"],
@@ -207,19 +198,19 @@
         "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
         "file": { "$ref": "#/$defs/episodeAudioPath" },
         "loop": { "type": "boolean", "default": true },
-        "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6, "description": "Linear gain relative to voices; the reader also ducks music under speech" },
-        "loopStart": { "type": "number", "minimum": 0, "description": "Seconds; loop region start for seamless loops (optional)" },
-        "loopEnd": { "type": "number", "minimum": 0, "description": "Seconds; loop region end (optional)" },
+        "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6, "description": "Linear level of the track in a file without episode.score, where the reader also ducks the music under voices itself. With a score it is 1 and unused: the envelope is the level, ducking included" },
+        "loopStart": { "type": "number", "minimum": 0, "description": "Seconds; loop region start for seamless loops (optional; hand-made files)" },
+        "loopEnd": { "type": "number", "minimum": 0, "description": "Seconds; loop region end (optional; hand-made files)" },
         "mood": { "type": "string" },
         "setting": { "type": "string", "description": "episode.settings[].id the track belongs to (the tracks of one setting share tempo, key and instruments)" },
-        "duration": { "type": "number", "minimum": 0, "description": "Seconds of audio in the file" }
+        "duration": { "type": "number", "minimum": 0, "description": "Seconds of audio in the file: the modulus of the playback position (episode.score)" }
       }
     },
     "musicCue": {
       "type": "object",
       "required": ["track"],
       "additionalProperties": false,
-      "description": "Placed on a panel: when the panel appears, switch to this track with the given transition.",
+      "description": "Hand-made files only (ignored when episode.score is present; the pipeline writes none). Placed on a panel: when the panel appears, switch to this track with the given transition.",
       "properties": {
         "track": { "type": "string", "description": "episode.music[].id, or 'none' to fade music out" },
         "transition": { "type": "string", "enum": ["crossfade", "fadeOutIn", "cut"], "default": "crossfade", "description": "crossfade: equal-power overlap; fadeOutIn: silence gap between tracks; cut: immediate (use only on hard scene breaks)" },
@@ -230,7 +221,51 @@
     },
     "scenePath": { "type": "string", "pattern": "^panels/[a-z0-9_-]+/scene\\.glb$" },
     "placePath": { "type": "string", "pattern": "^episode/places/[a-z0-9_-]+/(front|back)\\.glb$" },
-    "hexColor": { "type": "string", "pattern": "^#[0-9a-f]{6}$" },
+    "propPath": { "type": "string", "pattern": "^episode/places/[a-z0-9_-]+/props/[a-z0-9_-]+\\.glb$" },
+    "hexColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "description": "sRGB, #rrggbb in either case" },
+    "place": {
+      "type": "object",
+      "description": "One place: two meshes in one frame, how far it is, its light and its props. The frame (glTF's, right-handed): the origin is the seat's eye, +y up, the view's centre straight ahead down -z, +x to the right. Both meshes are unlit (KHR_materials_unlit: the painting is already lit) and in metres as the depth model estimated them, not the room's. A reader shows a place so: (1) the origin at the eye of the seat, the one fixed point the place's directions are measured from; (2) -z turned, about +y, to the key wall: the horizontal direction from the seat to the wall the place is shown on, perpendicular to that wall; (3) both meshes scaled by one factor s about the origin so that the place lies beyond the real walls. The reference (pipeline set_preview) takes for s the 95th percentile, over the front mesh's vertices within 30 degrees of the horizon, of (the distance from the eye to the room's wall along the vertex's direction + 0.25 m) / (the vertex's distance from the origin); a reader with one wall D metres straight ahead may take s = (D + 0.25) / nearM, which puts 95 % of the view beyond it; with no scanned room, any s that sets medianM at a comfortable distance behind the panel; (4) every back vertex nearer than (the wall's distance along its ray + 0.1 m) / s is pushed out along its ray to that distance, so the back layer never comes inside the room; (5) what still falls inside the room is clipped. The place is seen through the walls and the ceiling, never the floor, within hDeg / 2 to either side of -z and vDeg / 2 above and below the horizon, fading out over the last degrees",
+      "required": ["setting", "front", "back", "hDeg", "vDeg"],
+      "additionalProperties": false,
+      "properties": {
+        "setting": { "type": "string", "pattern": "^[a-z0-9_-]+$", "description": "episode.settings[].id" },
+        "front": { "$ref": "#/$defs/placePath", "description": "The view as a mesh, cut at depth edges" },
+        "back": { "$ref": "#/$defs/placePath", "description": "The surface behind the front's near objects, a little farther, never cut; shown through the front's gaps" },
+        "hDeg": { "type": "number", "exclusiveMinimum": 0, "description": "Degrees the view spans across, centred straight ahead" },
+        "vDeg": { "type": "number", "exclusiveMinimum": 0, "description": "Degrees it spans up and down, centred on the horizon" },
+        "nearM": { "type": "number", "exclusiveMinimum": 0, "description": "The 5th percentile of the distance from the eye over the view, in the meshes' units: 95 % of the place is farther" },
+        "medianM": { "type": "number", "exclusiveMinimum": 0, "description": "The median distance from the eye over the view, in the meshes' units" },
+        "farM": { "type": "number", "exclusiveMinimum": 0, "description": "The 95th percentile; the sky, where the view has one, is farther still" },
+        "light": { "$ref": "#/$defs/placeLight" },
+        "props": {
+          "type": "array",
+          "description": "Objects of the place that stand in the reader's room while the place is open (pipeline step 10d). No positions: the reader puts each on a real surface of the kind it names, near the open wall, and fades it with the place",
+          "items": { "$ref": "#/$defs/prop" }
+        }
+      }
+    },
+    "prop": {
+      "type": "object",
+      "description": "One prop and its model's conventions. The model is a glTF binary with one mesh, as the lifting model (TRELLIS) leaves it: +y up; centred on the origin inside a unit cube (its longest side about 1, see bounds), so the origin is the middle of the model, not its base; the side the place's view shows faces +z (as the model lifts a picture; not checked per prop, a reader may turn a prop about +y freely). A reader scales it uniformly by heightM / (bounds.max[1] - bounds.min[1]) and rests the point under its middle, (centre x, bounds.min[1], centre z), on the surface. The material is lit, not unlit: PBR metallic-roughness, base colour texture only, non-metal (metallicFactor 0), fully rough, single-sided; the mesh has no normals, so a reader computes them, and should draw both sides (the meshes are not reliably closed). The place's light (placeLight) is meant to fall on it",
+      "required": ["name", "model", "heightM", "surface"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9_-]+$", "description": "Unique within its place; the model's file name" },
+        "description": { "type": "string", "description": "What kind of thing it is and what it is made of" },
+        "model": { "$ref": "#/$defs/propPath" },
+        "heightM": { "type": "number", "exclusiveMinimum": 0, "description": "Its real height in metres, bottom to top" },
+        "surface": { "type": "string", "enum": ["floor", "table", "shelf"], "description": "What it rests on in a living room" },
+        "bounds": {
+          "type": "object", "required": ["min", "max"], "additionalProperties": false,
+          "description": "The model's bounding box in its own units, [x, y, z]",
+          "properties": {
+            "min": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+            "max": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+          }
+        }
+      }
+    },
     "placeLight": {
       "type": "object",
       "description": "How the open place lights the reader's room, measured from its painted view (places.py light): a reader blends to it over the swap's fade in, and back over its fade out. Colours are light colours (brightest channel at full), sRGB",
@@ -244,9 +279,9 @@
         },
         "key": {
           "type": "object", "required": ["yaw", "pitch", "color", "strength"], "additionalProperties": false,
-          "description": "The place's main light (its brightest region: a fire, lanterns, a lit window, the sun) as a directional light into the room",
+          "description": "The place's main light (its brightest region: a fire, lanterns, a lit window, the sun) as a directional light into the room. yaw and pitch are the direction from the seat toward the light, in the place's frame; the light shines back along it",
           "properties": {
-            "yaw": { "type": "number", "description": "Degrees from straight ahead (the key wall), positive to the right" },
+            "yaw": { "type": "number", "description": "Degrees about +y from the place's -z, its straight ahead (once placed: the direction from the seat to the key wall), positive toward +x, the right of a reader facing the key wall" },
             "pitch": { "type": "number", "description": "Degrees above the horizon" },
             "color": { "$ref": "#/$defs/hexColor" },
             "strength": { "type": "number", "minimum": 0, "maximum": 1, "description": "How much it stands out from the rest: near 0 for an evenly lit place, near 1 for a lamp in the dark" }
@@ -264,7 +299,6 @@
         "occlusion": { "type": "number", "minimum": 0, "maximum": 1, "description": "Contact-shadow and ambient-occlusion strength for the place's props: more for enclosed interiors" }
       }
     },
-    "hexColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
     "vec2": {
       "type": "object",
       "required": ["x", "y"],
@@ -297,7 +331,7 @@
           "required": ["w", "h"],
           "additionalProperties": false,
           "properties": { "w": { "type": "integer", "minimum": 1 }, "h": { "type": "integer", "minimum": 1 } },
-          "description": "Pixel size of the regenerated panel image; layer PNGs share it"
+          "description": "Pixel size of the panel image; layer PNGs share it"
         },
         "depthScale": { "type": "number", "minimum": 0, "default": 0.6, "description": "Metres of parallax spread between depth 0 and 1 at the default reading distance" },
         "strip": {
@@ -311,18 +345,18 @@
             "gutterAfter": { "type": "integer", "minimum": 0, "default": 0 }
           }
         },
-        "durationOverride": { "type": "number", "minimum": 0, "description": "Seconds; when absent the reader computes voices + 1.5 s per bubble, min 3 s, min 20 s for immersive modes, never below the longest animation" },
+        "durationOverride": { "type": "number", "minimum": 0, "description": "Seconds; when absent the reader computes voices + 1.5 s per bubble, min 3 s, min 20 s for immersive modes, never below the longest animation. The pipeline writes it equal to endTime - startTime" },
         "startTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when this panel becomes active, precomputed by the pipeline: one clock drives the episode, the panel whose [startTime, endTime) holds the clock is the active one, the ones after it have not played yet" },
         "endTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the next panel takes over; endTime - startTime is the panel's duration" },
         "frames": {
           "type": "array",
-          "description": "The comic frames inside the panel in reading order, precomputed by the pipeline: when each is reached (a reader shows the ones ahead greyed). A frame with balloons is reached at its first balloon; one without holds the clock for a fixed time",
+          "description": "The comic frames inside the panel in reading order, precomputed by the pipeline: when each is reached (a reader shows the ones ahead greyed). A frame with balloons is reached at its first balloon; one without holds the clock for a fixed time. A frame is on screen from its start until the next frame of its panel starts, the last one until the panel ends",
           "items": {
             "type": "object",
             "required": ["index", "startOffset", "duration"],
             "additionalProperties": false,
             "properties": {
-              "index": { "type": "integer", "minimum": 0, "description": "The frame's index in the panel's scene (the layers' frame)" },
+              "index": { "type": "integer", "minimum": 0, "description": "The frame's index in the panel's scene: the extras.frame of its nodes, a bubble's frame" },
               "startOffset": { "type": "number", "minimum": 0, "description": "Seconds after the panel appears" },
               "duration": { "type": "number", "minimum": 0 },
               "setting": { "type": "string", "description": "episode.settings[].id the frame is drawn in; absent for a frame with no place (a title, credits)" }
@@ -330,13 +364,13 @@
           }
         },
         "mood": { "type": "string", "description": "Free text from the understanding pass; drives ambience and music prompts" },
-        "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" } },
-        "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" } },
-        "animations": { "type": "array", "items": { "$ref": "#/$defs/animation" } },
-        "ambience": { "$ref": "#/$defs/panelAudioPath" },
+        "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" }, "description": "The panel's flat images. A scene3d panel made by the pipeline still carries its one flat source image here (id base, panels/<id>/layers/base.png) as the fallback a reader shows before or instead of the scene" },
+        "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" }, "description": "In the order they appear on the clock" },
+        "animations": { "type": "array", "items": { "$ref": "#/$defs/animation" }, "description": "What moves in the panel. The pipeline writes rule-based accents only (a pop, a cut, an impact: pipeline motion.py), each one track that plays once; what it writes, the reader shows" },
+        "ambience": { "$ref": "#/$defs/ambiencePath" },
         "musicCue": { "$ref": "#/$defs/musicCue" },
         "panorama": { "$ref": "#/$defs/panelImagePath", "description": "Equirectangular image, required when renderMode is panorama" },
-        "scene": { "$ref": "#/$defs/scenePath", "description": "glb, required when renderMode is scene3d" },
+        "scene": { "$ref": "#/$defs/scenePath", "description": "glb, required when renderMode is scene3d. A pipeline-made scene is the panel's layers as textured surfaces far to near, seen by its one camera (node panel_camera at the origin looking down -z; units are shares of the reading distance, the frames' windows at 1), unlit (KHR_materials_unlit), no texture over 2048 px on its long side. Every other node is one layer and says what it is in its glTF extras: kind (window, backdrop, character, object, lettering); frame (windows, and every layer shown through that frame's window: the reader clips those layers to the window's shape; lettering has none); card (every layer but the windows: its id in this panel, e.g. card-3, which bubbles[].speakerCard and animations[].target name); cast (a character that is a cast member: cast[].id); bubble (lettering: the id of its bubble in bubbles[], which the reader shows from that bubble's startTime)" },
         "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" }, "description": "Reserved; post-MVP" }
       },
       "allOf": [
@@ -366,33 +400,38 @@
       "properties": {
         "id": { "type": "string" },
         "text": { "type": "string" },
-        "speakerId": { "type": "string", "description": "cast[].id; absent for captions" },
-        "kind": { "type": "string", "enum": ["speech", "thought", "shout", "caption"], "default": "speech" },
+        "speakerId": { "type": "string", "description": "cast[].id of who says it; absent when nobody the cast knows does (a caption, a sound effect, a voice from nowhere in the episode)" },
+        "speakerCard": { "type": "string", "pattern": "^([a-z0-9_-]+/)?[a-z0-9_-]+$", "description": "The card that says it: the extras.card of a node of this panel's scene (card-3), or <panelId>/<card> for a card drawn in another panel (p006/card-1: a voice carrying over from the box before or after; nothing in this panel to animate). Absent with a speakerId: that cast member speaks from off-panel. Absent without one: nobody speaks it" },
+        "frame": { "type": "integer", "minimum": 0, "description": "The frame of the panel the bubble belongs to and is timed in (frames[].index, a node's extras.frame); absent in a panel without frames" },
+        "kind": { "type": "string", "enum": ["speech", "thought", "shout", "caption", "sfx"], "default": "speech", "description": "sfx: a sound no character voices, lettered on the art; never has audio or a speaker" },
         "position": { "$ref": "#/$defs/vec2", "description": "Bubble centre" },
         "anchor": { "$ref": "#/$defs/vec2", "description": "Tail target, usually the speaker's mouth" },
         "anchorLayer": { "type": "string", "description": "layer id the tail follows in parallax" },
-        "audio": { "$ref": "#/$defs/panelAudioPath" },
+        "audio": { "$ref": "#/$defs/voicePath", "description": "The line in its speaker's voice. Every bubble with a speakerCard and words has one in a pipeline-made file; a bubble without audio is shown for its durationHint as text only" },
         "startOffset": { "type": "number", "minimum": 0, "description": "Seconds after the panel appears" },
-        "durationHint": { "type": "number", "minimum": 0 },
+        "durationHint": { "type": "number", "minimum": 0, "description": "Seconds: the clip's length, or a reading time for a bubble without one" },
         "startTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the bubble appears and its clip starts, precomputed by the pipeline (= the panel's startTime + startOffset); a bubble whose startTime is ahead of the clock has not played yet" },
         "endTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start when the bubble's clip or reading time ends" }
       }
     },
     "animation": {
       "type": "object",
+      "description": "One track on one target. It starts at startTime on the episode clock (or delay seconds after its panel appears, the same moment) and runs for duration seconds; at local time u = (clock - start) / duration in 0..1 its value comes from keyframes (translate, rotate, scale, opacity) or from params (sway, shake, spriteCycle). Before its start a track does nothing. A track with loop false does nothing after its end either: the target is back at rest (the pipeline's tracks end at rest); with loop true it repeats. Tracks on one target combine: scales and opacities multiply, offsets and angles add. Offsets and scales act in the panel's plane (x to the right, y down, as panel pixels), never in depth",
       "required": ["id", "target", "track"],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string" },
-        "target": { "type": "string", "description": "layer id" },
+        "id": { "type": "string", "description": "Unique within the panel" },
+        "target": { "type": "string", "description": "What moves. In a flat panel: a layer id. In a scene3d panel: a card (the node whose extras.card is this, e.g. card-3), or frame:<n> for the content of frame n: every node whose extras.frame is n except the frame's window, moved together behind the window, which stays still and clips them" },
         "track": { "type": "string", "enum": ["translate", "rotate", "scale", "opacity", "sway", "shake", "spriteCycle"] },
+        "startTime": { "type": "number", "minimum": 0, "description": "Seconds from the episode's start (= the panel's startTime + delay). Present in pipeline-made files" },
         "duration": { "type": "number", "minimum": 0, "default": 2 },
-        "delay": { "type": "number", "minimum": 0, "default": 0 },
-        "loop": { "type": "boolean", "default": true },
-        "easing": { "type": "string", "enum": ["linear", "inOut", "out", "in"], "default": "inOut" },
+        "delay": { "type": "number", "minimum": 0, "default": 0, "description": "Seconds after the panel appears" },
+        "loop": { "type": "boolean", "default": true, "description": "The pipeline always writes it; its accents are false" },
+        "easing": { "type": "string", "enum": ["linear", "inOut", "out", "in", "step"], "default": "inOut", "description": "How the value moves between two neighbouring keyframes, applied to each segment on its own share v of the way (0 at the earlier keyframe, 1 at the later): linear v; in v^3; out 1 - (1 - v)^3; inOut 4v^3 below a half, else 1 - (2 - 2v)^3 / 2; step: no glide, the earlier keyframe's value holds until the later keyframe's time (a cut)" },
+        "pivot": { "$ref": "#/$defs/vec2", "description": "rotate and scale: the fixed point, in the target's own bounding box as the panel camera sees it (0,0 its top-left, 1,1 its bottom-right). Default the centre; x 0.5, y 1 is the middle of its base" },
         "keyframes": {
           "type": "array",
-          "description": "For translate/rotate/scale/opacity: time 0..1 and a value; translate in panel-normalised units, rotate in degrees, scale as factor, opacity 0..1",
+          "description": "For translate/rotate/scale/opacity: time 0..1 of the duration and a value, in time order; translate a vector in panel-normalised units (x a share of the panel's width, y of its height), rotate in degrees, scale a factor (1 = rest), opacity 0..1. Before the first keyframe its value holds, after the last its value holds",
           "items": {
             "type": "object",
             "required": ["t", "v"],
@@ -405,8 +444,19 @@
         },
         "params": {
           "type": "object",
-          "description": "For sway/shake/spriteCycle: amplitude (normalised), frequency (Hz), frames (image paths) etc.",
-          "additionalProperties": true
+          "description": "For sway/shake/spriteCycle. shake: an offset along axis of amplitude x (1 - u)^decay x sin(2 pi x frequency x d), d the seconds since the track started and u = d / duration; amplitude is a share of the panel's width, positive to the right",
+          "additionalProperties": true,
+          "properties": {
+            "amplitude": { "type": "number", "minimum": 0, "description": "sway, shake: the peak offset, panel-normalised" },
+            "frequency": { "type": "number", "minimum": 0, "description": "sway, shake: Hz" },
+            "axis": { "type": "string", "enum": ["x", "y"], "default": "x", "description": "shake: the direction of the offset" },
+            "decay": { "type": "number", "minimum": 0, "default": 0, "description": "shake: the exponent of (1 - u) the amplitude dies out by; 0 keeps it constant" },
+            "pin": {
+              "type": "object",
+              "description": "shake of a frame's content: cards (extras.card) that touch a side of the frame's window and must not be pulled away from it, since nothing is painted behind them there. A card pinned l takes only the offsets toward the left (negative) and stays at rest during the others; r only those toward the right; lr does not move",
+              "additionalProperties": { "type": "string", "enum": ["l", "r", "lr"] }
+            }
+          }
         }
       }
     },

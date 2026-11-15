@@ -12,8 +12,17 @@ picked by name (ZUMI_TTS when none is given), so the two can be compared on one 
     requests_left()                                          where the service counts requests a day (Gemini: 100)
 
 A backend with a daily limit is planned by it: the voices are designed first, then the lines are recorded in
-reading order, as many as the day leaves; the rest wait for a run on another day (design_voices and record_lines
-return how many), and what was recorded is kept by its line record, so nothing is sent twice.
+reading order, as many as the day leaves; the rest wait for a run on another day, and what was recorded is kept by
+its line record, so nothing is sent twice.
+
+Which balloons are voiced (wanted_lines): every balloon with a speaker card and words to say (has_words), whatever
+its kind but a sound effect. So by rule these stay text: sound effects, a narrator's captions (said by nobody),
+balloons of marks alone ("...", "?!"), and a line whose speaker is drawn nowhere in the episode (off-panel, no
+card). Every other line must end with audio: design_voices and record_lines return what is still missing for any
+reason (the daily limit, the spend cap, an offline run, a design the service refused, a character with no voice
+description), the run stops there (episode.py) and the export refuses the episode (missing_lines), so a speaking
+character is never left silent without the run saying so (2026-11-15: an episode shipped 6 of 25 lines silent, one
+voice's design refused and one character under a line count that no longer exists).
     design_voice(description, display_name, preview_text, language_code, gender, tag) -> {"id", "sample", "cost"}
     direct(style, pace, factor, char) -> {"brief", "rate"}   how one line is directed
     speech(text, voice, style, tag, context, rate, brief) -> (wav, cost, instruction)   text already spoken()
@@ -27,6 +36,7 @@ its owner), and the listening file (episode_audio).
     wanted_lines(ep, n, identity, cast, tts) the line records a recording run aims at, nothing sent
     record_lines(ep, n, identity, cast, tts) every voiced balloon recorded; only changed lines are paid for
     lines(ep, tts)                           the line index: {(pid, bubble): record} for lines whose file exists
+    missing_lines(ep, n, identity, cast, tts) the voiced balloons without audio, as text for a refusal
 """
 from __future__ import annotations
 
@@ -77,6 +87,11 @@ def spoken(text: str) -> str:
     return re.sub(r"\bi\b", "I", "".join(out))
 
 
+def has_words(text: str) -> bool:
+    """Whether a balloon has words to say: a balloon of marks alone ("...", "?!!") is a reaction, not a line."""
+    return bool(re.search(r"[^\W_]", text or ""))
+
+
 def style_of(r: dict) -> str | None:
     """A line's delivery note: what the balloon's kind says (STYLE) and what Transcribe read in the drawing (the
     record's delivery: emotion and manner), joined; None when neither says anything."""
@@ -107,7 +122,8 @@ def design_voices(cast, tts: ModuleType) -> int:
     """Every described voice of the cast without a designed one on this backend, designed (the character's own lines
     as the preview script): the voice id in the cast record under tts.VOICE_ID, its sample in
     <cast>/voices/K<n><SAMPLE_SUFFIX>.wav. A description the service refuses is printed and tried again on the next
-    run; the cap stops the rest for the next run. Returns the voices the backend's daily limit left undesigned."""
+    run; the cap and the daily limit stop the rest for the next run. Returns the voices left undesigned, whatever
+    stopped them."""
     todo = [c for c in cast.chars if c["voice"] and c["voice"].get("description") and not c["voice"].get(tts.VOICE_ID)]
     if not todo:
         return 0
@@ -117,6 +133,8 @@ def design_voices(cast, tts: ModuleType) -> int:
         v = c["voice"]
         preview = " ".join(c.get("lines") or [])[:400] or v["description"]
         if left_today(tts) == 0:
+            print(f"  voices not designed: the daily limit of {tts.TTS_DAILY_REQUESTS} {tts.NAME} TTS requests is "
+                  f"reached; a run on another day designs them")
             break
         try:
             got = tts.design_voice(v["description"], v.get("display_name") or c["name"], preview,
@@ -125,7 +143,7 @@ def design_voices(cast, tts: ModuleType) -> int:
             print(f"  voices not designed ({e}); the next run designs them")
             break
         except RuntimeError as e:
-            print(f"  {c['id']} {c['name']}: {e}")
+            print(f"  {c['id']} {c['name']}: VOICE NOT DESIGNED, its lines stay silent until it is: {e}")
             continue
         v[tts.VOICE_ID], v["design_cost"] = got["id"], got["cost"]
         (cast.dir / "voices" / f"{c['id']}{tts.SAMPLE_SUFFIX}.wav").write_bytes(got["sample"])
@@ -133,7 +151,7 @@ def design_voices(cast, tts: ModuleType) -> int:
         made, cost = made + 1, cost + got["cost"]
     print(f"  {made} of {len(todo)} voices designed on {tts.NAME} ({cost:.4f} USD at list price): " +
           ", ".join(f"{c['id']} {c['name']}" for c in todo if c['voice'].get(tts.VOICE_ID)))
-    return len(todo) - made if left_today(tts) == 0 else 0
+    return len(todo) - made
 
 
 def within_limit(todo: list, left: int | None) -> tuple[list, int]:
@@ -144,9 +162,9 @@ def within_limit(todo: list, left: int | None) -> tuple[list, int]:
 
 def wanted_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleType) -> tuple[list[dict], dict]:
     """(every line to be voiced on this backend as its line record, without what recording adds; {character: lines
-    skipped for want of a designed voice}): each spoken balloon with a speaker card (speakers.json: kind not sfx; the
-    card in the box, or in another box by the reader's correction) in its character's voice, directed as the adapter
-    directs it; a balloon of marks alone ("...") is not voiced."""
+    that cannot be recorded for want of a designed voice}): each spoken balloon with a speaker card (speakers.json:
+    kind not sfx; the card in the box, or in another box by the reader's correction) in its character's voice,
+    directed as the adapter directs it; a balloon of marks alone ("...") is not voiced."""
     chars = {c["id"]: c for c in cast.chars}
     out, unvoiced, said = [], {}, []
     for i in range(n_boxes):
@@ -159,7 +177,7 @@ def wanted_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
             said.append(text)
             if not r.get("speakers"):
                 continue
-            if not re.search(r"[^\W_]", text):  # a balloon of marks alone ("...", "?!!"): a reaction, no words to say
+            if not has_words(text):
                 continue
             s = r["speakers"][0]  # a card of the box, or "<pid>/<key>" of another box (the reader's correction)
             cid = identity["cards"].get(s if "/" in s else f"{r['pid']}/{s}")
@@ -179,9 +197,10 @@ def wanted_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
 def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleType) -> int:
     """Every line of wanted_lines as audio, to <episode>/<AUDIO_DIR>/<pid>.b<bubble>.wav and its lines.json. A
     balloon already recorded with the same words, voice, note, brief and rate on the same model and delivery mode
-    (LINE_RECIPE) is kept; one whose character has no designed voice is skipped, counted. On a backend with a daily
-    limit only the lines the day leaves are sent, the first in reading order (within_limit). Returns the lines that
-    limit left for another day."""
+    (LINE_RECIPE) is kept; one whose character has no designed voice cannot be sent, and is counted. On a backend
+    with a daily limit only the lines the day leaves are sent, the first in reading order (within_limit). Returns
+    the voiced balloons still without audio when it ends, whatever kept them (no voice, the daily limit, the cap, an
+    offline run): 0 is the only count the run may go on with."""
     out = ep.out / tts.AUDIO_DIR
     index = out / "lines.json"
     have = {(l["pid"], l["bubble"]): l for l in json.loads(index.read_text(encoding="utf-8"))} if index.exists() else {}
@@ -200,14 +219,15 @@ def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
     stale = [k for k in have if k not in wanted]  # recorded earlier, no longer a voiced balloon (its speaker changed)
     for k in stale:
         (out / have.pop(k)["file"]).unlink(missing_ok=True)
+    silent = sum(unvoiced.values())
     print(f"  {tts.NAME}: {len(todo)} lines to record, {kept} current" + (f", {len(stale)} dropped" if stale else "") +
-          (f"; no voice for {sum(unvoiced.values())}: " + ", ".join(f"{k} {n}" for k, n in unvoiced.items())
-           if unvoiced else ""))
+          (f"; NO VOICE for {silent} lines, which stay silent until their character has one: " +
+           ", ".join(f"{k} {n}" for k, n in unvoiced.items()) if unvoiced else ""))
     if stale:
         index.write_text(json.dumps(sorted(have.values(), key=lambda l: (l["box"], l["order"])), indent=1,
                                     ensure_ascii=False), encoding="utf-8")
     if not todo:
-        return 0
+        return silent
     out.mkdir(parents=True, exist_ok=True)
     asked = len(todo)
     todo, _ = within_limit(todo, left_today(tts))
@@ -231,15 +251,25 @@ def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
     done, stopped = paid_map(one, range(len(todo)), workers=LINE_WORKERS, on_done=save)
     cost = sum(done[n]["cost"] for n in done)
     secs = sum(done[n]["seconds"] for n in done)
-    waiting = asked - len(done) if left_today(tts) == 0 else 0  # the limit, by the count or by the service's word
+    limit = left_today(tts) == 0  # the daily limit, by the count or by the service's word
     print(f"  {len(done)} lines recorded, {secs:.0f} s of audio, {cost:.4f} USD at list price" +
-          (f"; {len(stopped)} stopped by the cap: the next run records them" if stopped and not waiting else ""))
-    if waiting:
+          (f"; {len(stopped)} stopped by the cap: the next run records them" if stopped and not limit else ""))
+    if limit and asked > len(done):
         print(f"  voices: {len(done)} of {asked} lines recorded, the daily limit of {tts.TTS_DAILY_REQUESTS} "
               f"{tts.NAME} TTS requests is reached; the rest are recorded by the next run on another day")
     if done or stale:
         episode_audio(ep, tts)
-    return waiting
+    return asked - len(done) + silent
+
+
+def missing_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleType) -> list[str]:
+    """What an export must not ship as silence: the voiced balloons without audio on this backend ("<pid> b<n>, not
+    recorded") and the characters whose lines have no designed voice to be recorded in ("K3: 4 lines, no voice").
+    [] when every speaking line has its audio."""
+    want, unvoiced = wanted_lines(ep, n_boxes, identity, cast, tts)
+    have = lines(ep, tts)
+    return [f"{l['pid']} b{l['bubble']}, not recorded" for l in want if (l["pid"], l["bubble"]) not in have] + \
+           [f"{who}: {n} lines, no voice" for who, n in unvoiced.items()]
 
 
 def episode_audio(ep: Episode, tts: ModuleType) -> Path | None:

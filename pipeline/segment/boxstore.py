@@ -91,6 +91,11 @@ def index_of(pid: str) -> int:
     return int(pid.rsplit("-p", 1)[1])
 
 
+def card_id(key: str) -> str:
+    """A layer's id in an export ("card-3") from its key, the PNG's name Box.card gives ("<pid>.card-3.png")."""
+    return key.rsplit(".", 2)[-2]
+
+
 def transcribed(e: dict, kind: str | None) -> dict:
     """A bubble's fields from Transcribe's element for it (e, {} when none), `kind` the segmenter's: the text it read
     (none when it dropped the element), its finer kind (speech, caption, shout) when it gave one, how the line is
@@ -147,6 +152,12 @@ class Layer:
         return self._files["png"]
 
     @property
+    def card(self) -> str:
+        """The layer's id as an export names it ("card-3"): its key without the box's id and the extension. The
+        node's extras.card in the panel's scene.glb, a bubble's speakerCard, an animation's target."""
+        return card_id(self.key)
+
+    @property
     def path(self) -> Path:
         """The layer's PNG on disk (for a step that embeds or copies the card itself)."""
         return self._dir / self._files["png"]
@@ -164,27 +175,33 @@ class Layer:
     def image(self) -> Image.Image:
         return Image.open(self._dir / self._files["png"]).convert("RGBA")
 
-    def _png(self, key: str) -> bytes | None:
+    def _png(self, key: str, cap: int | None = None) -> bytes | None:
         """A saved image as PNG bytes for an export: the file as it is when it is already an RGBA PNG (its pixels are
         what image() and window() give), else encoded once at the default level. Encoding every layer again with
         optimize=True was 97 % of the export's time: 181 s for 28 boxes against 1.4 s, for files 5 % smaller
-        (2026-11-15)."""
+        (2026-11-15). cap: the most pixels its long side may have; only an image over it is resampled (Lanczos, on
+        premultiplied alpha), the rest stay the file's own bytes."""
         f = self._files.get(key)
         if f is None:
             return None
         path = self._dir / f
         with Image.open(path) as im:
-            if im.format == "PNG" and im.mode == "RGBA":
+            over = cap is not None and max(im.size) > cap
+            if im.format == "PNG" and im.mode == "RGBA" and not over:
                 return path.read_bytes()
+            im = im.convert("RGBA")
+            if over:
+                s = cap / max(im.size)
+                im = im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))), Image.LANCZOS)
             b = io.BytesIO()
-            im.convert("RGBA").save(b, format="PNG")
+            im.save(b, format="PNG")
             return b.getvalue()
 
-    def image_png(self) -> bytes:
-        return self._png("png")
+    def image_png(self, cap: int | None = None) -> bytes:
+        return self._png("png", cap)
 
-    def window_png(self) -> bytes | None:
-        return self._png("window")
+    def window_png(self, cap: int | None = None) -> bytes | None:
+        return self._png("window", cap)
 
     def relief(self) -> np.ndarray | None:
         """0..1 per px of its bbox, white = nearest; None without relief."""

@@ -475,14 +475,17 @@ def opening(shows: list[dict], grid: np.ndarray, fade: float) -> tuple[list, np.
 
 def placement(pieces: list[dict]) -> list[dict]:
     """How the music sits in the room over time, by role: source music from a point inside the place, lead and
-    under spread across the open walls ([{"start", "end", "mode": "point" | "wide"}], consecutive ones joined)."""
+    under spread across the open walls ([{"start", "end", "mode": "point" | "wide"}], consecutive ones joined). A
+    point carries its direction from the seat in the place's frame (yaw, pitch as the place's key light): straight
+    ahead, the middle of the view, where the reference room puts it (nothing measures where the players stand)."""
     out: list[dict] = []
     for p in sorted((p for p in pieces if p["role"] != "out"), key=lambda p: p["start"]):
         mode = "point" if p["role"] == "source" else "wide"
         if out and out[-1]["mode"] == mode and p["start"] <= out[-1]["end"] + STEP:
             out[-1]["end"] = max(out[-1]["end"], round(p["end"], 2))
         else:
-            out.append({"start": round(p["start"], 2), "end": round(p["end"], 2), "mode": mode})
+            out.append({"start": round(p["start"], 2), "end": round(p["end"], 2), "mode": mode,
+                        **({"yaw": 0.0, "pitch": 0.0} if mode == "point" else {})})
     return out
 
 

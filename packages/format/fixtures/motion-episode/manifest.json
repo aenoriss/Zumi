@@ -1,0 +1,248 @@
+{
+  "formatVersion": "1.1.0",
+  "generator": "pipeline/.data/scratch/make_motion_fixture.py",
+  "createdAt": "2026-11-15T00:00:00Z",
+  "series": {
+    "id": "motion-sample",
+    "title": "Motion Sample",
+    "creator": "Zumi team",
+    "language": "en"
+  },
+  "episode": {
+    "id": "motion-ep1",
+    "index": 1,
+    "title": "The Gate",
+    "durationHint": 10.7,
+    "summary": "One synthetic panel of two frames: the scene's node extras and the three accents as tracks."
+  },
+  "cast": [
+    {
+      "id": "ren",
+      "name": "Ren",
+      "voice": {
+        "engine": "none",
+        "voiceId": "ren-v1"
+      }
+    },
+    {
+      "id": "mara",
+      "name": "Mara",
+      "voice": {
+        "engine": "none",
+        "voiceId": "mara-v1"
+      }
+    },
+    {
+      "id": "guard",
+      "name": "Guard",
+      "voice": {
+        "engine": "none",
+        "voiceId": "guard-v1"
+      }
+    }
+  ],
+  "panels": [
+    {
+      "id": "p000",
+      "index": 0,
+      "renderMode": "scene3d",
+      "size": {
+        "w": 1200,
+        "h": 800
+      },
+      "durationOverride": 10.7,
+      "startTime": 0.0,
+      "endTime": 10.7,
+      "frames": [
+        {
+          "index": 0,
+          "startOffset": 0.0,
+          "duration": 5.5
+        },
+        {
+          "index": 1,
+          "startOffset": 6.5,
+          "duration": 3.2
+        }
+      ],
+      "layers": [
+        {
+          "id": "base",
+          "name": "source",
+          "image": "panels/p000/layers/base.png",
+          "depth": 0.0,
+          "band": "background"
+        }
+      ],
+      "bubbles": [
+        {
+          "id": "b1",
+          "text": "Who goes there?",
+          "kind": "speech",
+          "frame": 0,
+          "position": {
+            "x": 0.15,
+            "y": 0.15
+          },
+          "speakerCard": "card-2",
+          "speakerId": "ren",
+          "audio": "panels/p000/voice/b1.wav",
+          "startOffset": 0.8,
+          "durationHint": 2.0,
+          "startTime": 0.8,
+          "endTime": 2.8
+        },
+        {
+          "id": "b2",
+          "text": "Only us.",
+          "kind": "speech",
+          "frame": 0,
+          "position": {
+            "x": 0.3708,
+            "y": 0.3125
+          },
+          "speakerCard": "card-3",
+          "speakerId": "mara",
+          "audio": "panels/p000/voice/b2.wav",
+          "startOffset": 4.0,
+          "durationHint": 1.5,
+          "startTime": 4.0,
+          "endTime": 5.5
+        },
+        {
+          "id": "b3",
+          "text": "HALT!",
+          "kind": "shout",
+          "frame": 1,
+          "position": {
+            "x": 0.7083,
+            "y": 0.125
+          },
+          "speakerCard": "card-4",
+          "speakerId": "guard",
+          "audio": "panels/p000/voice/b3.wav",
+          "startOffset": 6.5,
+          "durationHint": 0.9,
+          "startTime": 6.5,
+          "endTime": 7.4
+        },
+        {
+          "id": "b4",
+          "text": "CLANG",
+          "kind": "sfx",
+          "frame": 1,
+          "position": {
+            "x": 0.875,
+            "y": 0.6125
+          },
+          "startOffset": 8.2,
+          "durationHint": 1.5,
+          "startTime": 8.2,
+          "endTime": 9.7
+        }
+      ],
+      "animations": [
+        {
+          "id": "b1-pop",
+          "target": "card-2",
+          "startTime": 0.86,
+          "delay": 0.86,
+          "loop": false,
+          "track": "scale",
+          "duration": 0.45,
+          "easing": "out",
+          "pivot": {
+            "x": 0.5,
+            "y": 1.0
+          },
+          "keyframes": [
+            {
+              "t": 0,
+              "v": 1
+            },
+            {
+              "t": 0.1556,
+              "v": 1.0188
+            },
+            {
+              "t": 1,
+              "v": 1
+            }
+          ]
+        },
+        {
+          "id": "b2-pop",
+          "target": "card-3",
+          "startTime": 4.06,
+          "delay": 4.06,
+          "loop": false,
+          "track": "scale",
+          "duration": 0.45,
+          "easing": "out",
+          "pivot": {
+            "x": 0.5,
+            "y": 1.0
+          },
+          "keyframes": [
+            {
+              "t": 0,
+              "v": 1
+            },
+            {
+              "t": 0.1556,
+              "v": 1.0225
+            },
+            {
+              "t": 1,
+              "v": 1
+            }
+          ]
+        },
+        {
+          "id": "b3-cut",
+          "target": "card-4",
+          "startTime": 6.56,
+          "delay": 6.56,
+          "loop": false,
+          "track": "scale",
+          "duration": 0.09,
+          "easing": "step",
+          "pivot": {
+            "x": 0.5,
+            "y": 1.0
+          },
+          "keyframes": [
+            {
+              "t": 0,
+              "v": 1.0155
+            },
+            {
+              "t": 1,
+              "v": 1
+            }
+          ]
+        },
+        {
+          "id": "b4-impact",
+          "target": "frame:1",
+          "startTime": 8.26,
+          "delay": 8.26,
+          "loop": false,
+          "track": "shake",
+          "duration": 0.35,
+          "easing": "linear",
+          "params": {
+            "axis": "x",
+            "amplitude": 0.003333,
+            "frequency": 13.0,
+            "decay": 2,
+            "pin": {
+              "card-4": "l"
+            }
+          }
+        }
+      ],
+      "scene": "panels/p000/scene.glb"
+    }
+  ]
+}

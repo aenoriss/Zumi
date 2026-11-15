@@ -32,7 +32,8 @@ Steps 7 and 8 of episode.py; both read only what earlier steps saved (cards.json
    task of its pass, the model, the effort; identity_stamp): a rerun on the same layers pays nothing. The series cast lives in <run>/cast/<series>/ (cast.json, exemplars.npz, card thumbnails, voices/),
    beside the run's dataset/. A rerun founds the episode's characters again under new ids and gives them back the
    voices they had, by the cards they share (inherit_voices).
-8. Voices (voices_step): every character of the episode with at least MIN_LINES lines and no voice in the cast gets a
+8. Voices (voices_step): every character who speaks in the episode (one line with words is enough; until 2026-11-15
+   it took three, and a character with two lines shipped silent) and has no voice in the cast gets a
    voice description (display name, gender, language code, one or two sentences of permanent traits, no age for a
    minor: the voice models refuse it; emotion goes per line), from one Sonnet call that reads the episode. Another
    look of a person links to that person's voice (same_voice_as, user 2026-11-04). Then voices.py designs each
@@ -80,7 +81,6 @@ MATCH_ENC, TOP_K, MATCH_MIN = ("ccipb36", "magiv2"), 3, 0.80
 EXEMPLARS = 32            # cards kept per cast character (section 12), spread over its appearances
 LOOSE = 0.6               # a card whose mean similarity to the rest of its group is below this is tagged "?"
 PAGE_H = 2200             # boxes stacked into page images up to this height
-MIN_LINES = 3             # lines a character speaks in the episode to get a voice
 CHECK_CONF = 0.75         # a speaker link at or under this confidence (the rules without a tail to a card: the only
                           # figure in the frame, the nearest figure, a shared tail, no card in the box) is marked
                           # `check` in the script: the reader decides each one. The single-figure rule is 98% right
@@ -1089,10 +1089,11 @@ Reply with ONE JSON object:
 
 
 def voices_step(ep: Episode, chapter, identity: dict) -> int:
-    """Step 8: a voice description for every character of the episode with at least MIN_LINES lines and none in the
-    cast yet, from one reader call, saved in the series cast (character "voice"); then the voices are designed and
-    the lines recorded on the episode's voice backend (record: voices.py). Returns the requests the backend's daily
-    limit left for another day (voices to design and lines to record), 0 when it left none."""
+    """Step 8: a voice description for every character who speaks in the episode (a line with words: voices.has_words)
+    and has none in the cast yet, from one reader call, saved in the series cast (character "voice"); then the
+    voices are designed and the lines recorded on the episode's voice backend (record: voices.py), also when the
+    reader could not be asked. Returns what is still missing (voices to design and voiced lines without audio, for
+    any reason), 0 when every speaking line has its audio."""
     cast = Cast(cast_root(ep), identity["series"])
     cards = read_cards(ep, len(chapter))
     ids = [identity["cards"].get(c.id) for c in cards.cards]
@@ -1101,7 +1102,7 @@ def voices_step(ep: Episode, chapter, identity: dict) -> int:
         lines.setdefault(cid, []).extend(cards.cards[n].lines)
     asked = asked_of(ep)
     unvoiced = [cid for cid in sorted(lines, key=lambda c: -len(lines[c]))
-                if cid and len(lines[cid]) >= MIN_LINES and cast.char(cid) and not cast.char(cid)["voice"]]
+                if cid and any(VO.has_words(t) for t in lines[cid]) and cast.char(cid) and not cast.char(cid)["voice"]]
     todo = [cid for cid in unvoiced if not asked.current(cid, voices_stamp(lines[cid]))]
     print(f"  {len(todo)} characters to voice ({sum(1 for c in cast.chars if c['voice'])} in the series have one" +
           (f"; {len(unvoiced) - len(todo)} left out by the reader on the same lines" if len(unvoiced) > len(todo) else "")
@@ -1111,7 +1112,7 @@ def voices_step(ep: Episode, chapter, identity: dict) -> int:
     col = {cid: PAL[i % len(PAL)] for i, cid in enumerate(sorted(set(filter(None, ids))))}
     parts = [(f"page-{k:02d}.png", p) for k, p in enumerate(
         pages(chapter, cards, lambda n: f"{ids[n]} c{n}", lambda n: col.get(ids[n], (90, 90, 90))), 1)]
-    md = [f"# Characters to voice (at least {MIN_LINES} lines in this episode)\n"]
+    md = ["# Characters to voice (everyone who speaks in this episode and has no voice yet)\n"]
     for cid in todo:
         md.append(f"## {cid}: {cast.char(cid)['name']} ({len(lines[cid])} lines)\n"
                   + "\n".join(f'- "{t}"' for t in lines[cid][:40]) + "\n")
@@ -1128,8 +1129,8 @@ def voices_step(ep: Episode, chapter, identity: dict) -> int:
     try:
         reply, _ = _ask(VOICE_TASK, parts, f"{ep.stem} voices", ep.out / "identity" / "voices")
     except (BudgetExceeded, Truncated) as e:
-        print(f"  no voices ({e}); the next run asks again")
-        return 0
+        print(f"  no voice descriptions ({e}); the next run asks again")
+        return record(ep, chapter, identity, cast)
     lang = reply.get("language_code") or "en-US"
     done = []
     for v in reply.get("voices") or []:
@@ -1167,7 +1168,7 @@ def voices_stamp(lines: list[str]) -> str:
 
 def record(ep: Episode, chapter, identity: dict, cast: Cast) -> int:
     """The described voices designed and every voiced balloon recorded on the episode's voice backend (voices.py);
-    the requests its daily limit left for another day."""
+    what is still missing after it: voices not designed and voiced lines without audio."""
     tts = VO.backend()
     return VO.design_voices(cast, tts) + VO.record_lines(ep, len(chapter), identity, cast, tts)
 

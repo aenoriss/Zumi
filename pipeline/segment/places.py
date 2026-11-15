@@ -7,8 +7,9 @@
    (pano_prompt), with the 16:9 view as its first reference, view.png. (Nano Banana 2.1 was tried for both: sharper,
    loose with its reference; the user kept FLUX 3 for the panorama.) With only comic boxes to go on, one call painted spans of 115-324 degrees;
    anchored on a normal view, 124-184.
-2. Its front geometry, on the local GPU (place_geometry.py front, in pipeline/.venv-moge): the view's span measured,
-   MoGe-3's distance per pixel, front.glb cut at depth edges, and the near objects' mask for the erase.
+2. Its geometry, on the local GPU (place_geometry.py in pipeline/.venv-moge), in three stages: depth (the view's span
+   measured and MoGe-3's distance per pixel), show (the part of the view a place shows, shown.png, and the near
+   objects' mask for the erase) and front (front.glb, cut at depth edges).
 3. The erase: one FLUX Erase call (bfl.py) takes the near objects out of the view at about 1 MP. plate.png.
 4. The back layer (place_geometry.py back): the surface behind the near objects, textured with the plate regraded to
    the view's colour; the reader shows it through the front mesh's gaps. back.glb.
@@ -16,10 +17,13 @@
 Each stage is skipped when its output is current (fresh.py): the 16:9 view by a stamp of its prompt, references,
 model and size, the panorama by its prompt, the 16:9 view's content, its reference, model, aspect and resolution
 (place.json "stamp16", "stamp"); the plate by the image erased, its mask, ERASE_MP and the erase's dilation
-(place.json "stamp_plate"); the front geometry by the view and the constants of place_geometry.py that shape it, the
-back by the front's stamp, the plate and its own constants (geometry.json "stamp", "back"."stamp"). Both paid calls
-go through the shared daily cap (spend.paid_map): a refused call stops that place at that stage, and a later run
-picks it up.
+(place.json "stamp_plate"). The geometry's four stamps (<place>/stamps.json) each cover the stage before and only
+the constants of place_geometry.py that shape their own files (place_geometry.SHAPES): depth by the view, show by
+the depth, the front mesh by show, the back mesh by show and the plate. So a change to the meshes alone (a thinning
+tolerance, the material) builds meshes and nothing else: MoGe does not run, shown.png and erase-mask.png keep their
+bytes and the paid erase stays current (one stamp covered depth, window and front mesh until 2026-11-15, and such a
+change cost every place's erase again). Both paid calls go through the shared daily cap (spend.paid_map): a refused
+call stops that place at that stage, and a later run picks it up.
 
 The rule (plan) works on visits, the maximal runs of frames in one setting on the episode clock; a swap costs a fade
 out and a fade in (about 2 s), so a place is earned by a stay, not by a setting's total screen time:
@@ -237,15 +241,31 @@ def pano_stamp(s: dict, refs: list[int], d: Path) -> str:
     return fresh.digest(pano_prompt(s), fresh.digest(d / "view16.png"), refs[:1], PANO_MODEL, ASPECT, RESOLUTION)
 
 
-def front_stamp(d: Path) -> str:
-    """The front geometry's stamp (geometry.json "stamp"): the view and the constants that shape the front stage's
-    files (shown.png, front.glb, distance.npy, erase-mask.png)."""
-    return fresh.digest(d / "view.png", place_geometry.recipe("front"))
+GEOMETRY_FILES = {  # each geometry stage's files (place_geometry.py), in the order the stages run
+    "depth": ("depth.json", "distance-full.npy"),
+    "show": ("shown.png", "distance.npy", "erase-mask.png", "geometry.json"),
+    "front": ("front.glb",),
+    "back": ("back.glb",),
+}
 
 
-def back_stamp(d: Path, front: str) -> str:
-    """The back layer's stamp (geometry.json "back"."stamp"): the front's stamp, the plate, the back's constants."""
-    return fresh.digest(front, d / "plate.png", place_geometry.recipe("back"))
+def geometry_stamp(stage: str, d: Path) -> str:
+    """A geometry stage's stamp (<place>/stamps.json): what it is made from and the constants that shape its own
+    files. depth: the view; show: the depth; front: show; back: show and the plate."""
+    own = place_geometry.recipe(stage)
+    if stage == "depth":
+        return fresh.digest(d / "view.png", own)
+    if stage == "show":
+        return fresh.digest(geometry_stamp("depth", d), own)
+    if stage == "front":
+        return fresh.digest(geometry_stamp("show", d), own)
+    return fresh.digest(geometry_stamp("show", d), d / "plate.png", own)
+
+
+def geometry_current(stage: str, d: Path) -> bool:
+    """The stage's files are there and its saved stamp is today's."""
+    return fresh.Stamps(d / "stamps.json").current(stage, geometry_stamp(stage, d),
+                                                   *(d / f for f in GEOMETRY_FILES[stage]))
 
 
 def plate_stamp(d: Path) -> str:
@@ -263,11 +283,12 @@ def _write(path: Path, d: dict) -> None:
 
 
 def geometry(stage: str, d: Path) -> dict:
-    """place_geometry.py <stage> on a place folder, in MoGe's environment; its summary (geometry.json)."""
+    """place_geometry.py <stage> on a place folder, in MoGe's environment, and its stamp saved; its summary."""
     r = subprocess.run([str(MOGE_PYTHON), str(GEOMETRY), stage, str(d)], capture_output=True, text=True,
                        encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     if r.returncode:
         raise RuntimeError(f"place_geometry {stage} {d.name}: {r.stderr.strip()[-800:]}")
+    fresh.Stamps(d / "stamps.json").made(stage, geometry_stamp(stage, d))
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
@@ -285,13 +306,11 @@ def erase(d: Path) -> Image.Image:
 
 
 def built(d: Path) -> bool:
-    """A place is built when its geometry's stamps hold: the front made from its current view, the back from that
-    front and its current plate."""
-    g = _read(d / "geometry.json")
-    if not all((d / f).exists() for f in ("view.png", "shown.png", "plate.png", "front.glb", "back.glb")):
+    """A place is built when its geometry's stamps hold, each stage made from the one before: the depth from its
+    current view, the back from its current plate."""
+    if not all((d / f).exists() for f in ("view.png", "plate.png")):
         return False
-    front = front_stamp(d)
-    return g.get("stamp") == front and g.get("back", {}).get("stamp") == back_stamp(d, front)
+    return all(geometry_current(stage, d) for stage in GEOMETRY_FILES)
 
 
 def places_step(ep: Episode, ch) -> dict | None:
@@ -340,12 +359,15 @@ def places_step(ep: Episode, ch) -> dict | None:
     if ready and not MOGE_PYTHON.exists():
         print(f"  places: no MoGe environment at {MOGE_PYTHON} (ZUMI_MOGE_PYTHON), geometry skipped")
         ready = []
-    for sid in ready:  # one at a time: each loads MoGe-3 on the GPU
+    for sid in ready:  # one at a time: the depth stage loads MoGe-3 on the GPU
         d = root / sid
-        if _read(d / "geometry.json").get("stamp") != front_stamp(d):
-            g = geometry("front", d)
-            _write(d / "geometry.json", {**g, "stamp": front_stamp(d)})
-            print(f"  place {sid}: {g['h_deg']} x {g['v_deg']} deg, front {g['front']['faces']} faces")
+        for stage in ("depth", "show", "front"):  # in order: a stage made again makes the next ones stale
+            if not geometry_current(stage, d):
+                g = geometry(stage, d)
+                print(f"  place {sid}: " + ("depth by MoGe, the view {} x {} deg".format(*g["view_deg"])
+                                           if stage == "depth" else
+                                           f"shown {g['h_deg']} x {g['v_deg']} deg and the erase's mask"
+                                           if stage == "show" else f"front {g['front']['faces']} faces"))
 
     def plate(sid: str) -> bool:
         d = root / sid
@@ -358,13 +380,9 @@ def places_step(ep: Episode, ch) -> dict | None:
     erased, stopped_erase = paid_map(plate, ready)
     for sid in ready:
         d = root / sid
-        front = _read(d / "geometry.json").get("stamp")
-        if sid in stopped_erase or not (d / "plate.png").exists() or \
-                _read(d / "geometry.json").get("back", {}).get("stamp") == back_stamp(d, front):
+        if sid in stopped_erase or not (d / "plate.png").exists() or geometry_current("back", d):
             continue
         g = geometry("back", d)
-        g["back"]["stamp"] = back_stamp(d, front)
-        _write(d / "geometry.json", {**g, "stamp": front})
         print(f"  place {sid}: back {g['back']['faces']} faces")
     for sid in ready:  # the place's light on the reader's room, measured from its shown view (free)
         d = root / sid
@@ -380,8 +398,9 @@ def places_step(ep: Episode, ch) -> dict | None:
 
 def into(man: dict, ep: Episode, clk: dict, frame_setting: dict[str, str], added: dict[str, bytes]) -> None:
     """The built places into an export: each place's two meshes at episode/places/<setting>/{front,back}.glb, and
-    episode.places: the meshes with their span, the timeline of which place shows when (planned on the export's own
-    clock, which follows the voice backend), and the fade."""
+    episode.places: the meshes with their span and how far the place is in the meshes' own units (what a reader
+    scales it to its room by), the timeline of which place shows when (planned on the export's own clock, which
+    follows the voice backend), and the fade."""
     pl = plan(clk, frame_setting)
     meshes = []
     for sid in pl["places"]:
@@ -389,7 +408,8 @@ def into(man: dict, ep: Episode, clk: dict, frame_setting: dict[str, str], added
         if not built(d):
             continue
         g = _read(d / "geometry.json")
-        entry = {"setting": sid, "hDeg": g["h_deg"], "vDeg": g["v_deg"]}
+        entry = {"setting": sid, "hDeg": g["h_deg"], "vDeg": g["v_deg"],
+                 "nearM": g["near_m"], "medianM": g["median_m"], "farM": g["far_m"]}
         if (d / "light.json").exists():
             entry["light"] = _read(d / "light.json")
         for part in ("front", "back"):

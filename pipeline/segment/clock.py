@@ -9,7 +9,8 @@ modules re-derived it, with a frame ending at its own content's end in one and a
 
     build(ep, n_boxes)      the clock: {"duration", "panels": [{"id", "pid", "index", "scene", "startTime", "endTime",
                             "duration", "frames": [{"index", "startOffset", "duration"}], "bubbles": [{"id",
-                            "startOffset", "durationHint", "startTime", "endTime"}] in clock order}]}
+                            "frame" (the frame it is timed in, absent in a box without frames), "startOffset",
+                            "durationHint", "startTime", "endTime"}] in clock order}]}
     times(panels)           {"p007/f1": (start, end), "p007/b3": (start, end)} on the episode clock, for the clock's
                             panels or an exported manifest's (same fields): a frame is on screen from its start until
                             the next frame of its panel starts, the last one until the panel ends; a balloon from its
@@ -120,8 +121,8 @@ def clip_seconds(ep: Episode, tts=None) -> dict[tuple[str, int], float]:
 
 
 def box_clock(box: Box, seconds: dict[tuple[str, int], float]) -> dict:
-    """One box's clock, before its place on the episode clock: {"scene", "duration", "frames", "bubbles"}. A box with
-    no layers has no scene and holds PANEL_MIN_S."""
+    """One box's clock, before its place on the episode clock: {"scene", "duration", "frames", "bubbles"}, each
+    balloon with the frame it is timed in (frame_plan). A box with no layers has no scene and holds PANEL_MIN_S."""
     sc = box.scene()
     if sc is None or not sc.layers:
         return {"scene": False, "duration": PANEL_MIN_S, "frames": [], "bubbles": []}
@@ -138,7 +139,8 @@ def box_clock(box: Box, seconds: dict[tuple[str, int], float]) -> dict:
     dur, plan = timing(entries, secs, frames, frame_of, share, sfx)
     entries.sort(key=lambda e: e.get("startOffset", 0))  # the clock's order, frame by frame
     return {"scene": True, "duration": dur, "frames": plan,
-            "bubbles": [{k: e[k] for k in ("id", "startOffset", "durationHint")} for e in entries]}
+            "bubbles": [{"id": e["id"], **({"frame": frame_of[n]} if (n := int(e["id"][1:])) in frame_of else {}),
+                         "startOffset": e["startOffset"], "durationHint": e["durationHint"]} for e in entries]}
 
 
 def build(ep: Episode, n_boxes: int, tts=None) -> dict:

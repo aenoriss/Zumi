@@ -2,22 +2,31 @@
 MoGe-3 (Ruicheng/moge-3-vitl, MIT) on the local GPU; it needs a PyTorch build the segment environment cannot hold, so
 this module runs in pipeline/.venv-moge as a subprocess of places.py, one command per stage, on one place folder:
 
-    front DIR   view.png -> its span (measure_span), its depth (pano_depth) as distance-full.npy, then show
-    show DIR    (no model) the central SHOWN_DEG of the view (shown.png), front.glb (cut at depth edges), distance.npy,
-                erase-mask.png (the near objects, for the erase), depth.png, geometry.json
+    depth DIR   (the model) view.png -> its span (measure_span) in depth.json and its depth (pano_depth) as
+                distance-full.npy
+    show DIR    (no model) the central SHOWN_DEG of the view (shown.png), distance.npy, erase-mask.png (the near
+                objects, for the erase), depth.png, geometry.json (the span shown and how far the place is)
+    front DIR   (no model) shown.png, distance.npy -> front.glb (cut at depth edges)
     back DIR    shown.png, distance.npy, plate.png (the erase's output) -> back.glb (the near objects taken out, the
                 plate regraded to the view's colour, never cut, BACK_PUSH farther), back-texture.png
 
+Four stages because they cost differently and places.py stamps each by what shapes it (SHAPES): MoGe's depth is not
+bit-identical between runs, so running it again moves the erase's mask and the paid erase is made again. Until
+2026-11-15 depth, shown window and front mesh were one stage under one stamp, and a change of a mesh constant alone
+ran MoGe and cost a place's erase again (0.14 USD for four places, for nothing). Now a change to the meshes builds
+only the meshes, and shown.png and erase-mask.png keep their bytes.
+
 The wide view is read as a window of an equirectangular panorama around the seat: FLUX 3 keeps verticals straight and
 curves horizontals. Meshes are in three.js axes: the eye at the origin, the view's centre down -z, y up, metres at
-MoGe's scale (the reader scales the place to its room).
+MoGe's scale (the reader scales the place to its room), unlit (KHR_materials_unlit: the painting is already lit).
 
-    .venv-moge/Scripts/python.exe segment/place_geometry.py front <episode>/places/tavern-main
+    .venv-moge/Scripts/python.exe segment/place_geometry.py depth <episode>/places/tavern-main
 """
 from __future__ import annotations
 
 import json
 import os
+import struct
 import sys
 from pathlib import Path
 
@@ -59,11 +68,14 @@ SHOWN_DEG = (140.0, 72.0)  # the most of a view a place shows across and up-down
                            # user's reference (140 x 71); a wider view is cropped to it, centred straight ahead
 WORK_W = 2160        # depth, span and masks are computed on a copy this wide; a sharper view only sharpens the
                        # front's texture (MoGe ran out of GPU memory on a 5792-px view)
+MATERIAL = "unlit"   # how both meshes are shaded: KHR_materials_unlit, as the panels' scenes (2026-11-15; a lit PBR
+                     # material before, which a reader's lights shaded a second time)
 SHAPES = {  # the constants each stage's files are shaped by: places.py stamps a stage's outputs with their values
-    "front": ("MODEL", "STRIDE_PX", "FRONT_TOL", "HEAD_MOVE", "QUEST_PPD", "RTOL", "SNAP", "MERGE", "SKY_FAR",
-              "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW", "ERASE_GROW", "SHOWN_DEG", "WORK_W"),
+    "depth": ("MODEL", "MERGE", "SKY_FAR", "WORK_W", "RTOL", "SNAP"),
+    "show": ("SHOWN_DEG", "WORK_W", "RTOL", "SNAP", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW", "ERASE_GROW"),
+    "front": ("STRIDE_PX", "FRONT_TOL", "HEAD_MOVE", "QUEST_PPD", "RTOL", "MATERIAL"),
     "back": ("BACK_STRIDE_PX", "BACK_TOL", "HEAD_MOVE", "QUEST_PPD", "CLOSE_WINDOW", "NEAR_SHARE", "OBJ_GROW",
-             "ERASE_GROW", "MATCH_SIGMA", "MATCH_WIDE", "BACK_PUSH"),
+             "ERASE_GROW", "MATCH_SIGMA", "MATCH_WIDE", "BACK_PUSH", "MATERIAL"),
 }
 
 
@@ -244,8 +256,8 @@ def adaptive(pts: np.ndarray, stride: int, rtol: float | None, tol: float) -> tu
 
 def write_mesh(verts: np.ndarray, faces: np.ndarray, h_deg: float, v_deg: float, texture: Image.Image,
                out: Path) -> tuple[int, int]:
-    """The mesh as a .glb with the view on it: a vertex's place on the texture is its direction from the eye (dirs,
-    inverted). Vertices no face uses are left out. Returns (vertices, faces)."""
+    """The mesh as a .glb with the view on it, unlit: a vertex's place on the texture is its direction from the eye
+    (dirs, inverted). Vertices no face uses are left out. Returns (vertices, faces)."""
     import trimesh
     used, faces = np.unique(faces, return_inverse=True)
     verts, faces = verts[used], faces.reshape(-1, 3)
@@ -256,7 +268,24 @@ def write_mesh(verts: np.ndarray, faces: np.ndarray, h_deg: float, v_deg: float,
                         visual=trimesh.visual.TextureVisuals(uv=uvs, material=trimesh.visual.material.PBRMaterial(
                             baseColorTexture=texture, metallicFactor=0.0, roughnessFactor=1.0, doubleSided=True)))
     m.export(out)
+    _unlit(out)
     return len(verts), len(faces)
+
+
+def _unlit(path: Path) -> None:
+    """A written GLB's materials marked KHR_materials_unlit (trimesh writes none): its JSON chunk rewritten, the
+    binary chunk as it was."""
+    b = path.read_bytes()
+    n = struct.unpack_from("<I", b, 12)[0]
+    j = json.loads(b[20:20 + n])
+    for mat in j.get("materials", []):
+        mat.setdefault("extensions", {})["KHR_materials_unlit"] = {}
+    j["extensionsUsed"] = sorted(set(j.get("extensionsUsed", [])) | {"KHR_materials_unlit"})
+    js = json.dumps(j, separators=(",", ":")).encode()
+    js += b" " * (-len(js) % 4)
+    rest = b[20 + n:]
+    path.write_bytes(struct.pack("<III", 0x46546C67, 2, 20 + len(js) + len(rest)) +
+                     struct.pack("<II", len(js), 0x4E4F534A) + js + rest)
 
 
 def near_objects(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -297,24 +326,28 @@ def depth_png(dist: np.ndarray, path: Path) -> None:
     Image.fromarray((np.clip((inv - lo) / (hi - lo), 0, 1) * 255).astype(np.uint8)).save(path)
 
 
-def front(d: Path) -> dict:
-    from scipy.ndimage import binary_dilation
+def depth(d: Path) -> dict:
+    """The view's span and its distance per pixel, the only stage that runs the model -> depth.json ({"view_deg"}),
+    distance-full.npy."""
     img = _work(Image.open(d / "view.png").convert("RGB"))
     model = _model()
     h_deg, v_deg = measure_span(model, img)
     dist = pano_depth(model, img, h_deg, v_deg)  # on the whole view, for MoGe's context
     pts = snap_edges(dirs(img.height, img.width, h_deg, v_deg) * dist[..., None])
     np.save(d / "distance-full.npy", np.linalg.norm(pts, axis=-1).astype(np.float32))
-    (d / "geometry.json").write_text(json.dumps({"view_deg": [h_deg, v_deg]}), encoding="utf-8")
-    return show(d)
+    meta = {"view_deg": [h_deg, v_deg]}
+    (d / "depth.json").write_text(json.dumps(meta), encoding="utf-8")
+    return meta
 
 
 def show(d: Path) -> dict:
-    """The place shown, from front's depth (no model): the central SHOWN_DEG of the view, so every place bleeds the
-    same way onto the side walls and ceiling (spans came out 115-324 degrees; at 324 magic-vision covered the side
-    walls whole, user 2026-11-08) -> shown.png, front.glb, distance.npy, erase-mask.png, depth.png, geometry.json."""
+    """The place shown, from the depth stage's files (no model): the central SHOWN_DEG of the view, so every place
+    bleeds the same way onto the side walls and ceiling (spans came out 115-324 degrees; at 324 magic-vision covered
+    the side walls whole, user 2026-11-08) -> shown.png, distance.npy, erase-mask.png, depth.png, geometry.json
+    (near_m, median_m, far_m: the 5th, 50th and 95th percentile of the distance from the eye over the shown view,
+    which a reader scales the place by)."""
     from scipy.ndimage import binary_dilation
-    view_deg = json.loads((d / "geometry.json").read_text(encoding="utf-8"))["view_deg"]
+    view_deg = json.loads((d / "depth.json").read_text(encoding="utf-8"))["view_deg"]
     h_deg, v_deg = view_deg
     full = Image.open(d / "view.png").convert("RGB")
     img = _work(full)
@@ -329,8 +362,6 @@ def show(d: Path) -> dict:
     h_deg, v_deg = round(h_deg * img.width / w, 1), round(v_deg * img.height / h, 1)
     w, h = img.size
     pts = snap_edges(dirs(h, w, h_deg, v_deg) * dist[..., None])
-    nv, nf = write_mesh(*adaptive(pts, max(1, round(w / STRIDE_PX)), RTOL, FRONT_TOL), h_deg, v_deg, full,
-                        d / "front.glb")
     dist = np.linalg.norm(pts, axis=-1).astype(np.float32)
     np.save(d / "distance.npy", dist)
     obj, _ = near_objects(dist)
@@ -339,11 +370,29 @@ def show(d: Path) -> dict:
     depth_png(dist, d / "depth.png")
     meta = {"h_deg": h_deg, "v_deg": v_deg, "view_deg": view_deg, "px_per_deg": round(full.width / h_deg, 1),
             "near_m": round(float(np.percentile(dist, 5)), 3), "median_m": round(float(np.median(dist)), 3),
-            "far_m": round(float(np.percentile(dist, 95)), 3),
-            "front": {"vertices": nv, "faces": nf, "mb": round((d / "front.glb").stat().st_size / 1e6, 1)},
-            "near_share": round(float(obj.mean()), 3)}
+            "far_m": round(float(np.percentile(dist, 95)), 3), "near_share": round(float(obj.mean()), 3)}
     (d / "geometry.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta
+
+
+def _mesh_meta(d: Path, part: str, nv: int, nf: int) -> dict:
+    """geometry.json with a mesh's size under `part` ("front", "back"), saved."""
+    meta = json.loads((d / "geometry.json").read_text(encoding="utf-8"))
+    meta[part] = {"vertices": nv, "faces": nf, "mb": round((d / f"{part}.glb").stat().st_size / 1e6, 1)}
+    (d / "geometry.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    return meta
+
+
+def front(d: Path) -> dict:
+    """The shown view as a mesh cut at depth edges, from show's files (no model): shown.png on distance.npy ->
+    front.glb."""
+    meta = json.loads((d / "geometry.json").read_text(encoding="utf-8"))
+    dist = np.load(d / "distance.npy")  # the shown window at work size, its edges already snapped (show)
+    h, w = dist.shape
+    pts = dirs(h, w, meta["h_deg"], meta["v_deg"]) * dist[..., None]
+    nv, nf = write_mesh(*adaptive(pts, max(1, round(w / STRIDE_PX)), RTOL, FRONT_TOL), meta["h_deg"], meta["v_deg"],
+                        Image.open(d / "shown.png").convert("RGB"), d / "front.glb")
+    return _mesh_meta(d, "front", nv, nf)
 
 
 def back(d: Path) -> dict:
@@ -362,11 +411,9 @@ def back(d: Path) -> dict:
     pts = dirs(h, w, meta["h_deg"], meta["v_deg"]) * (shell * BACK_PUSH)[..., None]
     nv, nf = write_mesh(*adaptive(pts, max(1, round(w / BACK_STRIDE_PX)), None, BACK_TOL), meta["h_deg"],
                         meta["v_deg"], tex, d / "back.glb")
-    meta["back"] = {"vertices": nv, "faces": nf, "mb": round((d / "back.glb").stat().st_size / 1e6, 1)}
-    (d / "geometry.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    return meta
+    return _mesh_meta(d, "back", nv, nf)
 
 
 if __name__ == "__main__":
     stage, folder = sys.argv[1], Path(sys.argv[2])
-    print(json.dumps({"front": front, "show": show, "back": back}[stage](folder)))
+    print(json.dumps({"depth": depth, "show": show, "front": front, "back": back}[stage](folder)))

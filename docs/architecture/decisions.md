@@ -48,6 +48,22 @@ Primary: daily webtoon readers, 14-30, often male, geek/otaku, large Asian share
 | Audio | Voice clips, ambience and music spatialised/mixed at playback with Meta XR Audio SDK. |
 | Transport | Photon Fusion (Shared Mode) + Photon Voice. Meta's own samples pair Platform SDK with Photon; Meta deprecated its own P2P/Rooms APIs. |
 
+### Reader catch-up, decided 2026-11-15
+
+These replace the rows above where they differ (Layout, Pacing, Input).
+
+| Decision | Choice |
+|---|---|
+| Panel | Floating at reading distance in front of the reader, viewed from the panel's own camera point: constant distance, each panel sized by its shape. |
+| Place | Shown on the nearest wall behind the panel, the wall found with Meta's scene understanding (MRUK). With no scanned room, the place stands behind the panel at a reasonable distance. |
+| Seat | One fixed seat: the place's centre and the origin of its directions. |
+| Time | The episode plays on its clock by itself. A circular menu on the hand pauses, goes forward and goes back; the pinch-swipe of the carousel goes away. |
+| Lines without a voice | Shown as timed text at the clock's reading speed; no setting. The pipeline's job is that every speaking character has a voice. |
+| Episodes | Shipped inside the app for now; the episode source is still a seam a download can replace. |
+| Room | The place's own light and props dress the room. The candle ritual of room design v7 is superseded; its principles stay: the room changes slowly, the panel is exempt from the room's grade, the reader can turn room effects down or off. |
+| Animation | Rule-based accents only, written by the pipeline as tracks in `animations` and played by the reader: a pop on a speech line whose speaker changed, a cut on the first shout of a run, one impact per stretch of sound effects. What the pipeline writes, the reader shows; "motion off" is a comfort switch in the hand menu. |
+| Out of this catch-up | Library, rooms and sync, orbs, emotes, pause vote; the single clock is built so a networked one can replace it. |
+
 ## 3. File format: `.zumi`
 
 Zip container, JSON manifest, versioned (`formatVersion`). Designed to stream: the XR app reads `manifest.json` first and fetches assets lazily per panel.
