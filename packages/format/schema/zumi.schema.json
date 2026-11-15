@@ -364,7 +364,7 @@
           }
         },
         "mood": { "type": "string", "description": "Free text from the understanding pass; drives ambience and music prompts" },
-        "layers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layer" }, "description": "The panel's flat images. A scene3d panel made by the pipeline still carries its one flat source image here (id base, panels/<id>/layers/base.png) as the fallback a reader shows before or instead of the scene" },
+        "layers": { "type": "array", "items": { "$ref": "#/$defs/layer" }, "description": "The panel's flat images: at least one when renderMode is panel. A panel with a scene carries none: the reader draws the scene alone" },
         "bubbles": { "type": "array", "items": { "$ref": "#/$defs/bubble" }, "description": "In the order they appear on the clock" },
         "animations": { "type": "array", "items": { "$ref": "#/$defs/animation" }, "description": "What moves in the panel. The pipeline writes rule-based accents only (a pop, a cut, an impact: pipeline motion.py), each one track that plays once; what it writes, the reader shows" },
         "ambience": { "$ref": "#/$defs/ambiencePath" },
@@ -374,6 +374,7 @@
         "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" }, "description": "Reserved; post-MVP" }
       },
       "allOf": [
+        { "if": { "properties": { "renderMode": { "const": "panel" } } }, "then": { "properties": { "layers": { "type": "array", "minItems": 1 } } } },
         { "if": { "properties": { "renderMode": { "const": "panorama" } } }, "then": { "required": ["panorama"] } },
         { "if": { "properties": { "renderMode": { "const": "scene3d" } } }, "then": { "required": ["scene"] } }
       ]

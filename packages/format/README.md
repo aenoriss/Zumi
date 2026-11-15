@@ -15,7 +15,7 @@ episode/places/<setting>/props/<name>.glb  the place's props, lit
 panels/
   <panelId>/                             one folder per panel; the reader streams one folder at a time
     scene.glb                            the panel's layers as textured surfaces and its camera, for renderMode "scene3d"
-    layers/<layerId>.png                 flat images; a pipeline-made panel has one, base.png, its source image
+    layers/<layerId>.png                 flat images, for a panel without a scene
     voice/<bubbleId>.wav                 one clip per spoken bubble: 24 kHz mono 16-bit PCM
     depth/<layerId>.png                  reserved: per-layer relief
     panorama.jpg                         equirectangular 2:1, for renderMode "panorama"
@@ -78,8 +78,9 @@ manifest as data (`bubbles[].text`). A reader shows the card; it does not typese
 each bubble was packed as `panels/<id>/bubbles.style.json` until 1.1. No reader opened it, and a reader that shows
 the lettering cards needs none of it, so it is no longer shipped.)
 
-`panels/<id>/layers/base.png`, the panel's flat source image, is still packed as the fallback the current Unity
-reader shows first. It is the second largest part of a file: 72.3 MB of the test episode's 386.8 MB.
+A panel with a scene carries no flat image: its `layers` is empty and `panels/<id>/layers/base.png` is not packed.
+The reader draws the scene alone since 2026-11-15, and that source image was 72.3 MB of the test episode's 386.8 MB.
+A panel without a scene (`renderMode: "panel"`) still needs at least one layer.
 
 ## Bubbles and voices
 
@@ -114,6 +115,9 @@ once (`loop: false`) from its `startTime`:
 | impact | a stretch of sound effects | `shake` on `frame:<n>`, the content of the frame behind its window: 4 px at a 1200-px panel (`amplitude` is a share of the width), 13 Hz, dying out by 350 ms (`decay: 2`); `pin` lists the cards that touch a side of the window and may not be pulled away from it |
 
 A `target` is a card (`card-3`), `frame:<n>` (every node of frame n but its window), or a layer id in a flat panel.
+A shake on `frame:<n>` moves every layer of the frame by the same amount as seen from the panel's camera: a layer
+farther back is shifted more in the scene, in proportion to its depth, so the frame's content moves as one picture
+and no layer slides against another.
 1.1 added `startTime`, `pivot`, the `step` easing, the `frame:<n>` target and the `shake` params `axis`, `decay`
 and `pin`; the easing curves are now stated. What the pipeline writes, the reader shows.
 

@@ -265,6 +265,7 @@ def main():
     tmp = dst.parent / (dst.stem + "_build")
     tmp.mkdir(parents=True, exist_ok=True)
     added: dict[str, bytes] = {}
+    flat: set[str] = set()  # the flat images of the boxes that got a scene, left out of the file
     done = 0
     boxes = [Box(ep_out, pid_of(stem, i)) for i in range(n)]
     jobs = [(box, tmp / f"{p['id']}.glb", {k.split("/", 1)[1]: v for k, v in card_char.items()
@@ -283,6 +284,9 @@ def main():
         p["renderMode"] = "scene3d"
         p["scene"] = f"panels/{p['id']}/scene.glb"
         added[p["scene"]] = glb.read_bytes()
+        # the box's flat source image is not packed with its scene: no reader shows it (72.3 MB of 386.8, 2026-11-15)
+        flat.update(layer["image"] for layer in p.get("layers") or [])
+        p["layers"] = []
         bd = box.bubbles()
         if bd is not None:
             W, H = bd["w"], bd["h"]
@@ -338,7 +342,7 @@ def main():
             (ep_out / path).write_bytes(data)
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
-            if item.filename == "manifest.json" or item.filename in added:
+            if item.filename == "manifest.json" or item.filename in added or item.filename in flat:
                 continue
             zout.writestr(item, zin.read(item.filename))
         zout.writestr("manifest.json", json.dumps(man, indent=2))
