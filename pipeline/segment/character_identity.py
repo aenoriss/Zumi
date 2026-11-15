@@ -36,8 +36,8 @@ Steps 7 and 8 of episode.py; both read only what earlier steps saved (cards.json
    voice description (display name, gender, language code, one or two sentences of permanent traits, no age for a
    minor: the voice models refuse it; emotion goes per line), from one Sonnet call that reads the episode. Another
    look of a person links to that person's voice (same_voice_as, user 2026-11-04). Then voices.py designs each
-   described voice once and records every voiced balloon on the episode's voice backend (Inworld TTS-2 by default,
-   Gemini 3.8 Flash TTS with ZUMI_TTS=gemini; each keeps its own voice ids in the cast and its own lines folder).
+   described voice once and records every voiced balloon on the episode's voice backend (Gemini 3.8 Flash TTS by default,
+   Inworld TTS-2 with ZUMI_TTS=inworld; each keeps its own voice ids in the cast and its own lines folder).
    A character the reader leaves out is kept in <episode>/identity/voices/stamps.json with the lines it was asked
    about: it is asked again only when its lines or the reader's recipe change, not on every run.
 
@@ -1088,10 +1088,11 @@ Reply with ONE JSON object:
 """
 
 
-def voices_step(ep: Episode, chapter, identity: dict) -> None:
+def voices_step(ep: Episode, chapter, identity: dict) -> int:
     """Step 8: a voice description for every character of the episode with at least MIN_LINES lines and none in the
     cast yet, from one reader call, saved in the series cast (character "voice"); then the voices are designed and
-    the lines recorded on the episode's voice backend (record: voices.py)."""
+    the lines recorded on the episode's voice backend (record: voices.py). Returns the requests the backend's daily
+    limit left for another day (voices to design and lines to record), 0 when it left none."""
     cast = Cast(cast_root(ep), identity["series"])
     cards = read_cards(ep, len(chapter))
     ids = [identity["cards"].get(c.id) for c in cards.cards]
@@ -1106,8 +1107,7 @@ def voices_step(ep: Episode, chapter, identity: dict) -> None:
           (f"; {len(unvoiced) - len(todo)} left out by the reader on the same lines" if len(unvoiced) > len(todo) else "")
           + ")")
     if not todo:
-        record(ep, chapter, identity, cast)
-        return
+        return record(ep, chapter, identity, cast)
     col = {cid: PAL[i % len(PAL)] for i, cid in enumerate(sorted(set(filter(None, ids))))}
     parts = [(f"page-{k:02d}.png", p) for k, p in enumerate(
         pages(chapter, cards, lambda n: f"{ids[n]} c{n}", lambda n: col.get(ids[n], (90, 90, 90))), 1)]
@@ -1129,7 +1129,7 @@ def voices_step(ep: Episode, chapter, identity: dict) -> None:
         reply, _ = _ask(VOICE_TASK, parts, f"{ep.stem} voices", ep.out / "identity" / "voices")
     except (BudgetExceeded, Truncated) as e:
         print(f"  no voices ({e}); the next run asks again")
-        return
+        return 0
     lang = reply.get("language_code") or "en-US"
     done = []
     for v in reply.get("voices") or []:
@@ -1152,7 +1152,7 @@ def voices_step(ep: Episode, chapter, identity: dict) -> None:
     print(f"  voices for {len(done)} of {len(todo)}: " + "; ".join(
         [f"{cid} " + (cast.char(cid)["voice"].get("description") or f"= {cast.char(cid)['voice']['same_voice_as']}")
          for cid in done] + [f"{cid} left out" for cid in todo if cid not in done]))
-    record(ep, chapter, identity, cast)
+    return record(ep, chapter, identity, cast)
 
 
 def asked_of(ep: Episode) -> fresh.Stamps:
@@ -1165,11 +1165,11 @@ def voices_stamp(lines: list[str]) -> str:
     return fresh.digest(lines, VOICE_TASK, MODEL, REASONING)
 
 
-def record(ep: Episode, chapter, identity: dict, cast: Cast) -> None:
-    """The described voices designed and every voiced balloon recorded on the episode's voice backend (voices.py)."""
+def record(ep: Episode, chapter, identity: dict, cast: Cast) -> int:
+    """The described voices designed and every voiced balloon recorded on the episode's voice backend (voices.py);
+    the requests its daily limit left for another day."""
     tts = VO.backend()
-    VO.design_voices(cast, tts)
-    VO.record_lines(ep, len(chapter), identity, cast, tts)
+    return VO.design_voices(cast, tts) + VO.record_lines(ep, len(chapter), identity, cast, tts)
 
 
 if __name__ == "__main__":

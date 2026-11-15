@@ -81,4 +81,6 @@ class Stamps:
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._saved, indent=1, sort_keys=True), encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")  # written whole, then swapped in: a run killed here leaves the old stamps
+        tmp.write_text(json.dumps(self._saved, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(self.path)

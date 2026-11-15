@@ -15,11 +15,11 @@ the panel's durationOverride, frames, startTime and endTime), so the reader pace
 own; their measured style and placement (shape, colours, font size, depth: layers.place_lettering)
 and Transcribe's delivery and pace go into panels/<id>/bubbles.style.json next to the scene, until the schema has
 them. The manifest's cast is the series cast as of this episode (character_identity): id, name, the voice it was
-designed with on the episode's voice backend (voices.py: ZUMI_TTS, else Inworld; its engine, voice id and lines); a
+designed with on the episode's voice backend (voices.py: ZUMI_TTS, else Gemini; its engine, voice id and lines); a
 look sharing another character's voice carries that voice. The lettering is also in the scene, as cards of the
 original bubbles. The original flat layer stays as the panel's fallback.
 
-    python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>        (ZUMI_TTS=gemini for Gemini's lines)
+    python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>        (ZUMI_TTS=inworld for Inworld's lines)
 """
 from __future__ import annotations
 
@@ -27,11 +27,11 @@ import io
 import json
 import struct
 import sys
+import time
 import zipfile
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 
 import clock
 import voices as VO
@@ -125,12 +125,6 @@ def write_glb(path: Path, meshes: list[dict], yfov: float, aspect: float) -> Non
     path.write_bytes(out)
 
 
-def png_bytes(image: Image.Image) -> bytes:
-    b = io.BytesIO()
-    image.save(b, format="PNG", optimize=True)
-    return b.getvalue()
-
-
 def card_surface(x0, y0, x1, y1, z, w, h, f, u0=0.0, v0=0.0, u1=1.0, v1=1.0, relief=None, amp=0.0, n=24, cell=0):
     """A layer through the pixel rect at depth z, each vertex on its own camera ray (it projects onto the rect at
     rest): a quad, or with a relief map an n x n grid (a vertex every `cell` px when given) bulging toward the camera
@@ -166,19 +160,19 @@ def box_cards(box: Box, out_glb: Path) -> bool:
     f = focal(w, h, sc.fov)
     meshes = []
     for L in sc.layers:
-        win = L.window()
+        win = L.window_png()
         if win is not None:
             wx0, wy0, wx1, wy1 = L.window_bbox
             pos, uv, idx = card_surface(wx0, wy0, wx1, wy1, L.window_z, w, h, f)
             meshes.append({"name": f"window: frame {L.frame}", "pos": pos, "uv": uv, "idx": idx,
-                           "png": png_bytes(win), "blend": True, "extras": {"kind": "window", "frame": L.frame}})
+                           "png": win, "blend": True, "extras": {"kind": "window", "frame": L.frame}})
     for L in sc.layers:
         x0, y0, x1, y1 = L.bbox
         # a backdrop's box already runs past its frame by its margin (cards.backdrop_image)
         pos, uv, idx = card_surface(x0, y0, x1, y1, L.z, w, h, f, relief=L.relief(), amp=L.amp,
                                     n=32 if L.kind == "backdrop" else 24, cell=L.cell)
         meshes.append({"name": f"{L.kind}: {L.name}" + (f" [frame {L.frame}]" if L.clipped else ""),
-                       "pos": pos, "uv": uv, "idx": idx, "png": png_bytes(L.image()), "blend": True,
+                       "pos": pos, "uv": uv, "idx": idx, "png": L.image_png(), "blend": True,
                        "extras": {"kind": L.kind, **({"frame": L.frame} if L.clipped else {})}})
     if not meshes:
         return False
@@ -190,7 +184,10 @@ def box_cards(box: Box, out_glb: Path) -> bool:
 def _build(job: tuple) -> bool:
     """box_cards for one (box, GLB path); False when the box has no layers. A worker of main's pmap."""
     box, glb = job
-    return box.scene() is not None and box_cards(box, glb)
+    t = time.time()
+    ok = box.scene() is not None and box_cards(box, glb)
+    print(f"  {glb.stem}: {'scene' if ok else 'no layers'}, {time.time() - t:.1f} s", flush=True)
+    return ok
 
 
 def main():
@@ -204,7 +201,7 @@ def main():
     done = 0
     jobs = [(Box(ep_out, pid_of(stem, i)), tmp / f"{p['id']}.glb") for i, p in enumerate(man["panels"])]
     built = pmap(_build, jobs)  # one GLB per box, boxes across processes
-    tts = VO.backend()  # the voice backend the episode was recorded on (ZUMI_TTS, else Inworld)
+    tts = VO.backend()  # the voice backend the episode was recorded on (ZUMI_TTS, else Gemini)
     card_char, cast, lines = voices(Episode(ep_out, stem), tts)
     clk = clock.build(Episode(ep_out, stem), len(man["panels"]), tts)  # the episode clock, fresh from the saved steps
     voiced, speaking = 0, set()

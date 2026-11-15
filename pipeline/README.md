@@ -24,4 +24,6 @@ Stages
 | 9 | immersive frames | |
 | 10 | upload | |
 
+The episode chain (`segment/episode.py`) also runs on a Modal GPU, as a batch (`modal run pipeline/modal/run_episodes.py --root <run> --episodes <name>`) or as a service for the web app; after any change to `pipeline/segment`, the runner or `.env`, redeploy the service with `modal deploy pipeline/modal/run_episodes.py`. Its docstring has the endpoints, the budget and the spend cap.
+
 `.data/` holds research-only test material and is gitignored.

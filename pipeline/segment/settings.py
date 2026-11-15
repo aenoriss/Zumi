@@ -121,7 +121,7 @@ def _font(size: int):
     try:
         return ImageFont.truetype("arial.ttf", size)
     except OSError:
-        return ImageFont.load_default()
+        return ImageFont.load_default(size=size)  # no Arial (Linux): Pillow's own font, still at the asked size
 
 
 def sheet(items: list[tuple[str, Image.Image]]) -> Image.Image:

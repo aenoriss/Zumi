@@ -25,6 +25,7 @@ paths or formats.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import threading
 from dataclasses import dataclass
@@ -162,6 +163,28 @@ class Layer:
 
     def image(self) -> Image.Image:
         return Image.open(self._dir / self._files["png"]).convert("RGBA")
+
+    def _png(self, key: str) -> bytes | None:
+        """A saved image as PNG bytes for an export: the file as it is when it is already an RGBA PNG (its pixels are
+        what image() and window() give), else encoded once at the default level. Encoding every layer again with
+        optimize=True was 97 % of the export's time: 181 s for 28 boxes against 1.4 s, for files 5 % smaller
+        (2026-11-15)."""
+        f = self._files.get(key)
+        if f is None:
+            return None
+        path = self._dir / f
+        with Image.open(path) as im:
+            if im.format == "PNG" and im.mode == "RGBA":
+                return path.read_bytes()
+            b = io.BytesIO()
+            im.convert("RGBA").save(b, format="PNG")
+            return b.getvalue()
+
+    def image_png(self) -> bytes:
+        return self._png("png")
+
+    def window_png(self) -> bytes | None:
+        return self._png("window")
 
     def relief(self) -> np.ndarray | None:
         """0..1 per px of its bbox, white = nearest; None without relief."""

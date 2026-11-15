@@ -19,7 +19,7 @@ import numpy as np
 import requests
 from PIL import Image
 
-from spend import no_call_offline, record, reserve
+from spend import no_call_offline, payment_refused, record, reserve
 
 ROOT = Path(__file__).resolve().parents[1]  # pipeline/
 TRELLIS = "https://fal.run/fal-ai/trellis"
@@ -31,10 +31,12 @@ DOWNLOAD_PAUSE = 5    # s between them
 
 @functools.lru_cache(maxsize=1)
 def _key() -> str:
+    if os.environ.get("FAL_KEY"):  # a cloud container gets it as a secret, not as a file
+        return os.environ["FAL_KEY"]
     for line in (ROOT / ".env").read_text().splitlines():
         if line.startswith("FAL_KEY="):
             return line.split("=", 1)[1].strip()
-    return os.environ["FAL_KEY"]
+    raise RuntimeError("FAL_KEY missing from pipeline/.env")
 
 
 def _uri(img: Image.Image) -> str:
@@ -46,6 +48,7 @@ def _uri(img: Image.Image) -> str:
 def _post(url: str, body: dict) -> dict:
     no_call_offline(url)
     r = requests.post(url, headers={"Authorization": f"Key {_key()}"}, json=body, timeout=600)
+    payment_refused("fal", r.status_code, r.text)
     r.raise_for_status()
     return r.json()
 

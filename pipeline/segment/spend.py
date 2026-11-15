@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEND = ROOT / ".data/spend"
 LEDGERS = {"openrouter": SPEND / "openrouter.jsonl", "bfl": SPEND / "bfl.jsonl", "gemini": SPEND / "gemini.jsonl",
            "inworld": SPEND / "inworld.jsonl", "fal": SPEND / "fal.jsonl"}
+REFUSED = SPEND / "refused.json"  # the last call the cap refused, {"ts", "what"}: the steps catch the refusal each in
+                                  # its own way, so a runner reads here whether its run met the cap
+DEPLETED = SPEND / "credits-depleted.json"  # depleted()'s file
 DAILY_CAP_USD = float(os.environ.get("ZUMI_DAILY_USD", 2.0))
 WORKERS = 16  # calls in flight per step: they wait on remote models, not on cores (openrouter backs off on 429s)
 _LOCK = threading.Lock()
@@ -131,8 +134,11 @@ def reserve(usd: float, what: str = ""):
     with _LOCK:
         today = spent_today()
         if today + _INFLIGHT[0] + usd > DAILY_CAP_USD + 1e-9:
-            raise BudgetExceeded(f"{what}: spent {today:.3f} USD today, {_INFLIGHT[0]:.3f} in flight; this call could "
-                                 f"cost up to {usd:.3f}; cap {DAILY_CAP_USD}")
+            msg = (f"{what}: spent {today:.3f} USD today, {_INFLIGHT[0]:.3f} in flight; this call could cost up to "
+                   f"{usd:.3f}; cap {DAILY_CAP_USD}")
+            SPEND.mkdir(parents=True, exist_ok=True)
+            REFUSED.write_text(json.dumps({"ts": dt.datetime.now().isoformat(timespec="seconds"), "what": msg}))
+            raise BudgetExceeded(msg)
         _INFLIGHT[0] += usd
     try:
         yield
@@ -142,10 +148,40 @@ def reserve(usd: float, what: str = ""):
 
 
 def record(service: str, usd: float, **fields) -> None:
-    """A paid call in its service's ledger, dated today (local)."""
+    """A paid call in its service's ledger, dated today (local). A service marked out of credit is not any more:
+    it has just answered."""
     SPEND.mkdir(parents=True, exist_ok=True)
     now = dt.datetime.now()
     line = {"ts": now.isoformat(timespec="seconds"), "date": str(now.date()), **fields,
             ("cost" if service == "openrouter" else "usd"): float(usd)}
-    with _LOCK, LEDGERS[service].open("a") as f:
-        f.write(json.dumps(line) + "\n")
+    with _LOCK:
+        with LEDGERS[service].open("a") as f:
+            f.write(json.dumps(line) + "\n")
+        if DEPLETED.exists() and service in (marked := depleted()):
+            del marked[service]
+            _write_depleted(marked)
+
+
+def depleted() -> dict:
+    """{service: {"at", "what"}}: the services whose last call was refused for payment (credits.py shows them as
+    depleted until one answers again or a new balance is stated)."""
+    try:
+        return json.loads(DEPLETED.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_depleted(marked: dict) -> None:
+    SPEND.mkdir(parents=True, exist_ok=True)
+    tmp = DEPLETED.with_suffix(".tmp")
+    tmp.write_text(json.dumps(marked, indent=1))
+    tmp.replace(DEPLETED)
+
+
+def payment_refused(service: str, code: int, what: str) -> None:
+    """Called by a service's module with every HTTP error it is about to raise: a 402 (the account has no credit)
+    marks the service depleted, with when and what it answered."""
+    if code == 402:
+        with _LOCK:
+            _write_depleted({**depleted(), service: {"at": dt.datetime.now().isoformat(timespec="seconds"),
+                                                     "what": what[:300]}})

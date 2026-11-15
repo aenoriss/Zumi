@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from spend import BudgetExceeded, no_call_offline, record, reserve
+from spend import BudgetExceeded, no_call_offline, payment_refused, record, reserve
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
@@ -70,6 +70,7 @@ def _post(path: str, body: dict) -> dict:
                 told = re.search(r"retry in (\d+)", msg)
                 time.sleep(int(told.group(1)) + 2 if told else 10 * 2**min(attempt, 3))
                 continue
+            payment_refused("inworld", e.code, msg)
             raise RuntimeError(f"Inworld {e.code}: {msg}") from None
     raise RuntimeError("unreachable")
 

@@ -57,12 +57,15 @@ the whole episode (identity and the voices pay for it): run them again without -
    into the boxes' speaker records. identity/identity.json and the series cast (<run>/cast/<series>/); a rerun
    keeps the voices of the characters it founds again.
 8. Voices (character_identity.voices_step): a voice description for every character with at least 3 lines and no
-   voice yet (one Sonnet call), each designed once on Inworld TTS-2 and published (a voice id and sample in the
-   cast, inworld.design_voice), then every balloon with a speaker recorded in its character's voice, the delivery
-   note from the balloon's kind and Transcribe's reading of the drawing, with the scene's previous balloons as
-   context (<episode>/audio/<pid>.b<bubble>.wav, audio/lines.json; only changed lines again; audio/episode.mp3
-   joins them for listening). Inworld's free plan has no daily request limit (Gemini's 100 a day was why it went,
-   2026-11-06; Inworld's CREATIVE delivery was also judged more expressive).
+   voice yet (one Sonnet call), each designed once on Gemini 3.8 Flash TTS and stored (a voice id and sample in
+   the cast, gemini_tts.design_voice), then every balloon with a speaker recorded in its character's voice, the
+   delivery note from the balloon's kind and Transcribe's reading of the drawing (<episode>/audio-gemini/
+   <pid>.b<bubble>.wav and lines.json; only changed lines again; episode.mp3 joins them for listening). Gemini is
+   the backend by the owner's decision of 2026-11-15 (Inworld TTS-2, the backend from 2026-11-06, stays with
+   ZUMI_TTS=inworld). Its 100 requests a day are counted (gemini_tts.py): the voices are designed first, then the
+   lines recorded in reading order as far as the day goes. When lines or voices are left for another day, steps
+   8b-10d are not run (the clock times every balloon by its clip, and the music, places and props are paid for on
+   that clock) and the run exits 1 saying so; a run on another day records the rest and goes on.
 8b. The episode clock (clock.clock_step, no paid call): when every panel, frame and balloon is on screen, from the
    layers, the balloons, the reading order and the lines' lengths; <episode>/clock/clock.json. The steps after it
    and the export read their times from it (step 9, Motion, will change panel lengths and run before it).
@@ -415,7 +418,7 @@ def main() -> None:
     net.shutdown()
     if not a.segment_only:
         timed("6 speakers", speakers_step, ep, list(imgs))
-    late = not a.segment_only and not a.panels
+    late, waiting = not a.segment_only and not a.panels, 0
     if not a.segment_only and a.panels:
         # identity, voices, the clock, the music, the places and the props read the whole episode (and identity and
         # the voices pay for it): a run on some boxes leaves them as they are
@@ -425,7 +428,10 @@ def main() -> None:
         import character_identity as CI
         ident = timed("7 identity", CI.identity_step, ep, ch, a.series or CI.series_of(ch.stem))
         if ident and not a.no_voices:
-            timed("8 voices", CI.voices_step, ep, ch, ident)
+            waiting = timed("8 voices", CI.voices_step, ep, ch, ident)
+    if waiting:  # the voice backend's daily limit: the clock and what is paid for on it wait for every line
+        print(f"== 8b-10d not run: {waiting} voice requests wait for another day")
+        late = False
     if late:  # the episode clock: when every panel, frame and balloon is on screen, for the steps after
         import clock
         timed("8b clock", clock.clock_step, ep, len(ch))
@@ -440,6 +446,8 @@ def main() -> None:
     for i in sorted(changed | set(pictures) | {i for i in imgs if not (a.out / "sheets" / f"{ch.pid(i)}.png").exists()}):
         sheet(imgs[i], letters[i], chars[i], pictures.get(i), f"{ch.stem} panel {i}").save(a.out / "sheets" / f"{ch.pid(i)}.png")
     print({k: round(v, 1) for k, v in times.items()}, f"spent today {spent_today():.3f} USD")
+    if waiting:
+        raise SystemExit(f"voices incomplete: daily TTS limit ({waiting} requests wait); run again on another day")
 
 
 if __name__ == "__main__":

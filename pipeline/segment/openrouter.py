@@ -26,7 +26,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from spend import SPEND, BudgetExceeded, no_call_offline, reserve, record, spent_today  # noqa: F401  (BudgetExceeded, spent_today: for callers)
+from spend import SPEND, BudgetExceeded, no_call_offline, payment_refused, reserve, record, spent_today  # noqa: F401  (BudgetExceeded, spent_today: for callers)
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
@@ -77,7 +77,9 @@ def _request(path: str, body: dict | None = None) -> dict:
             if e.code in (429, 500, 502, 503, 504) and attempt < 5:
                 time.sleep(10 * 2**attempt)
                 continue
-            raise RuntimeError(f"OpenRouter {e.code}: {e.read().decode()[:300]}") from None
+            detail = e.read().decode()[:300]
+            payment_refused("openrouter", e.code, detail)
+            raise RuntimeError(f"OpenRouter {e.code}: {detail}") from None
     raise RuntimeError("unreachable")
 
 
@@ -163,7 +165,9 @@ def speech(model: str, text: str, voice: str, instructions: str | None = None, t
             with urllib.request.urlopen(req, timeout=180) as r:
                 audio, gen = r.read(), r.headers.get("X-Generation-Id")
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"OpenRouter {e.code}: {e.read().decode()[:300]}") from None
+            detail = e.read().decode()[:300]
+            payment_refused("openrouter", e.code, detail)
+            raise RuntimeError(f"OpenRouter {e.code}: {detail}") from None
         cost = _generation_cost(gen) if gen else None
         record("openrouter", SPEECH_RESERVE_USD if cost is None else cost, model=model, tag=tag, generation=gen,
                **({"cost_unknown": True} if cost is None else {}))

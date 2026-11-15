@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from spend import no_call_offline, record, reserve
+from spend import no_call_offline, payment_refused, record, reserve
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
@@ -55,6 +55,7 @@ def generate(prompt: str, model: str = SONG, tag: str = "") -> tuple[bytes, floa
                 if e.code in (429, 500, 502, 503, 504) and attempt < 3:
                     time.sleep(10 * (attempt + 1))
                     continue
+                payment_refused("gemini", e.code, detail)
                 raise RuntimeError(f"Lyria {model}: HTTP {e.code} {detail}") from None
         record("gemini", usd, model=model, tag=tag, call="music")
     audio, texts = [], []

@@ -1,13 +1,19 @@
 """Voices: the cast's designed voices and every recorded line of an episode (CONTEXT.md: Voice), on one text-to-speech
 backend behind one seam.
 
-Two adapters sit at the seam, `inworld` (Inworld TTS-2, the default) and `gemini_tts` (Gemini 3.8 Flash TTS); each owns
+Two adapters sit at the seam, `gemini_tts` (Gemini 3.8 Flash TTS, the default: the owner's decision of 2026-11-15)
+and `inworld` (Inworld TTS-2, with ZUMI_TTS=inworld); each owns
 how its model is directed (a director's brief and a rate for Inworld, a short style and pace words for Gemini), the
 key its voice ids live under in the cast record, its folder of lines and its engine name in the .zumi. A backend is
 picked by name (ZUMI_TTS when none is given), so the two can be compared on one episode. Both adapters offer:
 
     NAME, ENGINE, VOICE_ID, AUDIO_DIR, SAMPLE_SUFFIX, SPEAKING_RATE
     DELIVERY_MODE                                            where the model has one (Inworld), else absent
+    requests_left()                                          where the service counts requests a day (Gemini: 100)
+
+A backend with a daily limit is planned by it: the voices are designed first, then the lines are recorded in
+reading order, as many as the day leaves; the rest wait for a run on another day (design_voices and record_lines
+return how many), and what was recorded is kept by its line record, so nothing is sent twice.
     design_voice(description, display_name, preview_text, language_code, gender, tag) -> {"id", "sample", "cost"}
     direct(style, pace, factor, char) -> {"brief", "rate"}   how one line is directed
     speech(text, voice, style, tag, context, rate, brief) -> (wav, cost, instruction)   text already spoken()
@@ -46,8 +52,13 @@ LINE_RECIPE = ("voice_id", "text", "style", "brief", "rate", "model", "mode")  #
 
 
 def backend(name: str | None = None) -> ModuleType:
-    """The adapter named (inworld, gemini), else ZUMI_TTS's, else Inworld."""
-    return BACKENDS[name or os.environ.get("ZUMI_TTS", inworld.NAME)]
+    """The adapter named (gemini, inworld), else ZUMI_TTS's, else Gemini."""
+    return BACKENDS[name or os.environ.get("ZUMI_TTS", gemini_tts.NAME)]
+
+
+def left_today(tts: ModuleType) -> int | None:
+    """The requests the backend's daily limit leaves today; None for a backend that counts none."""
+    return tts.requests_left() if hasattr(tts, "requests_left") else None
 
 
 def spoken(text: str) -> str:
@@ -92,19 +103,21 @@ def lines(ep: Episode, tts: ModuleType) -> dict[tuple[str, int], dict]:
             for l in json.loads(index.read_text(encoding="utf-8")) if (d / l["file"]).exists()}
 
 
-def design_voices(cast, tts: ModuleType) -> None:
+def design_voices(cast, tts: ModuleType) -> int:
     """Every described voice of the cast without a designed one on this backend, designed (the character's own lines
     as the preview script): the voice id in the cast record under tts.VOICE_ID, its sample in
     <cast>/voices/K<n><SAMPLE_SUFFIX>.wav. A description the service refuses is printed and tried again on the next
-    run; the cap stops the rest for the next run."""
+    run; the cap stops the rest for the next run. Returns the voices the backend's daily limit left undesigned."""
     todo = [c for c in cast.chars if c["voice"] and c["voice"].get("description") and not c["voice"].get(tts.VOICE_ID)]
     if not todo:
-        return
+        return 0
     (cast.dir / "voices").mkdir(parents=True, exist_ok=True)
     made, cost = 0, 0.0
     for c in todo:  # the cast saved after each voice: a crash keeps the voices already published and paid for
         v = c["voice"]
         preview = " ".join(c.get("lines") or [])[:400] or v["description"]
+        if left_today(tts) == 0:
+            break
         try:
             got = tts.design_voice(v["description"], v.get("display_name") or c["name"], preview,
                                    v.get("language_code") or "en-US", v.get("gender"), tag=f"{cast.d['series']} voice {c['id']}")
@@ -120,6 +133,13 @@ def design_voices(cast, tts: ModuleType) -> None:
         made, cost = made + 1, cost + got["cost"]
     print(f"  {made} of {len(todo)} voices designed on {tts.NAME} ({cost:.4f} USD at list price): " +
           ", ".join(f"{c['id']} {c['name']}" for c in todo if c['voice'].get(tts.VOICE_ID)))
+    return len(todo) - made if left_today(tts) == 0 else 0
+
+
+def within_limit(todo: list, left: int | None) -> tuple[list, int]:
+    """(the lines a run sends, how many wait for another day): the first `left` in reading order, all of them when
+    the backend has no daily limit (None)."""
+    return (todo, 0) if left is None else (todo[:left], max(0, len(todo) - left))
 
 
 def wanted_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleType) -> tuple[list[dict], dict]:
@@ -156,10 +176,12 @@ def wanted_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
     return out, unvoiced
 
 
-def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleType) -> None:
+def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleType) -> int:
     """Every line of wanted_lines as audio, to <episode>/<AUDIO_DIR>/<pid>.b<bubble>.wav and its lines.json. A
     balloon already recorded with the same words, voice, note, brief and rate on the same model and delivery mode
-    (LINE_RECIPE) is kept; one whose character has no designed voice is skipped, counted."""
+    (LINE_RECIPE) is kept; one whose character has no designed voice is skipped, counted. On a backend with a daily
+    limit only the lines the day leaves are sent, the first in reading order (within_limit). Returns the lines that
+    limit left for another day."""
     out = ep.out / tts.AUDIO_DIR
     index = out / "lines.json"
     have = {(l["pid"], l["bubble"]): l for l in json.loads(index.read_text(encoding="utf-8"))} if index.exists() else {}
@@ -185,8 +207,10 @@ def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
         index.write_text(json.dumps(sorted(have.values(), key=lambda l: (l["box"], l["order"])), indent=1,
                                     ensure_ascii=False), encoding="utf-8")
     if not todo:
-        return
+        return 0
     out.mkdir(parents=True, exist_ok=True)
+    asked = len(todo)
+    todo, _ = within_limit(todo, left_today(tts))
 
     def one(n: int) -> dict:
         l = todo[n]
@@ -207,10 +231,15 @@ def record_lines(ep: Episode, n_boxes: int, identity: dict, cast, tts: ModuleTyp
     done, stopped = paid_map(one, range(len(todo)), workers=LINE_WORKERS, on_done=save)
     cost = sum(done[n]["cost"] for n in done)
     secs = sum(done[n]["seconds"] for n in done)
+    waiting = asked - len(done) if left_today(tts) == 0 else 0  # the limit, by the count or by the service's word
     print(f"  {len(done)} lines recorded, {secs:.0f} s of audio, {cost:.4f} USD at list price" +
-          (f"; {len(stopped)} stopped by the cap: the next run records them" if stopped else ""))
+          (f"; {len(stopped)} stopped by the cap: the next run records them" if stopped and not waiting else ""))
+    if waiting:
+        print(f"  voices: {len(done)} of {asked} lines recorded, the daily limit of {tts.TTS_DAILY_REQUESTS} "
+              f"{tts.NAME} TTS requests is reached; the rest are recorded by the next run on another day")
     if done or stale:
         episode_audio(ep, tts)
+    return waiting
 
 
 def episode_audio(ep: Episode, tts: ModuleType) -> Path | None:
