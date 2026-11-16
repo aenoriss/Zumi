@@ -1,0 +1,303 @@
+using System;
+using System.Collections.Generic;
+using Oculus.Interaction.Input;
+using UnityEngine;
+
+namespace Zumi
+{
+    /// <summary>
+    /// The reader's control: a round menu over the palm. Its first face is the transport and nothing else: back, pause
+    /// or resume, forward, three large buttons. A small petal at the foot of the plate turns it to a second face with
+    /// the three settings, each under its name and what it is set to now: Motion (the accents on or off), Room (what
+    /// the place does to the real room: full, plain, off) and Re-seat (the seat, and all that is placed around it,
+    /// taken again where the head is; the clock keeps its time). The petal brings the first face back, and so does
+    /// lowering the hand. Why a second face rather than more buttons on the first: the three transport buttons keep
+    /// their size and their place, a finger that misses one cannot change a setting, and the settings get targets as
+    /// large as theirs.
+    ///
+    /// It appears when a hand is held open with its palm toward the face, in view, for a moment (either hand), and
+    /// goes when the palm turns away. The other hand chooses: a fingertip poke, or its ray and a pinch. Nothing else
+    /// a hand does reaches the clock; a pinch in the air does nothing.
+    /// </summary>
+    public class ZumiHandMenu : MonoBehaviour
+    {
+        /// <summary>The palm opens the menu when it points within this angle of the eyes.</summary>
+        public const float OpenAngle = 35f;
+        /// <summary>An open menu stays until the palm has turned this far from the eyes.</summary>
+        public const float CloseAngle = 60f;
+        /// <summary>The hand must be within this angle of where the head looks: a hand resting on a lap is not asking.</summary>
+        public const float ViewAngle = 40f;
+        /// <summary>Seconds the open palm must hold before the menu appears.</summary>
+        public const float OpenSeconds = 0.3f;
+        /// <summary>Seconds the palm may be away (or the hand lost) before an open menu goes.</summary>
+        public const float CloseSeconds = 0.25f;
+        // an open finger's tip is about 1.8 times as far from the wrist as its knuckle; a curled one's is nearer
+        const float OpenFingerRatio = 1.4f;
+        const float LiftMetres = 0.08f, PlateRadius = 0.058f, ButtonRadius = 0.019f, RingRadius = 0.033f, FollowPerSecond = 18f;
+        // the petal, and the settings' face: three buttons in a row, their two-line labels under them
+        const float PetalRadius = 0.01f, PetalDrop = 0.044f, SettingRadius = 0.017f, SettingPitch = 0.038f, SettingRise = 0.012f, LabelCap = 0.0036f;
+
+        [Tooltip("Zumi/Flat: one flat colour, unlit")]
+        [SerializeField] Shader flatShader;
+
+        sealed class Item
+        {
+            public string action;
+            /// <summary>The face it is on: false the transport, true the settings, null both.</summary>
+            public bool? face;
+            public Func<string> fire;
+            public ZumiDraw.RoundButton button;
+            public TextMesh label;
+            public Func<string> state;
+            public Material icon;
+            public Func<bool> lit;
+        }
+
+        ZumiTransport transport;
+        ZumiReader reader;
+        Hand[] hands = Array.Empty<Hand>();
+        Hand owner, candidate;
+        float candidateSince, lostSince;
+        Transform menu;
+        GameObject pauseIcon, playIcon, dotsIcon, returnIcon;
+        bool settings;
+        float reseatedAt = -1f;
+        const float ReseatedSeconds = 2f;
+        readonly List<Item> items = new();
+        readonly ZumiDraw.Parts parts = new();
+
+        internal Shader FlatShader => flatShader;
+
+        public bool Open => owner != null;
+        /// <summary>"left" or "right" while open; null otherwise.</summary>
+        public string OpenHand => owner == null ? null : owner.Handedness == Handedness.Left ? "left" : "right";
+        /// <summary>The face on show: "main" (the transport) or "settings"; null while the menu is closed.</summary>
+        public string Page => !Open ? null : settings ? "settings" : "main";
+        /// <summary>Where the menu is drawn, in world space; meaningful while Open.</summary>
+        public Vector3 Position => menu ? menu.position : default;
+        /// <summary>The way the menu's face points, in world space (toward the eyes while Open).</summary>
+        public Vector3 Facing => menu ? -menu.forward : default;
+        /// <summary>The button pressed last: "pause", "resume", "forward", "back"; "settings", "main" (the petal);
+        /// "motion_on", "motion_off", "room_full", "room_nograde", "room_off", "reseat"; null before any.</summary>
+        public string LastAction { get; private set; }
+        public int ActionCount { get; private set; }
+        /// <summary>What the settings' face reads under its buttons, in their order; empty on the other face.</summary>
+        public IReadOnlyList<string> SettingLabels
+        {
+            get
+            {
+                shownLabels.Clear();
+                if (Open && settings)
+                    foreach (var item in items)
+                        if (item.label) shownLabels.Add(item.label.text.Replace('\n', ' '));
+                return shownLabels;
+            }
+        }
+        readonly List<string> shownLabels = new();
+
+        public void Bind(ZumiTransport transport, ZumiReader reader)
+        {
+            this.transport = transport;
+            this.reader = reader;
+            Build();
+        }
+
+        void Update()
+        {
+            if (transport == null || !Camera.main) return;
+            if (hands.Length == 0) hands = FindObjectsByType<Hand>(FindObjectsInactive.Include);
+            var head = Camera.main.transform;
+
+            if (owner != null)
+            {
+                if (Asks(owner, head, CloseAngle, needOpenFingers: false, out _, out _)) lostSince = -1f;
+                else if (lostSince < 0f) lostSince = Time.unscaledTime;
+                else if (Time.unscaledTime - lostSince >= CloseSeconds) owner = null;
+            }
+            else
+            {
+                Hand asking = null;
+                foreach (var hand in hands)
+                    if (Asks(hand, head, OpenAngle, needOpenFingers: true, out _, out _) && (asking == null || hand == candidate)) asking = hand;
+                if (asking != candidate)
+                {
+                    candidate = asking;
+                    candidateSince = Time.unscaledTime;
+                }
+                else if (candidate != null && Time.unscaledTime - candidateSince >= OpenSeconds)
+                {
+                    owner = candidate;
+                    candidate = null;
+                    lostSince = -1f;
+                    // it always opens on the transport
+                    settings = false;
+                    Place(head, snap: true);
+                }
+            }
+
+            if (menu.gameObject.activeSelf != Open) menu.gameObject.SetActive(Open);
+            if (!Open) return;
+            Place(head, snap: false);
+            foreach (var item in items)
+            {
+                // the petal is on both faces
+                var shown = item.face == null || item.face == settings;
+                if (item.button.transform.gameObject.activeSelf != shown) item.button.transform.gameObject.SetActive(shown);
+                if (item.label && item.label.gameObject.activeSelf != shown) item.label.gameObject.SetActive(shown);
+            }
+            dotsIcon.SetActive(!settings);
+            returnIcon.SetActive(settings);
+            pauseIcon.SetActive(transport.Playing);
+            playIcon.SetActive(!transport.Playing);
+            foreach (var item in items)
+            {
+                item.button.disc.SetColor("_Color", item.button.Touched ? ZumiDraw.Hover : ZumiDraw.Button);
+                if (item.state != null)
+                {
+                    var text = item.state();
+                    if (item.label.text != text) item.label.text = text;
+                }
+                if (item.lit != null) item.icon.SetColor("_Color", item.lit() ? ZumiDraw.Ink : ZumiDraw.FaintInk);
+            }
+        }
+
+        // an open hand, tracked, in view, its palm toward the eyes within maxAngle
+        static bool Asks(Hand hand, Transform head, float maxAngle, bool needOpenFingers, out Vector3 palm, out Vector3 normal)
+        {
+            palm = normal = default;
+            if (!hand || !hand.isActiveAndEnabled || !hand.IsTrackedDataValid) return false;
+            if (!hand.GetJointPose(HandJointId.HandWristRoot, out var wrist) || !hand.GetJointPose(HandJointId.HandIndex1, out var index)
+                || !hand.GetJointPose(HandJointId.HandMiddle1, out var middle) || !hand.GetJointPose(HandJointId.HandPinky1, out var pinky)) return false;
+            palm = (wrist.position + middle.position) * 0.5f;
+            // from the knuckles, not a joint's axes: the same on both hands whatever the skeleton's frame. The cross
+            // product points out of the back of a right hand and out of the palm of a left one
+            normal = Vector3.Cross(index.position - wrist.position, pinky.position - wrist.position).normalized;
+            if (hand.Handedness == Handedness.Right) normal = -normal;
+            if (Vector3.Angle(normal, head.position - palm) > maxAngle) return false;
+            if (Vector3.Angle(head.forward, palm - head.position) > ViewAngle) return false;
+            if (!needOpenFingers) return true;
+            if (hand.GetIndexFingerIsPinching()) return false;
+            return Extended(hand, wrist.position, HandJointId.HandIndex1, HandJointId.HandIndexTip)
+                   && Extended(hand, wrist.position, HandJointId.HandMiddle1, HandJointId.HandMiddleTip)
+                   && Extended(hand, wrist.position, HandJointId.HandRing1, HandJointId.HandRingTip);
+        }
+
+        static bool Extended(Hand hand, Vector3 wrist, HandJointId knuckle, HandJointId tip) =>
+            hand.GetJointPose(knuckle, out var k) && hand.GetJointPose(tip, out var t)
+            && Vector3.Distance(t.position, wrist) > OpenFingerRatio * Vector3.Distance(k.position, wrist);
+
+        // over the palm, facing the eyes; it follows the hand smoothly so tracking jitter does not shake the buttons
+        void Place(Transform head, bool snap)
+        {
+            if (!Asks(owner, head, 180f, needOpenFingers: false, out var palm, out var normal) && !snap) return;
+            var position = palm + normal * LiftMetres;
+            var rotation = Quaternion.LookRotation(position - head.position, Vector3.up);
+            var k = snap ? 1f : 1f - Mathf.Exp(-FollowPerSecond * Time.unscaledDeltaTime);
+            menu.SetPositionAndRotation(Vector3.Lerp(menu.position, position, k), Quaternion.Slerp(menu.rotation, rotation, k));
+        }
+
+        void Fire(Item item)
+        {
+            if (!Open || (item.face != null && item.face != settings)) return;
+            LastAction = item.fire();
+            ActionCount++;
+            Debug.Log($"[Zumi] menu: {LastAction}");
+        }
+
+        // ---- the menu's objects, built once -------------------------------------------------------------------
+
+        void Build()
+        {
+            menu = new GameObject("HandMenu").transform;
+            menu.gameObject.SetActive(false);
+            ZumiDraw.Shape(flatShader, parts, "Plate", menu, 0f, ZumiDraw.Plate, 0, ZumiDraw.Disc(PlateRadius));
+
+            // seen from the front, +x is the reader's right: back on the left, forward on the right, pause on top
+            var pause = Add(false, "Pause", OnRing(90f), ButtonRadius, () =>
+            {
+                var was = transport.Playing;
+                transport.TogglePause();
+                return was ? "pause" : "resume";
+            });
+            pauseIcon = Icon(pause, ZumiDraw.Bars(-0.0065f, 0.0045f), ZumiDraw.Bars(0.002f, 0.0045f)).gameObject;
+            playIcon = Icon(pause, ZumiDraw.Triangle(-0.005f, 0.011f)).gameObject;
+            Icon(Add(false, "Forward", OnRing(-30f), ButtonRadius, () => { transport.Forward(); return "forward"; }), ZumiDraw.Triangle(-0.007f, 0.01f), ZumiDraw.Bars(0.004f, 0.003f));
+            Icon(Add(false, "Back", OnRing(210f), ButtonRadius, () => { transport.Back(); return "back"; }), ZumiDraw.Triangle(0.007f, -0.01f), ZumiDraw.Bars(-0.007f, 0.003f));
+
+            // the petal: three dots to the settings, an arrow back to the transport
+            var petal = Add(null, "Petal", new Vector2(0f, -PetalDrop), PetalRadius, () =>
+            {
+                settings = !settings;
+                return settings ? "settings" : "main";
+            });
+            dotsIcon = Icon(petal, ZumiDraw.Moved(ZumiDraw.Disc(0.0014f, 10), new Vector2(-0.0045f, 0f)), ZumiDraw.Disc(0.0014f, 10), ZumiDraw.Moved(ZumiDraw.Disc(0.0014f, 10), new Vector2(0.0045f, 0f))).gameObject;
+            returnIcon = Icon(petal, new[] { new Vector2(0.003f, -0.005f), new Vector2(0.003f, 0.005f), new Vector2(-0.005f, 0f) }).gameObject;
+
+            // the settings: a row of three, each with its name and what it is set to
+            var motion = Add(true, "Motion", new Vector2(-SettingPitch, SettingRise), SettingRadius, () =>
+            {
+                reader.SetMotion(!reader.MotionEnabled);
+                return reader.MotionEnabled ? "motion_on" : "motion_off";
+            });
+            // a ball and the three lines it leaves behind
+            Lit(motion, () => reader.MotionEnabled, ZumiDraw.Moved(ZumiDraw.Disc(0.0042f, 20), new Vector2(0.005f, 0f)),
+                ZumiDraw.Box(-0.0095f, 0.0026f, 0.0075f, 0.0015f), ZumiDraw.Box(-0.0115f, -0.00075f, 0.0095f, 0.0015f), ZumiDraw.Box(-0.0095f, -0.0041f, 0.0075f, 0.0015f));
+            Label(motion, () => reader.MotionEnabled ? "Motion\non" : "Motion\noff");
+
+            var room = Add(true, "Room", new Vector2(0f, SettingRise), SettingRadius, () =>
+            {
+                reader.CycleRoomEffects();
+                return "room_" + reader.RoomEffects.ToString().ToLowerInvariant();
+            });
+            // a window: its frame and its cross
+            Lit(room, () => reader.RoomEffects != RoomEffects.Off, ZumiDraw.Box(-0.0085f, 0.006f, 0.017f, 0.0016f), ZumiDraw.Box(-0.0085f, -0.0076f, 0.017f, 0.0016f),
+                ZumiDraw.Box(-0.0085f, -0.0076f, 0.0016f, 0.0152f), ZumiDraw.Box(0.0069f, -0.0076f, 0.0016f, 0.0152f), ZumiDraw.Box(-0.0006f, -0.0076f, 0.0012f, 0.0152f), ZumiDraw.Box(-0.0085f, -0.0006f, 0.017f, 0.0012f));
+            Label(room, () => reader.RoomEffects switch { RoomEffects.Full => "Room\nfull", RoomEffects.NoGrade => "Room\nplain", _ => "Room\noff" });
+
+            var reseat = Add(true, "Reseat", new Vector2(SettingPitch, SettingRise), SettingRadius, () =>
+            {
+                reader.Reseat();
+                reseatedAt = Time.unscaledTime;
+                return "reseat";
+            });
+            // a ring with its middle marked: here
+            var mark = new List<Vector2[]>(ZumiDraw.Arc(0.0075f, 0.0018f, 0f, 360f, 20)) { ZumiDraw.Disc(0.0026f, 14) };
+            Lit(reseat, null, mark.ToArray());
+            // it has no setting to show: it says that it was done, for a moment
+            Label(reseat, () => reseatedAt >= 0f && Time.unscaledTime - reseatedAt < ReseatedSeconds ? "Re-seat\ndone" : "Re-seat\nhere");
+        }
+
+        static Vector2 OnRing(float degrees) => new Vector2(Mathf.Cos(degrees * Mathf.Deg2Rad), Mathf.Sin(degrees * Mathf.Deg2Rad)) * RingRadius;
+
+        Item Add(bool? face, string name, Vector2 at, float radius, Func<string> fire)
+        {
+            var item = new Item { action = name, face = face, fire = fire };
+            item.button = ZumiDraw.Round(flatShader, parts, name, menu, at, radius, 0, () => Fire(item));
+            items.Add(item);
+            return item;
+        }
+
+        Transform Icon(Item item, params Vector2[][] polygons) =>
+            ZumiDraw.Shape(flatShader, parts, "Icon", item.button.transform, -0.002f, ZumiDraw.Ink, 0, polygons);
+
+        // an icon that is ink while its setting is on and faint while it is off
+        void Lit(Item item, Func<bool> lit, params Vector2[][] polygons)
+        {
+            item.icon = Icon(item, polygons).GetComponent<MeshRenderer>().sharedMaterial;
+            item.lit = lit;
+        }
+
+        void Label(Item item, Func<string> state)
+        {
+            item.state = state;
+            var at = item.button.transform.localPosition + new Vector3(0f, -SettingRadius - 0.0105f, -0.001f);
+            item.label = ZumiDraw.Text(flatShader, parts, $"{item.action} label", menu, at, LabelCap, ZumiDraw.Ink, 1, state());
+        }
+
+        void OnDestroy()
+        {
+            if (menu) Destroy(menu.gameObject);
+            parts.Destroy();
+        }
+    }
+}

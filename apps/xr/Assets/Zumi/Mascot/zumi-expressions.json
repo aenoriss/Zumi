@@ -1,0 +1,25 @@
+{
+  "about": "Zumi moods for the 3D mascot (design/mascot/3d/zumi-mascot.glb). Each expression is one glTF animation of the same name (30 fps, plays once and returns to neutral). blush is the blush opacity as a fraction of full (#FF8FA8); the GLB material carries the neutral level. closedEyes suppresses the random blink. calm suppresses random sway and squash.",
+  "fps": 30,
+  "blushNeutral": 0.18,
+  "expressions": {
+    "neutral":  { "blush": 0.18 },
+    "happy":    { "blush": 0.26, "closedEyes": true },
+    "laugh":    { "blush": 0.26, "closedEyes": true },
+    "wow":      { "blush": 0.18 },
+    "aww":      { "blush": 0.34 },
+    "sad":      { "blush": 0.08 },
+    "shocked":  { "blush": 0.08, "calm": true },
+    "annoyed":  { "blush": 0.08 },
+    "thinking": { "blush": 0.18 },
+    "sleepy":   { "blush": 0.18 },
+    "wink":     { "blush": 0.26, "closedEyes": true }
+  },
+  "layers": {
+    "blink":   { "clip": "blink", "every": [3, 6] },
+    "body":    { "clips": ["sway", "squash"], "every": [10, 20], "note": "one at a time, never overlapping" },
+    "breathe": { "clip": "breathe", "loop": true, "note": "breathe and squash both drive the root scale; multiply them" },
+    "talk":    { "clip": "talk", "loop": true },
+    "look":    { "clip": "look_around", "morphs": ["look_left", "look_right", "look_up", "look_down"] }
+  }
+}

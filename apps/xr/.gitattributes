@@ -1,0 +1,109 @@
+# Overrides the repo root .gitattributes for the Unity project (the root marks *.asset binary).
+
+# Unity YAML: text, LF, merged with UnityYAMLMerge.
+# Needs the driver in git config once per machine, e.g.:
+#   git config merge.unityyamlmerge.name "Unity SmartMerge"
+#   git config merge.unityyamlmerge.driver "'C:/Program Files/Unity/Hub/Editor/6000.4.5f1/Editor/Data/Tools/UnityYAMLMerge.exe' merge -p %O %B %A %A"
+*.unity         text eol=lf merge=unityyamlmerge diff
+*.prefab        text eol=lf merge=unityyamlmerge diff
+*.asset         text eol=lf merge=unityyamlmerge diff
+*.mat           text eol=lf merge=unityyamlmerge diff
+*.anim          text eol=lf merge=unityyamlmerge diff
+*.controller    text eol=lf merge=unityyamlmerge diff
+*.overrideController text eol=lf merge=unityyamlmerge diff
+*.physicMaterial text eol=lf merge=unityyamlmerge diff
+*.physicsMaterial2D text eol=lf merge=unityyamlmerge diff
+*.playable      text eol=lf merge=unityyamlmerge diff
+*.mask          text eol=lf merge=unityyamlmerge diff
+*.brush         text eol=lf merge=unityyamlmerge diff
+*.flare         text eol=lf merge=unityyamlmerge diff
+*.fontsettings  text eol=lf merge=unityyamlmerge diff
+*.guiskin       text eol=lf merge=unityyamlmerge diff
+*.giparams      text eol=lf merge=unityyamlmerge diff
+*.renderTexture text eol=lf merge=unityyamlmerge diff
+*.spriteatlas   text eol=lf merge=unityyamlmerge diff
+*.spriteatlasv2 text eol=lf merge=unityyamlmerge diff
+*.terrainlayer  text eol=lf merge=unityyamlmerge diff
+*.lighting      text eol=lf merge=unityyamlmerge diff
+*.preset        text eol=lf merge=unityyamlmerge diff
+*.cubemap       text eol=lf merge=unityyamlmerge diff
+*.meta          text eol=lf merge=unityyamlmerge diff
+
+# Other text
+*.cs            text eol=lf diff=csharp
+*.asmdef        text eol=lf
+*.asmref        text eol=lf
+*.inputactions  text eol=lf
+*.shader        text eol=lf
+*.shadergraph   text eol=lf
+*.shadersubgraph text eol=lf
+*.hlsl          text eol=lf
+*.cginc         text eol=lf
+*.compute       text eol=lf
+*.uss           text eol=lf
+*.uxml          text eol=lf
+*.tss           text eol=lf
+*.json          text eol=lf
+*.xml           text eol=lf
+*.md            text eol=lf
+
+# Git LFS: textures
+*.png  filter=lfs diff=lfs merge=lfs -text
+*.jpg  filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.tga  filter=lfs diff=lfs merge=lfs -text
+*.tif  filter=lfs diff=lfs merge=lfs -text
+*.tiff filter=lfs diff=lfs merge=lfs -text
+*.psd  filter=lfs diff=lfs merge=lfs -text
+*.psb  filter=lfs diff=lfs merge=lfs -text
+*.exr  filter=lfs diff=lfs merge=lfs -text
+*.hdr  filter=lfs diff=lfs merge=lfs -text
+*.gif  filter=lfs diff=lfs merge=lfs -text
+*.bmp  filter=lfs diff=lfs merge=lfs -text
+*.webp filter=lfs diff=lfs merge=lfs -text
+*.ktx2 filter=lfs diff=lfs merge=lfs -text
+
+# Git LFS: audio
+*.wav  filter=lfs diff=lfs merge=lfs -text
+*.ogg  filter=lfs diff=lfs merge=lfs -text
+*.mp3  filter=lfs diff=lfs merge=lfs -text
+*.aif  filter=lfs diff=lfs merge=lfs -text
+*.aiff filter=lfs diff=lfs merge=lfs -text
+*.flac filter=lfs diff=lfs merge=lfs -text
+*.bank filter=lfs diff=lfs merge=lfs -text
+
+# Git LFS: video
+*.mp4  filter=lfs diff=lfs merge=lfs -text
+*.mov  filter=lfs diff=lfs merge=lfs -text
+*.webm filter=lfs diff=lfs merge=lfs -text
+
+# Git LFS: models
+*.fbx   filter=lfs diff=lfs merge=lfs -text
+*.obj   filter=lfs diff=lfs merge=lfs -text
+*.glb   filter=lfs diff=lfs merge=lfs -text
+*.gltf  filter=lfs diff=lfs merge=lfs -text
+*.blend filter=lfs diff=lfs merge=lfs -text
+*.dae   filter=lfs diff=lfs merge=lfs -text
+*.3ds   filter=lfs diff=lfs merge=lfs -text
+*.max   filter=lfs diff=lfs merge=lfs -text
+*.ma    filter=lfs diff=lfs merge=lfs -text
+*.mb    filter=lfs diff=lfs merge=lfs -text
+
+# Git LFS: fonts
+*.ttf   filter=lfs diff=lfs merge=lfs -text
+*.otf   filter=lfs diff=lfs merge=lfs -text
+
+# Git LFS: other binaries
+*.zumi  filter=lfs diff=lfs merge=lfs -text
+*.zip   filter=lfs diff=lfs merge=lfs -text
+*.so    filter=lfs diff=lfs merge=lfs -text
+*.dll   filter=lfs diff=lfs merge=lfs -text
+*.aar   filter=lfs diff=lfs merge=lfs -text
+*.jar   filter=lfs diff=lfs merge=lfs -text
+*.a     filter=lfs diff=lfs merge=lfs -text
+*.bytes filter=lfs diff=lfs merge=lfs -text
+*.unitypackage filter=lfs diff=lfs merge=lfs -text
+
+# Lightmaps and baked data
+LightingData.asset filter=lfs diff=lfs merge=lfs -text
+*.lightingdata     filter=lfs diff=lfs merge=lfs -text
