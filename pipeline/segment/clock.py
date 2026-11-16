@@ -52,15 +52,20 @@ def hold_s(share: float) -> float:
 
 def frame_plan(box: Box) -> tuple[list[int], dict[int, int], dict[int, float]]:
     """(the box's frames in reading order, {bubble id: its frame}, {frame: its share of the box's area}) from the saved
-    layers: a balloon belongs to the frame whose backdrop holds its centre, else the nearest one. ([], {}, {}) without
-    layers."""
+    layers: a balloon belongs to the frame of the card that says it, when that card is in this box and in a frame;
+    else to the frame whose window holds its centre, else the nearest one. A balloon drawn over one frame but said by
+    a character in the next was filed under the first, so the speaker's frame stayed unlit for the whole line (p023
+    of the test episode, 2026-11-16). ([], {}, {}) without layers."""
     sc = box.scene()
     fr = box.frames()
     if sc is None or fr is None or not fr.masks:
         return [], {}, {}
     from speakers import reading_order
     order = reading_order(fr.masks)
-    backs = {l.frame: l.bbox for l in sc.layers if l.kind == "backdrop" and l.frame is not None}
+    backs = {l.frame: l.window_bbox or l.bbox for l in sc.layers if l.kind == "backdrop" and l.frame is not None}
+    card_frame = {l.key: l.frame for l in sc.layers if l.kind != "lettering" and l.frame is not None}
+    said = {r["bubble"]: card_frame.get(r["speakers"][0]) for r in box.speakers() or []
+            if r.get("speakers") and "/" not in r["speakers"][0]}
     share = {}
     for l in sc.layers:
         if l.kind == "backdrop" and l.frame is not None:
@@ -69,6 +74,9 @@ def frame_plan(box: Box) -> tuple[list[int], dict[int, int], dict[int, float]]:
     of = {}
     for l in sc.layers:
         if l.kind != "lettering" or l.bubble is None:
+            continue
+        if said.get(l.bubble) in backs:
+            of[l.bubble] = said[l.bubble]
             continue
         cx, cy = (l.bbox[0] + l.bbox[2]) / 2, (l.bbox[1] + l.bbox[3]) / 2
         best, best_d = None, float("inf")
