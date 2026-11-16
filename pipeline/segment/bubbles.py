@@ -26,8 +26,10 @@ width, 25 % overlap). Each tile gets:
 
 Masks of the same kind that overlap by more than half are one object seen twice (overlapping tiles); different
 kinds merge only when near-identical, so a sound effect crossing a caption box stays a separate mask (Tower of
-God 223 p4). A "bubble" inside a caption card is the card's text block; letters inside a bubble or caption are
-its dialogue; both are dropped. A sound effect's letters are grouped into one mask per word.
+God 223 p4). A mask cut by an inner tile edge is part of an object; where the neighbouring tile found that object
+whole, that tile's mask replaces it in the rows both see, whatever the kinds (join_tile_cuts, 2026-11-16). A
+"bubble" inside a caption card is the card's text block; letters inside a bubble or caption are its dialogue; both
+are dropped. A sound effect's letters are grouped into one mask per word.
 
 Measured: "speech bubble" finds round bubbles at 0.95+ and black bursts at 0.35; "caption box" finds light
 captions (0.78) but not black cards (0.14-0.24); card exemplars find a missed black card at 0.98.
@@ -216,6 +218,56 @@ def add(found: list[Found], new: Found) -> None:
             return
 
 
+def join_tile_cuts(hits: list[tuple[np.ndarray, float, str, int]], h: int, w: int, edge: float = 0.02,
+                   overlap: float = 0.5) -> list[Found]:
+    """Every hit (tile mask, score, kind, tile top) as a box mask, a hit cut by an inner tile edge completed by the
+    neighbouring tile's view of the same object. A cut hit (at least `edge` of the box width on its tile's inner top
+    or bottom row) saw only part of its object; a hit of another tile that continues past the cut and, in the rows
+    both tiles see, shares more than `overlap` of the smaller of the two is that object seen whole. Inside the other
+    tile that tile's mask stands, whatever the kinds: it saw those rows too and found that shape; the cut hit keeps
+    only the rows its own tile alone saw. A caption hit over a balloon and the panel beside it, cut at the first
+    tile's bottom, outranked the whole balloon the second tile found (kinds differ, IoU 0.48) and then dropped it as
+    its text block (67 % inside), so the balloon's lower third was never masked (2026-11-16). The thresholds are
+    arguments, not module constants, so recipe() and every saved box's lettering stay as they were."""
+    def rows(m: np.ndarray, top: int) -> tuple[int, int]:
+        return top, top + m.shape[0]
+
+    def cut(m: np.ndarray, top: int) -> tuple[bool, bool]:
+        lo, hi = rows(m, top)
+        return lo > 0 and m[0].sum() >= edge * w, hi < h and m[-1].sum() >= edge * w
+
+    def full(m: np.ndarray, top: int) -> np.ndarray:
+        out = np.zeros((h, w), bool)
+        out[top: top + m.shape[0]] = m
+        return out
+
+    out = []
+    for m, s, kind, top in hits:
+        lo, hi = rows(m, top)
+        cut_top, cut_bottom = cut(m, top)
+        best, most = None, 0
+        for m2, s2, kind2, top2 in hits if cut_top or cut_bottom else ():
+            lo2, hi2 = rows(m2, top2)
+            b0, b1 = max(lo, lo2), min(hi, hi2)
+            if top2 == top or b0 >= b1:
+                continue
+            past = (cut_bottom and hi2 > hi and m2[hi - top2:].any()) or (cut_top and lo2 < lo and m2[: lo - top2].any())
+            if not past:
+                continue
+            a, b = m[b0 - lo: b1 - lo], m2[b0 - lo2: b1 - lo2]
+            inter = int(np.logical_and(a, b).sum())
+            if inter and inter / min(a.sum(), b.sum()) > overlap and inter > most:
+                best, most = (m2, s2, kind2, top2), inter
+        if best is None:
+            out.append(Found(full(m, top), s, kind))
+            continue
+        m2, s2, kind2, top2 = best
+        own = full(m, top)
+        own[top2: top2 + m2.shape[0]] = False  # the rows the other tile saw are its own
+        out.append(Found(np.logical_or(own, full(m2, top2)), s2, kind2))
+    return out
+
+
 def drop_inner_text(found: list[Found]) -> list[Found]:
     """Drop masks lying mostly inside a container: a bubble inside a caption card is the card's text block,
     letters inside a bubble or caption are its dialogue."""
@@ -296,12 +348,13 @@ def group_letters(found: list[Found], reach: int) -> list[Found]:
 
 def segment(seg: Segmenter, img: Image.Image, bank: Bank, episode: str, panel: int,
             statuses: list[str] | None = None) -> list[Found]:
-    """The box's lettering: the passes on each tile, duplicates across tiles merged, inner text dropped, sound
+    """The box's lettering: the passes on each tile, masks cut by a tile edge completed from the neighbouring tile
+    (join_tile_cuts), duplicates across tiles merged, inner text dropped, sound
     effects grouped into words and refined (refine_panel; statuses, when given, collects its outcomes)."""
     w, h = img.size
     tops = tiles(h, w)
     layout = [(names, cell, {g: bank.pick(g, episode, panel, n) for g in names}) for names, cell, n in LAYOUT]
-    found: list[Found] = []
+    hits: list[tuple[np.ndarray, float, str, int]] = []  # tile masks, joined across tiles once all are in
     for top in tops:
         tile = img.crop((0, top, w, min(h, top + w)))
         # the tile, then one canvas per layout entry: one encoder batch, freed before the next tile
@@ -314,15 +367,15 @@ def segment(seg: Segmenter, img: Image.Image, bank: Bank, episode: str, panel: i
         states = seg.encode(images)
         for ps in PASSES:
             if ps.exemplars is None:
-                hits = run_pass(seg, states[0], tile, ps, None)
+                found_here = run_pass(seg, states[0], tile, ps, None)
             else:
                 i, boxes = where[ps.exemplars]
-                hits = run_pass(seg, states[i], tile, ps, boxes)
-            for m, s in hits:
-                full = np.zeros((h, w), bool)
-                full[top : top + m.shape[0]] = m
-                add(found, Found(full, s, ps.kind))
+                found_here = run_pass(seg, states[i], tile, ps, boxes)
+            hits += [(m, s, ps.kind, top) for m, s in found_here]
         del states
+    found: list[Found] = []
+    for f in join_tile_cuts(hits, h, w):
+        add(found, f)
     return refine_panel(seg, img, group_letters(drop_inner_text(found), reach=max(8, w // 40)), statuses)
 
 
