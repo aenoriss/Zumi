@@ -54,6 +54,7 @@ from PIL import Image
 
 import openrouter as OR
 from boxstore import Episode
+from fresh import pixels
 from masks import MIN_FRAME_PX, union
 from spend import paid_map
 from workers import pmap
@@ -356,10 +357,15 @@ def _prompt(img: Image.Image) -> str:
     return PROMPT.format(w=round(img.width * s), h=round(img.height * s))
 
 
-def cache_file(img: Image.Image, prompt: str | None = None):
-    """Where the answer for this image and prompt is cached (default: the current prompt, filled for its size)."""
+def cache_file(img: Image.Image, prompt: str | None = None, as_png: bool = False):
+    """Where the answer for this image and prompt is cached (default: the current prompt, filled for its size): keyed
+    on the image's pixels (fresh.pixels). as_png: on its PNG bytes as this machine encodes them, the key until
+    2026-11-15 (another build of the image library compresses the same pixels to other bytes, and the call was paid
+    again)."""
     img = img.convert("RGB")
     prompt = _prompt(img) if prompt is None else prompt
+    if not as_png:
+        return CACHE / f"{hashlib.sha1((pixels(img) + MODEL + prompt).encode()).hexdigest()[:20]}.json"
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return CACHE / f"{hashlib.sha1(buf.getvalue() + (MODEL + prompt).encode()).hexdigest()[:20]}.json"
@@ -367,6 +373,8 @@ def cache_file(img: Image.Image, prompt: str | None = None):
 
 def _cached(img: Image.Image, tag: str, prompt: str | None = None) -> dict:
     f = cache_file(img, prompt)
+    if not f.exists() and (old := cache_file(img, prompt, as_png=True)).exists():
+        old.rename(f)  # an answer cached under the key before: kept under today's
     if f.exists():
         return json.loads(f.read_text())
     try:

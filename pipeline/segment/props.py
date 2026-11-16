@@ -188,21 +188,47 @@ def script(ep: Episode, frame_ids: list[str]) -> str:
     return "\n".join(out) or "(nothing is said)"
 
 
-def pick_material(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -> tuple[list, str, int]:
-    """What the pick call sees: ([(source, image as sent)], the text before the images, the props allowed)."""
-    view = ep.out / "places" / sid / "shown.png"
-    imgs = [("view", _fit(Image.open(view)))] + [(fid, _fit(im)) for fid, im in setting_frames(ep, frame_setting, sid)]
-    n = max_props(seconds)
+def pick_text(n: int, place: str, imgs: list, said: str) -> str:
+    """The pick call's text: the task for up to n props, the place, the images' sizes as sent and the script. How
+    long the place is open reaches the model only as n (max_props, in steps of 15 s). Told in seconds as well until
+    2026-11-15 ("Open for N s."), any change of the clock changed the text, and six newly voiced lines, 15 s on the
+    episode, would have bought every place's pick again though which objects suit a place had not changed."""
     sizes = "\n".join(f"- Image {k}: {'the painted view' if src == 'view' else 'comic frame ' + src}, "
                       f"{im.width} x {im.height} px" for k, (src, im) in enumerate(imgs, 1))
-    text = (TASK.format(n=n) + f"\n## The place\n{_place_text(ep, sid)}\nOpen for {seconds:.0f} s.\n\n"
-            f"## The images\n{sizes}\n\n## The script\n{script(ep, [fid for fid, _ in imgs[1:]])}\n")
-    return imgs, text, n
+    return TASK.format(n=n) + f"\n## The place\n{place}\n\n## The images\n{sizes}\n\n## The script\n{said}\n"
 
 
-def pick_stamp(imgs: list, text: str) -> str:
-    """pick.json's stamp: the whole text and every image's pixels as the call sees them, the model and its effort."""
+def pick_material(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -> tuple[list, list, str, int]:
+    """What the pick call sees: ([(source, image as sent)], each image's pixels before it is resized to be sent
+    (fresh.pixels), the text before the images, the props allowed)."""
+    full = [("view", Image.open(ep.out / "places" / sid / "shown.png"))] + setting_frames(ep, frame_setting, sid)
+    imgs = [(src, _fit(im)) for src, im in full]
+    n = max_props(seconds)
+    text = pick_text(n, _place_text(ep, sid), imgs, script(ep, [fid for fid, _ in imgs[1:]]))
+    return imgs, [fresh.pixels(im) for _, im in full], text, n
+
+
+def pick_stamp(sources: list[str], text: str) -> str:
+    """pick.json's stamp: the whole text, every image by its pixels before the resize to SIDE (the resized pixels are
+    another machine's to round), SIDE, the model and its effort."""
+    return fresh.digest(text, sources, SIDE, MODEL, REASONING)
+
+
+def sent_stamp(imgs: list, text: str) -> str:
+    """The stamp until 2026-11-15, over the images' pixels as sent: only to adopt a pick.json stamped then."""
     return fresh.digest(text, [hashlib.sha256(im.tobytes()).hexdigest() for _, im in imgs], MODEL, REASONING)
+
+
+def stamp_before(old: dict, imgs: list, text: str, n: int) -> str | None:
+    """The stamp the rule before gives a saved pick now, None when it allowed another number of props: the text
+    with its "Open for N s." line (N from the pick's saved seconds, either whole second its rounding leaves open)
+    and the images as sent."""
+    if old.get("max") != n or old.get("seconds") is None:
+        return None
+    head, tail = text.split("\n## The images\n", 1)
+    got = {sent_stamp(imgs, f"{head}Open for {s} s.\n\n## The images\n{tail}")
+           for s in {f"{old['seconds']:.0f}", str(int(old["seconds"])), str(int(old["seconds"]) + 1)}}
+    return old.get("stamp") if old.get("stamp") in got else None
 
 
 def pick(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -> dict:
@@ -211,12 +237,15 @@ def pick(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -
     d = ep.out / "props" / sid
     d.mkdir(parents=True, exist_ok=True)
     view = ep.out / "places" / sid / "shown.png"
-    imgs, text, n = pick_material(ep, sid, seconds, frame_setting)
-    stamp = pick_stamp(imgs, text)
+    imgs, sources, text, n = pick_material(ep, sid, seconds, frame_setting)
+    stamp = pick_stamp(sources, text)
     f_json = d / "pick.json"
     if f_json.exists():
         old = json.loads(f_json.read_text(encoding="utf-8"))
-        if old.get("stamp") == stamp:
+        if fresh.holds(old.get("stamp"), stamp, lambda: stamp_before(old, imgs, text, n), f"props {sid} pick"):
+            if old["stamp"] != stamp:
+                old["stamp"] = stamp
+                f_json.write_text(json.dumps(old, indent=1, ensure_ascii=False), encoding="utf-8")
             return old
     content = [{"type": "text", "text": text}]
     for k, (_, im) in enumerate(imgs, 1):
@@ -329,14 +358,35 @@ def cut_of(seg, img: Image.Image, box, prompts: list[str]) -> tuple[Image.Image 
 
 def stamps_of(view: str, p: dict) -> dict[str, str]:
     """What each of a prop's files is made from, {rung: stamp}: each stamp covers the one before it and its own
-    rung's recipe, so a change anywhere reaches every file after it. view: the view's digest (fresh.digest)."""
-    cut = fresh.digest(view, p["box"], p.get("noun"), p["what"], [PAD, PROB, FILL, PINHOLE, SIDE])
+    rung's recipe, so a change anywhere reaches every file after it. view: the view's pixels (view_stamp)."""
+    return stamps_after(fresh.digest(view, p["box"], p.get("noun"), p["what"], [PAD, PROB, FILL, PINHOLE, SIDE]), p)
+
+
+def stamps_after(cut: str, p: dict) -> dict[str, str]:
+    """stamps_of from the cut's stamp on: what adopt_stamps checks a prop's saved rungs against when its cut's stamp
+    cannot be computed again here."""
     paint = fresh.digest(cut, PROMPT, p["what"], REPAINT_MODEL, REPAINT_SEED, LIGHT, [WHITE, DARK])
     raw = fresh.digest(paint, LIFT_SEEDS, TEXTURE, SIMPLIFY)
     # The finish costs nothing, so any edit of prop_mesh.py makes it again rather than guessing which edits change
     # its bytes.
     glb = fresh.digest(raw, fresh.source(prop_mesh))
     return {"cut": cut, "paint": paint, "raw": raw, "glb": glb}
+
+
+def view_stamp(ep: Episode, sid: str, as_bytes: bool = False) -> str:
+    """A place's shown view as the props' stamps name it: its pixels (fresh.pixels). as_bytes: its file's bytes, the
+    rule until 2026-11-15, under which the same view saved again by another machine made every prop again."""
+    f = ep.out / "places" / sid / "shown.png"
+    return fresh.digest(f) if as_bytes else fresh.pixels(f)
+
+
+def _adopt(saved: dict, now: dict, before, what: str) -> None:
+    """A prop's saved stamps that are those of the rule before (before(): stamps_of on the view's bytes) put in
+    today's form, rung by rung: its files are current, only their stamps' form is old."""
+    old = before() if saved and any(saved.get(r) != now[r] for r in saved) else {}
+    for r in saved:
+        if fresh.holds(saved[r], now[r], old.get(r), what + " " + r):
+            saved[r] = now[r]
 
 
 def _todo(d: Path, name: str, saved: dict, now: dict) -> list[str]:
@@ -409,7 +459,7 @@ def build(ep: Episode, picks: dict[str, dict]) -> dict[str, dict]:
     for sid, pk in picks.items():
         d = ep.out / "props" / sid
         d.mkdir(parents=True, exist_ok=True)
-        view = fresh.digest(ep.out / "places" / sid / "shown.png")
+        view = view_stamp(ep, sid)
         f = d / "stamps.json"
         old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
         props[sid] = pk["props"]
@@ -420,6 +470,8 @@ def build(ep: Episode, picks: dict[str, dict]) -> dict[str, dict]:
         for p in props[sid]:
             now[sid, p["name"]] = stamps_of(view, p)
             stamps[sid][p["name"]] = dict(old.get(p["name"]) or {})
+            _adopt(stamps[sid][p["name"]], now[sid, p["name"]],
+                   lambda sid=sid, p=p: stamps_of(view_stamp(ep, sid, as_bytes=True), p), f"prop {sid}/{p['name']}")
             _todo(d, p["name"], stamps[sid][p["name"]], now[sid, p["name"]])
         f.write_text(json.dumps(stamps[sid], indent=1), encoding="utf-8")
     skipped: dict[str, list] = {sid: [] for sid in picks}
@@ -515,7 +567,7 @@ def into(man: dict, ep: Episode, added: dict[str, bytes]) -> None:
         picked = {p["name"]: p for p in json.loads(pk.read_text(encoding="utf-8")).get("props", [])} if pk.exists() else {}
         st = d / "stamps.json"
         saved = json.loads(st.read_text(encoding="utf-8")) if st.exists() else {}
-        view = fresh.digest(ep.out / "places" / sid / "shown.png")
+        views = [view_stamp(ep, sid), view_stamp(ep, sid, as_bytes=True)]  # today's rule, and the one before
         out, old = [], []
         for p in json.loads((d / "props.json").read_text(encoding="utf-8")).get("props", []):
             f = d / p["model"]
@@ -527,7 +579,7 @@ def into(man: dict, ep: Episode, added: dict[str, bytes]) -> None:
             added[path] = glb
             out.append({"name": p["name"], "description": p.get("what") or "", "model": path,
                         "heightM": float(p["height_m"]), "surface": p["surface"], "bounds": {"min": lo, "max": hi}})
-            if p["name"] in picked and saved.get(p["name"]) != stamps_of(view, picked[p["name"]]):
+            if p["name"] in picked and saved.get(p["name"]) not in [stamps_of(v, picked[p["name"]]) for v in views]:
                 old.append(p["name"])
         if out:
             m["props"] = out

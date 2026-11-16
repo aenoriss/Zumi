@@ -67,7 +67,7 @@ from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_ed
 
 import fresh
 from bfl import DILATE, flux_erase
-from boxstore import Box, image_stamp
+from boxstore import Box
 from fresh import digest
 from chapter import Chapter
 from masks import MIN_FRAME_PX, PART_MIN, Found, stamp, union
@@ -1392,21 +1392,22 @@ def inputs_stamp(box: Box, img: Image.Image) -> str:
     character, frame and object masks by content, and this module's constants (the depth model's id, and the view's
     and the masks' constants it imports, among them). No money is spent on the layers themselves (the erase's paid
     outputs are kept by their mask, _call), so the module's constants are taken whole."""
-    return digest(image_stamp(img), box.content("lettering"), box.content("characters"), box.content("frames"),
+    return digest(fresh.pixels(img), box.content("lettering"), box.content("characters"), box.content("frames"),
                   box.content("objects"), fresh.recipe(sys.modules[__name__], skip=("WORKERS",)))
 
 
-def plate_state(box: Box, inputs: str) -> str:
+def plate_state(box: Box, inputs: str, as_bytes: bool = False) -> str:
     """What render would draw a box's backdrop on now, the second half of its layers' stamp: "plate <content>" for
     a plate the erase made from these inputs (the box's "plate" stamp is `inputs`), "nothing to erase" when the erase
     found no card in them, "old plate <content>" for a plate made from other inputs (an erase since refused, failed
-    or stopped by the cap; a --no-erase run), "art" without a plate."""
+    or stopped by the cap; a --no-erase run), "art" without a plate. The content is the plate's pixels; as_bytes: its
+    file's bytes, the rule until 2026-11-15, by which build adopts the layers stamped then."""
     made = box.stamp_of("plate")
     if made == digest(inputs, "nothing to erase"):
         return "nothing to erase"
     if not box.has_plate():
         return "art"
-    return ("plate " if made == inputs else "old plate ") + box.plate_content()
+    return ("plate " if made == inputs else "old plate ") + box.plate_content(as_bytes)
 
 
 def erased(state: str) -> bool:
@@ -1431,7 +1432,8 @@ def build(jobs: list[tuple], erase: bool = True, dry: bool = False, log=print) -
     for box, img, letters, chars in jobs:
         s = inputs_stamp(box, img)
         state = plate_state(box, s)
-        if (not erase or erased(state)) and box.current("layers", digest(s, state)):
+        if (not erase or erased(state)) and box.current(
+                "layers", digest(s, state), legacy=lambda: digest(s, plate_state(box, s, as_bytes=True))):
             continue
         todo.append((box, img, letters, chars, s))
     log(f"{len(jobs) - len(todo)} of {len(jobs)} boxes current, not drawn again; {len(todo)} to plan"

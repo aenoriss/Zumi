@@ -113,9 +113,9 @@ import characters as CH
 import frames as FR
 import objects as OB
 import transcribe as T
-from boxstore import Episode, image_stamp
+from boxstore import Episode
 from chapter import Chapter
-from fresh import digest
+from fresh import digest, pixels
 from masks import Found, stamp, top_order
 from spend import paid_map, spent_today
 from workers import pmap
@@ -202,7 +202,7 @@ def mask_stamps(task: str, imgs: Imgs) -> dict[int, tuple[str, str]]:
     rec, rrec = {"lettering": B.recipe, "characters": CH.recipe}[task](), review_recipe(task)
     out = {}
     for i, img in imgs.items():
-        s = digest(image_stamp(img), task, rec)
+        s = digest(pixels(img), task, rec)
         out[i] = (s, digest(s, rrec))
     return out
 

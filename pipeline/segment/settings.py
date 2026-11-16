@@ -6,8 +6,10 @@ attributes), lists its frames, and writes a music family for it (tempo, key, ins
 setting can be generated as siblings. A frame with no place (a title, credits) gets none. Settings belong to the
 episode: a later episode reads its own. Saved as <episode>/settings/settings.json with the sheets and the reply.
 
-settings.json's stamp (fresh.py) covers the sheets the call sees by their pixels (so a backdrop erased again is read
-again), the task, the model and its reasoning effort. The cap, an offline run or a reply with no setting keeps the
+settings.json's stamp (fresh.py) covers what the sheets are rendered from: every frame's pair by its pixels (so a
+backdrop erased again is read again), the sheets' layout, the task, the model and its reasoning effort. The sheets'
+own pixels are not in it: their captions and thumbnails render differently on another machine (font, image library),
+and an episode made on Linux would have been read again here for the same frames (2026-11-15). The cap, an offline run or a reply with no setting keeps the
 saved file and leaves the read for the next run.
 
     python settings.py <chapter.zumi> <episode out dir>
@@ -156,10 +158,16 @@ def sheets(items: list[tuple[str, Image.Image]]) -> list[tuple[str, Image.Image]
             for s in range(0, len(items), PER_SHEET)]
 
 
-def stamp_of(ids: list[str], parts: list[tuple[str, Image.Image]]) -> str:
-    """settings.json's stamp: the frames, the sheets' pixels as the call sees them, and the recipe."""
-    pixels = [hashlib.sha256(img.tobytes()).hexdigest() for _, img in parts]
-    return fresh.digest(ids, pixels, TASK, MODEL, REASONING)
+def stamp_of(items: list[tuple[str, Image.Image]]) -> str:
+    """settings.json's stamp: the frames (episode_frames) in order, each by its id and its pair's pixels, the layout
+    the sheets are rendered by, and the recipe."""
+    return fresh.digest([k for k, _ in items], [fresh.pixels(im) for _, im in items],
+                        [COLS, THUMB, CELL_H, PER_SHEET, PAIR_GAP], TASK, MODEL, REASONING)
+
+
+def sheets_stamp(ids: list[str], parts: list[tuple[str, Image.Image]]) -> str:
+    """The stamp until 2026-11-15, over the rendered sheets' pixels: only to adopt a settings.json stamped then."""
+    return fresh.digest(ids, [hashlib.sha256(img.tobytes()).hexdigest() for _, img in parts], TASK, MODEL, REASONING)
 
 
 def settings_step(ep: Episode, n_boxes: int) -> dict | None:
@@ -173,9 +181,12 @@ def settings_step(ep: Episode, n_boxes: int) -> dict | None:
         return None
     ids = [k for k, _ in items]
     parts = sheets(items)
-    stamp = stamp_of(ids, parts)
+    stamp = stamp_of(items)
     old = json.loads(f_json.read_text(encoding="utf-8")) if f_json.exists() else None
-    if old and old.get("stamp") == stamp:
+    if old and fresh.holds(old.get("stamp"), stamp, lambda: sheets_stamp(ids, parts), "settings"):
+        if old["stamp"] != stamp:
+            old["stamp"] = stamp
+            f_json.write_text(json.dumps(old, indent=1, ensure_ascii=False), encoding="utf-8")
         print(f"  settings current: {len(old['settings'])} settings over {len(ids)} frames")
         return old
     content = [{"type": "text", "text": TASK}]

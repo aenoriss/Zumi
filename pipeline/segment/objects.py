@@ -23,8 +23,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy.ndimage import distance_transform_edt
 
-from boxstore import OBJECT_META_KEYS, Episode, image_stamp
-from fresh import digest
+from boxstore import OBJECT_META_KEYS, Episode
+from fresh import digest, pixels
 from masks import Found, save_masks, stamp, union
 from openrouter import Truncated, ask_json, image_part
 from review_loop import recipe as review_recipe, review
@@ -336,7 +336,7 @@ def choose_objects(img: Image.Image, chars: np.ndarray | None = None, tag: str =
 def box_stamp(img: Image.Image, chars: list[Found]) -> str:
     """What a box's saved objects were made from (Box "objects"): its image, its character masks (the pick moves its
     points off them), the pick's prompt, model, effort and budgets, and the constants that turn a pick into masks."""
-    return digest(image_stamp(img), stamp(chars), OBJECTS_PROMPT, MODEL, EFFORT, MAX_SIDE, PICK_TOKENS, SNAP_PX,
+    return digest(pixels(img), stamp(chars), OBJECTS_PROMPT, MODEL, EFFORT, MAX_SIDE, PICK_TOKENS, SNAP_PX,
                   NEAR_PX, DUP_IOU, SYNONYMS, MAX_ALT, THRESHOLD)
 
 

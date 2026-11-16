@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from fresh import Stamps
+from fresh import Stamps, pixels, text as fresh_text
 from masks import Found, load_masks, save_masks, stamp, top_key
 
 OBJECT_META_KEYS = ("on", "held", "front", "except", "animal")
@@ -58,18 +58,16 @@ def stamps_in(folder: Path) -> Stamps:
         return _STAMPS[f]
 
 
-def image_stamp(img: Image.Image) -> str:
-    """A box image's identity by its pixels (the .zumi holds it compressed; its bytes there are not the input)."""
-    a = np.asarray(img.convert("RGB"))
-    return hashlib.sha1(str(a.shape).encode() + a.tobytes()).hexdigest()[:16]
-
-
-def content_stamp(path: Path) -> str | None:
+def content_stamp(path: Path, as_bytes: bool = False) -> str | None:
     """A saved file's identity by what it holds: an .npz by its arrays (np.savez writes the time into the archive, so
-    the same masks saved again have other bytes), anything else by its bytes; None when it does not exist."""
+    the same masks saved again have other bytes), a .png by its pixels (fresh.pixels), a .json by its text with LF
+    line endings (fresh.text: an objects' .json written on Windows is CRLF), anything else by its bytes; None when it
+    does not exist. as_bytes: a .png by its bytes, the rule until 2026-11-15 (for adopting its stamps)."""
     path = Path(path)
     if not path.exists():
         return None
+    if path.suffix == ".png" and not as_bytes:
+        return pixels(path)
     h = hashlib.sha1()
     if path.suffix == ".npz":
         with np.load(path) as d:
@@ -78,7 +76,7 @@ def content_stamp(path: Path) -> str | None:
                 h.update(f"{k}{a.dtype}{a.shape}".encode())
                 h.update(np.ascontiguousarray(a).tobytes())
     else:
-        h.update(path.read_bytes())
+        h.update(fresh_text(path) if path.suffix == ".json" else path.read_bytes())
     return h.hexdigest()[:16]
 
 
@@ -274,10 +272,11 @@ class Box:
         st, key, _ = self._stamped(what)
         return st.get(key)
 
-    def current(self, what: str, stamp: str) -> bool:
-        """The output `what` is saved and was made from `stamp`."""
+    def current(self, what: str, stamp: str, legacy=None) -> bool:
+        """The output `what` is saved and was made from `stamp` (or from `legacy`, the stamp the rule before gives:
+        fresh.holds)."""
         st, key, files = self._stamped(what)
-        return st.current(key, stamp, *files)
+        return st.current(key, stamp, *files, legacy=legacy)
 
     def made(self, what: str, stamp: str) -> None:
         st, key, _ = self._stamped(what)
@@ -386,8 +385,10 @@ class Box:
         self._cards_file.write_text(json.dumps(cj, indent=1))
 
     def cards_stamp(self) -> str | None:
-        """The saved cards.json's identity: what speakers.json was made from (the card PNG names it keys on)."""
-        return hashlib.sha1(self._cards_file.read_bytes()).hexdigest()[:16] if self._cards_file.exists() else None
+        """The saved cards.json's identity: what speakers.json was made from (the card PNG names it keys on). By its
+        text with LF line endings (fresh.text): written on Windows it is CRLF, and the paid identity read, which
+        names this stamp, would have been bought again for the same cards."""
+        return hashlib.sha1(fresh_text(self._cards_file)).hexdigest()[:16] if self._cards_file.exists() else None
 
     def card(self, n: int, part: str = "") -> str:
         """Card n's file name in the mesh dir, as cards.json names it: the card itself, or its "window" or "relief"."""
@@ -465,9 +466,10 @@ class Box:
     def has_plate(self) -> bool:
         return self._plate_file.exists()
 
-    def plate_content(self) -> str | None:
-        """The saved plate's identity by its bytes (what the layers' stamp names as drawn on)."""
-        return content_stamp(self._plate_file)
+    def plate_content(self, as_bytes: bool = False) -> str | None:
+        """The saved plate's identity by its pixels (what the layers' stamp names as drawn on); as_bytes: by its
+        file's bytes, the rule until 2026-11-15."""
+        return content_stamp(self._plate_file, as_bytes)
 
     def plate(self) -> np.ndarray | None:
         """The band erase's plate (the whole box, the art outside its cards), or None before the erase."""

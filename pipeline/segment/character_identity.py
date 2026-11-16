@@ -285,11 +285,18 @@ ENCODERS = ("ccipb36", "dinov3", "magiv2")
 
 
 def embed(cards: Cards, cache: Path) -> dict[str, np.ndarray]:
-    """Each encoder's unit embeddings of the cards (n x d), cached by card PNG content: only new cards load a model."""
+    """Each encoder's unit embeddings of the cards (n x d), cached by card pixels (fresh.pixels): only new cards load a
+    model. Keyed on the PNG's bytes until 2026-11-15 (a card drawn again by another image library is other bytes);
+    an embedding cached under that key is kept under today's."""
     import torch
     import torch.nn.functional as F
-    keys = [hashlib.sha1(c.png.read_bytes()).hexdigest()[:16] for c in cards.cards]
+    keys = [fresh.pixels(c.png) for c in cards.cards]
     old = dict(np.load(cache)) if cache.exists() else {}
+    for k, c in zip(keys, cards.cards):
+        was = hashlib.sha1(c.png.read_bytes()).hexdigest()[:16]
+        for name in ENCODERS:
+            if f"{name}/{k}" not in old and f"{name}/{was}" in old:
+                old[f"{name}/{k}"] = old.pop(f"{name}/{was}")
     out = {}
     for name in ENCODERS:
         todo = [n for n, k in enumerate(keys) if f"{name}/{k}" not in old]

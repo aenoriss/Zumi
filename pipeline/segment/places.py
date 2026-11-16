@@ -15,9 +15,9 @@
    the view's colour; the reader shows it through the front mesh's gaps. back.glb.
 
 Each stage is skipped when its output is current (fresh.py): the 16:9 view by a stamp of its prompt, references,
-model and size, the panorama by its prompt, the 16:9 view's content, its reference, model, aspect and resolution
+model and size, the panorama by its prompt, the 16:9 view's pixels, its reference, model, aspect and resolution
 (place.json "stamp16", "stamp"); the plate by the image erased, its mask, ERASE_MP and the erase's dilation
-(place.json "stamp_plate"). The geometry's four stamps (<place>/stamps.json) each cover the stage before and only
+(place.json "stamp_plate"). Every image in a stamp is taken by its pixels, not its file's bytes (fresh.py). The geometry's four stamps (<place>/stamps.json) each cover the stage before and only
 the constants of place_geometry.py that shape their own files (place_geometry.SHAPES): depth by the view, show by
 the depth, the front mesh by show, the back mesh by show and the plate. So a change to the meshes alone (a thinning
 tolerance, the material) builds meshes and nothing else: MoGe does not run, shown.png and erase-mask.png keep their
@@ -235,10 +235,12 @@ def view16_stamp(s: dict, refs: list[int]) -> str:
     return fresh.digest(view_prompt(s), refs, VIEW_MODEL, VIEW_SIZE)
 
 
-def pano_stamp(s: dict, refs: list[int], d: Path) -> str:
-    """The panorama's stamp (place.json "stamp"): its prompt, the 16:9 view by content, its reference box, the model,
-    aspect and resolution."""
-    return fresh.digest(pano_prompt(s), fresh.digest(d / "view16.png"), refs[:1], PANO_MODEL, ASPECT, RESOLUTION)
+def pano_stamp(s: dict, refs: list[int], d: Path, as_bytes: bool = False) -> str:
+    """The panorama's stamp (place.json "stamp"): its prompt, the 16:9 view by its pixels, its reference box, the
+    model, aspect and resolution. as_bytes (here and in the stamps below): every image by its file's bytes, the rule
+    until 2026-11-15, by which the checks adopt the stamps saved then (fresh.holds)."""
+    view16 = fresh.digest(d / "view16.png") if as_bytes else fresh.pixels(d / "view16.png")
+    return fresh.digest(pano_prompt(s), view16, refs[:1], PANO_MODEL, ASPECT, RESOLUTION)
 
 
 GEOMETRY_FILES = {  # each geometry stage's files (place_geometry.py), in the order the stages run
@@ -249,29 +251,33 @@ GEOMETRY_FILES = {  # each geometry stage's files (place_geometry.py), in the or
 }
 
 
-def geometry_stamp(stage: str, d: Path) -> str:
+def geometry_stamp(stage: str, d: Path, as_bytes: bool = False) -> str:
     """A geometry stage's stamp (<place>/stamps.json): what it is made from and the constants that shape its own
-    files. depth: the view; show: the depth; front: show; back: show and the plate."""
+    files. depth: the view (its pixels); show: the depth; front: show; back: show and the plate (its pixels)."""
+    image = Path if as_bytes else fresh.pixels  # a Path is digested by its file's bytes
     own = place_geometry.recipe(stage)
     if stage == "depth":
-        return fresh.digest(d / "view.png", own)
+        return fresh.digest(image(d / "view.png"), own)
     if stage == "show":
-        return fresh.digest(geometry_stamp("depth", d), own)
+        return fresh.digest(geometry_stamp("depth", d, as_bytes), own)
     if stage == "front":
-        return fresh.digest(geometry_stamp("show", d), own)
-    return fresh.digest(geometry_stamp("show", d), d / "plate.png", own)
+        return fresh.digest(geometry_stamp("show", d, as_bytes), own)
+    return fresh.digest(geometry_stamp("show", d, as_bytes), image(d / "plate.png"), own)
 
 
 def geometry_current(stage: str, d: Path) -> bool:
     """The stage's files are there and its saved stamp is today's."""
     return fresh.Stamps(d / "stamps.json").current(stage, geometry_stamp(stage, d),
-                                                   *(d / f for f in GEOMETRY_FILES[stage]))
+                                                   *(d / f for f in GEOMETRY_FILES[stage]),
+                                                   legacy=lambda: geometry_stamp(stage, d, as_bytes=True))
 
 
-def plate_stamp(d: Path) -> str:
-    """The plate's stamp (place.json "stamp_plate"): the image erased, its mask and the erase's recipe."""
+def plate_stamp(d: Path, as_bytes: bool = False) -> str:
+    """The plate's stamp (place.json "stamp_plate"): the image erased and its mask, both by their pixels, and the
+    erase's recipe. By their bytes, the same mask saved again on another machine paid for the erase again."""
     from bfl import DILATE
-    return fresh.digest(d / "shown.png", d / "erase-mask.png", ERASE_MP, DILATE)
+    image = Path if as_bytes else fresh.pixels
+    return fresh.digest(image(d / "shown.png"), image(d / "erase-mask.png"), ERASE_MP, DILATE)
 
 
 def _read(path: Path) -> dict:
@@ -346,7 +352,12 @@ def places_step(ep: Episode, ch) -> dict | None:
             paid = True
         pp = pano_prompt(record[sid])
         stamp = pano_stamp(record[sid], refs, d)
-        if meta.get("stamp") != stamp or not (d / "view.png").exists():
+        if (d / "view.png").exists() and fresh.holds(meta.get("stamp"), stamp, lambda: pano_stamp(
+                record[sid], refs, d, as_bytes=True), f"place {sid} view"):
+            if meta["stamp"] != stamp:
+                meta["stamp"] = stamp
+                _write(d / "place.json", meta)
+        else:
             img, credits = flux3(pp, [Image.open(d / "view16.png").convert("RGB")] + [ch.image(i) for i in refs[:1]],
                                  ASPECT, RESOLUTION, tag=f"place {sid} view")
             img.save(d / "view.png")
@@ -371,7 +382,11 @@ def places_step(ep: Episode, ch) -> dict | None:
 
     def plate(sid: str) -> bool:
         d = root / sid
-        if _read(d / "place.json").get("stamp_plate") == plate_stamp(d) and (d / "plate.png").exists():
+        meta, stamp = _read(d / "place.json"), plate_stamp(d)
+        if (d / "plate.png").exists() and fresh.holds(meta.get("stamp_plate"), stamp,
+                                                      lambda: plate_stamp(d, as_bytes=True), f"place {sid} plate"):
+            if meta["stamp_plate"] != stamp:
+                _write(d / "place.json", {**meta, "stamp_plate": stamp})
             return False
         erase(d).save(d / "plate.png")
         _write(d / "place.json", {**_read(d / "place.json"), "stamp_plate": plate_stamp(d)})
