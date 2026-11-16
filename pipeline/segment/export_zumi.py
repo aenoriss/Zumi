@@ -13,7 +13,8 @@ Per processed box the panel becomes renderMode "scene3d" with panels/<id>/scene.
 Unlit materials (KHR_materials_unlit): the art is already lit. Bubbles go into the manifest as the schema allows
 (id, text, kind from Transcribe, sound effects as "sfx", position = normalised centre, speakerCard = the card that
 says it, as the speaker records name it, speakerId = that card's cast id from the identity, frame = the frame it is
-timed in, audio = the line recorded in that voice as panels/<id>/voice/<bubble>.wav), in the clock's order with
+timed in, audio = the line recorded in that voice as panels/<id>/voice/<bubble>.wav, or for a sound effect its
+sound from step 9b as panels/<id>/sfx/<bubble>.wav, sfx.py), in the clock's order with
 their times from the episode clock (clock.py: startOffset, durationHint, startTime, endTime; the panel's
 durationOverride, frames, startTime and endTime), so the reader paces the episode without logic of its own. Each
 panel's animations are the accents motion.py's rules fire on this clock, as tracks. The manifest's cast is every
@@ -42,6 +43,7 @@ import numpy as np
 
 import clock
 import motion
+import sfx
 import voices as VO
 from boxstore import Box, Episode, card_id, index_of, pid_of
 from view import focal
@@ -275,7 +277,8 @@ def main():
     name = motion.preset()
     moves = motion.accents(ep, clk, set(lines), name)  # step 9's rules on this clock
     tracks = motion.tracks(moves, clk)
-    voiced = 0
+    voiced, sounded = 0, 0
+    sounds = sfx.sound_of(ep)  # step 9b: {(box pid, bubble id): its sound's WAV}
     known = {c["id"] for c in cast}
     for (box, glb, _), p, got, cp in zip(jobs, man["panels"], built, clk["panels"]):
         p["startTime"], p["endTime"] = cp["startTime"], cp["endTime"]
@@ -305,10 +308,15 @@ def main():
                     if who in known:
                         entry["speakerId"] = who
                 line = lines.get((box.pid, b["id"]))
+                sound = sounds.get((box.pid, b["id"])) if b.get("kind") == "sfx" else None
                 if line:
                     entry["audio"] = f"panels/{p['id']}/voice/b{b['id']}.wav"
                     added[entry["audio"]] = wav_bytes(Path(line["path"]))
                     voiced += 1
+                elif sound:  # step 9b's sound, already in the format's sound-effect WAV (sfx.finish, sfx.wav_bytes)
+                    entry["audio"] = f"panels/{p['id']}/sfx/b{b['id']}.wav"
+                    added[entry["audio"]] = sound.read_bytes()
+                    sounded += 1
                 p["bubbles"].append(entry)
             when = {b["id"]: (k, b) for k, b in enumerate(cp["bubbles"])}  # the clock's order, frame by frame
             for e in p["bubbles"]:
@@ -352,7 +360,7 @@ def main():
     print(f"  textures: {tex['resampled']} of {tex['textures']} over {TEXTURE_MAX} px resampled, "
           f"{tex['saved'] / 1e6:.1f} MB off the scenes")
     print(f"  motion ({name}): " + ", ".join(f"{k} {v}" for k, v in motion.counts(moves).items()))
-    print(f"{done} panels as scene3d, {len(cast)} cast characters, {voiced} voiced bubbles -> {dst} "
+    print(f"{done} panels as scene3d, {len(cast)} cast characters, {voiced} voiced bubbles, {sounded} sound effects -> {dst} "
           f"({dst.stat().st_size / 1e6:.1f} MB)")
 
 

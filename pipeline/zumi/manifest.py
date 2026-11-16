@@ -208,7 +208,8 @@ class Bubble(Model):
     position: Vec2
     anchor: Vec2 | None = None
     anchorLayer: str | None = None
-    audio: str | None = Field(None, pattern=r"^panels/[a-z0-9_-]+/voice/[a-z0-9_-]+\.wav$")
+    # a voice clip, or a sound effect's sound (panels/<id>/sfx/<bubble>.wav)
+    audio: str | None = Field(None, pattern=r"^panels/[a-z0-9_-]+/(voice|sfx)/[a-z0-9_-]+\.wav$")
     startOffset: float | None = None
     durationHint: float | None = None
     startTime: float | None = None  # from the episode's start, precomputed

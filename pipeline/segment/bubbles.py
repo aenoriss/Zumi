@@ -233,6 +233,31 @@ def drop_inner_text(found: list[Found]) -> list[Found]:
     ]
 
 
+def drop_bridges(found: list[Found], cover: float = 0.8, each: float = 0.15) -> list[Found]:
+    """Drop a dialogue mask that is mostly other dialogue masks: a strip across the halves of two neighbouring
+    balloons (`cover` of it under them, two or more each holding at least `each` of it) is no balloon of its own, but
+    it was transcribed and voiced as one, saying the second half of each (dan-buck p001 after a review split,
+    2026-11-16). Run on the final masks, after the review, whose edits can leave such a strip. Its thresholds are
+    arguments, not module constants: they shape no segmentation, so they stay out of recipe(), whose change would
+    segment, review and erase every box again."""
+    keep = []
+    for f in found:
+        if f.kind not in DIALOGUE:
+            keep.append(f)
+            continue
+        y0, y1, x0, x1 = f.bbox()
+        own = f.mask[y0:y1, x0:x1]
+        a = max(1, int(own.sum()))
+        shares = [np.logical_and(own, g.mask[y0:y1, x0:x1]).sum() / a
+                  for g in found if g is not f and g.kind in DIALOGUE and window(f, g) is not None]
+        under = np.logical_and(own, np.logical_or.reduce(
+            [g.mask[y0:y1, x0:x1] for g in found if g is not f and g.kind in DIALOGUE] or [np.zeros_like(own)])).sum() / a
+        if under >= cover and sum(s >= each for s in shares) >= 2:
+            continue
+        keep.append(f)
+    return keep
+
+
 def group_letters(found: list[Found], reach: int) -> list[Found]:
     """Letters of one sound effect become one mask: sfx masks within `reach` px of each other join."""
     sfx = [f for f in found if f.kind == "sfx"]

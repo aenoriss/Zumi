@@ -17,6 +17,7 @@ panels/
     scene.glb                            the panel's layers as textured surfaces and its camera, for renderMode "scene3d"
     layers/<layerId>.png                 flat images, for a panel without a scene
     voice/<bubbleId>.wav                 one clip per spoken bubble: 24 kHz mono 16-bit PCM
+    sfx/<bubbleId>.wav                   a sound effect's sound: 44.1 kHz mono 16-bit PCM
     depth/<layerId>.png                  reserved: per-layer relief
     panorama.jpg                         equirectangular 2:1, for renderMode "panorama"
     ambience.ogg                         reserved: one loop per panel (the pipeline writes none)
@@ -53,7 +54,7 @@ each bubble's `frame` among its panel's frames, the settings that frames, tracks
 keys among the tracks, the places timeline, animation targets and timing. With the files as well: every path the
 manifest names exists; `speakerCard`, animation targets and pinned cards resolve to nodes of the right `scene.glb`;
 lettering nodes name a bubble; panel and place materials are unlit; no panel texture is over 2048 px; voices are
-24 kHz mono 16-bit WAV.
+24 kHz mono 16-bit WAV, sound effects' 44.1 kHz.
 
 ## A panel's scene
 
@@ -93,8 +94,12 @@ A panel without a scene (`renderMode: "panel"`) still needs at least one layer.
 - `speakerId`: the cast member that card is. `cast` lists everyone a character card is, speaking or not.
 - `frame`: the frame the bubble belongs to and is timed in.
 - `audio`: every bubble with a `speakerCard` and words has a clip. By rule these have none and are shown as timed
-  text for their `durationHint`: sound effects, the narrator's captions, bubbles of marks alone ("...") and lines
-  whose speaker is drawn nowhere. The pipeline does not export an episode in which a speaking line lacks its clip.
+  text for their `durationHint`: the narrator's captions, bubbles of marks alone ("...") and lines whose speaker is
+  drawn nowhere. The pipeline does not export an episode in which a speaking line lacks its clip.
+- A sound effect is voiced by nobody, but its `audio` may be the sound it letters (`panels/<id>/sfx/<bubble>.wav`,
+  44.1 kHz mono 16-bit PCM, levelled with the voices): played like a voice clip from its `startTime`, from the
+  middle of its frame. It may ring up to a second past its `endTime`, and the music does not duck under it (the
+  envelope ducks under voices only). Without one it is silent, as before.
 - Voice clips are WAV (PCM) because Unity cannot decode MP3 or Ogg from memory: a 44-byte header, then the samples.
 
 ## Time

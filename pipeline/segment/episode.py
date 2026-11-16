@@ -11,7 +11,7 @@ frames' panel boxes at the start, Transcribe after the lettering); CPU work per 
 
     uv run python episode.py <episode.zumi> <out dir> [--panels 10-15 | --panels 3,7,9] [--no-review]
                              [--segment-only] [--no-erase] [--no-transcribe] [--from-masks]
-                             [--no-identity] [--no-voices] [--no-music] [--no-places] [--series NAME]
+                             [--no-identity] [--no-voices] [--no-sfx] [--no-music] [--no-places] [--series NAME]
 
 <out dir> is <run>/dataset/<episode>. --panels limits steps 1-6 to those boxes and skips steps 7-10d, which read
 the whole episode (identity and the voices pay for it): run them again without --panels.
@@ -73,6 +73,11 @@ the whole episode (identity and the voices pay for it): run them again without -
 9. Motion (motion.motion_step, no paid call): the accents the rules fire on that clock (a pop on a speech line
    whose speaker changed, a cut on the first shout of a run, one impact per stretch of sound effects), saved as
    <episode>/motion/motion.json for checking; the export decides them again on its own clock and writes the tracks.
+9b. Sound effects (sfx.sfx_step): a sound for every balloon of kind sfx. One Sonnet call over the episode's sound
+   effects, each with its frame's crop, place and the lines around it, describes each sound and its length (capped
+   by the balloon's slot on the clock); each is made once on ElevenLabs Sound Effects v3 (fal, 0.002 USD a second),
+   trimmed, faded and levelled with the voices; <episode>/sfx/. About 0.05 USD an episode. A sound the cap refuses is
+   left for the next run (the run exits 1 saying so); its balloon stays silent until then.
 10. Settings and score (score.score_step): the places each frame is drawn in (one
    Sonnet call over contact sheets of the erased backdrops, settings.py), the music reviewer's spans with a mood and
    a role (one text-only Sonnet call), and one Lyria song per setting and mood used, cut to a loop (score.py). The
@@ -286,7 +291,8 @@ def lettering_step(ep: Episode, seg, imgs: Imgs, chapters: Path, review_on: bool
             log[f"p{i} sfx"] = {s: statuses.count(s) for s in sorted(set(statuses))}
         return found
 
-    return segmentation_step("lettering", ep, seg, imgs, review_on, log, segment, top_order)
+    return segmentation_step("lettering", ep, seg, imgs, review_on, log, segment,
+                             lambda found: top_order(B.drop_bridges(found)))
 
 
 def characters_step(ep: Episode, seg, imgs: Imgs, review_on: bool, log: dict) -> Masks:
@@ -335,6 +341,7 @@ def main() -> None:
                          "transcripts)")
     ap.add_argument("--no-identity", action="store_true", help="skip steps 7-8 (identity and voices)")
     ap.add_argument("--no-voices", action="store_true", help="skip step 8 (voice design and the recorded lines)")
+    ap.add_argument("--no-sfx", action="store_true", help="skip step 9b (the sounds of the lettered sound effects)")
     ap.add_argument("--no-music", action="store_true", help="skip step 10 (settings, the music reviewer, the tracks)")
     ap.add_argument("--no-places", action="store_true", help="skip step 10c (the places shown through the walls)")
     ap.add_argument("--series", default="",
@@ -422,7 +429,7 @@ def main() -> None:
     net.shutdown()
     if not a.segment_only:
         timed("6 speakers", speakers_step, ep, list(imgs))
-    late, waiting = not a.segment_only and not a.panels, 0
+    late, waiting, silent = not a.segment_only and not a.panels, 0, 0
     if not a.segment_only and a.panels:
         # identity, voices, the clock, the music, the places and the props read the whole episode (and identity and
         # the voices pay for it): a run on some boxes leaves them as they are
@@ -441,6 +448,9 @@ def main() -> None:
         timed("8b clock", clock.clock_step, ep, len(ch))
         import motion
         timed("9 motion", motion.motion_step, ep, len(ch))
+    if late and not a.no_sfx:
+        import sfx
+        silent = timed("9b sound effects", sfx.sfx_step, ep, ch, len(ch))
     if late and not a.no_music:
         import score
         timed("10 settings + score", score.score_step, ep, len(ch))
@@ -455,6 +465,9 @@ def main() -> None:
     if waiting:
         raise SystemExit(f"voices incomplete: {waiting} voices or voiced lines are missing (step 8 says why); "
                          f"run again, on another day if it was the daily TTS limit")
+    if silent:
+        raise SystemExit(f"sound effects incomplete: {silent} have no sound yet (step 9b says why); run again to make "
+                         f"them, the rest is current")
 
 
 if __name__ == "__main__":

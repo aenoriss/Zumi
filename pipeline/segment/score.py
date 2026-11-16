@@ -523,11 +523,12 @@ def envelope(man: dict, spans: dict, tracks: dict, settings: dict) -> dict[str, 
             want_track[j] = None
             want_level[j] = 0.0
             j += 1
-    # voice: a duck window around every voiced bubble; short gaps stay ducked
+    # voice: a duck window around every voiced bubble; short gaps stay ducked. A sound effect's clip (sfx.py) is a
+    # short accent above the bed and ducks nothing
     voice = np.zeros(n, dtype=bool)
     for p in man["panels"]:
         for b in p.get("bubbles") or []:
-            if b.get("audio"):
+            if b.get("audio") and b.get("kind") != "sfx":
                 a, e = b["startTime"] - ATTACK_S, (b.get("endTime") or b["startTime"]) + RELEASE_S
                 voice[max(0, int(a / STEP)):min(n, int(e / STEP) + 1)] = True
     gap = int(SWELL_GAP_S / STEP)
@@ -633,9 +634,9 @@ def check(man: dict, env: dict[str, list[list[float]]]) -> list[str]:
     bad = []
     for p in man["panels"]:
         for b in p.get("bubbles") or []:
-            if not b.get("audio"):
+            if not b.get("audio") or b.get("kind") == "sfx":
                 continue
-            mid = (b["startTime"] + (b.get("endTime") or b["startTime"])) / 2
+            mid =(b["startTime"] + (b.get("endTime") or b["startTime"])) / 2
             total = sum(gain_at(k, mid) for k in env.values())
             if total > LEVEL["lead"] * DUCK + 0.03:
                 bad.append(f"{p['id']}/{b['id']}: {total:.2f} under a voice")

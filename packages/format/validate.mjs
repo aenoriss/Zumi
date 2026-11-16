@@ -10,7 +10,7 @@
    With the files (a .zumi or a folder) also: every path the manifest names exists; each scene.glb's nodes carry
    the extras the manifest points at (speakerCard and animation targets resolve to a node's extras.card, pins to
    cards of the shaken frame, lettering nodes name a bubble, cast ids exist); panel and place materials are unlit
-   and no panel texture is over 2048 px; voice clips are 24 kHz mono 16-bit PCM WAV. */
+   and no panel texture is over 2048 px; voice clips are 24 kHz and sound-effect clips 44.1 kHz mono 16-bit PCM WAV. */
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
@@ -150,7 +150,9 @@ function check(m, files, errors) {
       if (b.speakerId && !castIds.has(b.speakerId)) errors.push(`${who}: unknown speaker ${b.speakerId}`);
       if (b.anchorLayer && !layerIds.has(b.anchorLayer)) errors.push(`${who}: unknown anchorLayer ${b.anchorLayer}`);
       if (b.frame !== undefined && frameIds.size && !frameIds.has(b.frame)) errors.push(`${who}: frame ${b.frame} is not one of the panel's frames`);
-      if (b.kind === "sfx" && (b.audio || b.speakerCard || b.speakerId)) errors.push(`${who}: a sound effect has no speaker and no audio`);
+      if (b.kind === "sfx" && (b.speakerCard || b.speakerId)) errors.push(`${who}: a sound effect has no speaker`);
+      const sfxClip = b.audio?.includes("/sfx/");
+      if (b.audio && sfxClip !== (b.kind === "sfx")) errors.push(`${who}: ${b.kind === "sfx" ? "a sound effect's audio is panels/<id>/sfx/<bubble>.wav" : "only a sound effect's audio is under sfx/"}`);
       if (b.kind === "sfx" || b.frame !== undefined || b.speakerCard !== undefined) uses11.push(who);
       if (b.speakerCard !== undefined) {
         const [a, c] = b.speakerCard.includes("/") ? b.speakerCard.split("/") : [p.id, b.speakerCard];
@@ -165,9 +167,10 @@ function check(m, files, errors) {
         need(who, b.audio);
         if (files.has(b.audio)) {
           const h = files.read(b.audio, 0, 44);
+          const rate = sfxClip ? 44100 : 24000;
           const ok = h.toString("latin1", 0, 4) === "RIFF" && h.toString("latin1", 8, 16) === "WAVEfmt " && h.readUInt16LE(20) === 1 &&
-            h.readUInt16LE(22) === 1 && h.readUInt32LE(24) === 24000 && h.readUInt16LE(34) === 16 && h.toString("latin1", 36, 40) === "data";
-          if (!ok) errors.push(`${who}: ${b.audio} is not 24 kHz mono 16-bit PCM WAV with a 44-byte header`);
+            h.readUInt16LE(22) === 1 && h.readUInt32LE(24) === rate && h.readUInt16LE(34) === 16 && h.toString("latin1", 36, 40) === "data";
+          if (!ok) errors.push(`${who}: ${b.audio} is not ${rate / 1000} kHz mono 16-bit PCM WAV with a 44-byte header`);
         }
       }
     }

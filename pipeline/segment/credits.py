@@ -68,6 +68,10 @@ PER_PANEL = {"openrouter": 0.0123, "bfl": 0.035}
 # twice. Gemini: six Lyria songs (lyria.PRICE 0.08; score.MAX_TRACKS allows 8).
 PER_EPISODE = {"openrouter": 0.645 + PLACES * 0.012, "bfl": PLACES * (0.12 + PROPS * 0.015),
                "fal": PLACES * PROPS * 0.02 * 1.5, "gemini": 6 * 0.08}
+# the sound effects (sfx.py): a sound on fal at fal.SFX_USD_PER_S 0.002 a second, bought about SFX_S long, and the
+# planning call on OpenRouter (Sonnet, a crop a sound effect: sfx.estimate_plan_usd); SFX_PER_PANEL when the speaker
+# records are not at hand (the one episode with them: 6 in 28 boxes)
+SFX_PER_PANEL, SFX_S, SFX_USD_PER_S, SFX_PLAN_USD = 0.25, 2.0, 0.002, 0.03
 VOICE_USD = {"gemini": (GEMINI_LINE_USD, gemini_tts.DESIGN_USD), "inworld": (INWORLD_LINE_USD, 0.01)}  # (a line, a design)
 KEYS = {"openrouter": "OPENROUTER_API_KEY", "bfl": "BFL_API_KEY", "fal": "FAL_KEY", "gemini": "GEMINI_API_KEY",
         "inworld": "INWORLD_API_KEY"}
@@ -168,13 +172,28 @@ def voice_requests(panels: int, out: Path | None = None) -> tuple[int, int, str]
     return max(0, lines - made), 0 if made else VOICES, f"counted from the speaker records, {made} lines already recorded"
 
 
-def needed(panels: int, lines: int | None = None, designs: int = VOICES) -> dict[str, float]:
+def sfx_count(panels: int, out: Path | None = None) -> int:
+    """The sound effects an episode has: its speaker records' balloons of kind sfx with text when its out dir has
+    them, else SFX_PER_PANEL a box. Those already made are not taken off (a sound costs a fraction of a cent)."""
+    records = sorted(Path(out).glob("parallax/mesh/*.speakers.json")) if out else []
+    if not records:
+        return math.ceil(SFX_PER_PANEL * panels)
+    return sum(1 for f in records for r in json.loads(f.read_text(encoding="utf-8")).get("records", [])
+               if r.get("kind") == "sfx" and (r.get("text") or "").strip())
+
+
+def needed(panels: int, lines: int | None = None, designs: int = VOICES, sfx: int | None = None) -> dict[str, float]:
     """The estimate per provider for an episode of this many boxes, MARGIN included; the voices' lines and designs
-    on the backend's provider. Only the providers the run uses."""
+    on the backend's provider, the sound effects on fal and their plan on OpenRouter. Only the providers the run
+    uses."""
     lines = math.ceil(LINES_PER_PANEL * panels) if lines is None else lines
+    sfx = math.ceil(SFX_PER_PANEL * panels) if sfx is None else sfx
     tts = tts_backend()
     usd = {p: PER_PANEL.get(p, 0) * panels + PER_EPISODE.get(p, 0) for p in KEYS if p in PER_EPISODE or p == tts}
     usd[tts] += lines * VOICE_USD[tts][0] + designs * VOICE_USD[tts][1]
+    if sfx:
+        usd["fal"] += sfx * SFX_S * SFX_USD_PER_S
+        usd["openrouter"] += SFX_PLAN_USD
     return {p: round(v * (1 + MARGIN), 2) for p, v in usd.items()}
 
 
@@ -223,7 +242,7 @@ def check(panels: int = DEFAULT_PANELS, cap_left: float | None = None, out: Path
     requests already counted today, when the caller knows better than this machine's files (the batch runner, which
     reads the volume's). out: the episode's out dir, to count its lines."""
     lines, designs, basis = voice_requests(panels, out)
-    need, table, stated, marked = needed(panels, lines, designs), {}, anchors(), spend.depleted()
+    need, table, stated, marked = needed(panels, lines, designs, sfx_count(panels, out)), {}, anchors(), spend.depleted()
     for p in need:
         key = _key(p)
         if key is None:
