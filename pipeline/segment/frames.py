@@ -180,6 +180,9 @@ TOUCH_PX = 3       # px: a piece this close to a frame touches it and joins it; 
 DUST_PX = 50       # px: a loose piece smaller than this is page dust, not a frame (37-p000: 9 px; 37-p016: specks <= 38)
 TEXT_MIN = MIN_FRAME_PX  # px a text region must hold, outside the panels and the page, to be a flat frame of its
                          # own: the smallest frame the layers lay out
+BALLOON_EDGE = 0.015     # share of the box's longer side: a balloon's rim, its inner grey shading and its drawn outline
+                         # (2026-11-16: 20-40 px on a 2812 px box); also how far inside a lettering mask its white must
+                         # lie to seed balloon_rest, which a sound effect's strokes, thinner, never are
 CACHE = OR.ROOT / ".data/cache/panels"
 # The prompt's history (docs/research/frame-prompt-committee-2026-10.md); the old texts stay because the cache keys
 # of their answers are made from them:
@@ -470,6 +473,31 @@ def _fit(b, T: np.ndarray, w: int, h: int) -> tuple[int, int, int, int]:
     return (max(0, x0n), max(0, y0n), min(w, x1n), min(h, y1n))
 
 
+def balloon_rest(rgb: np.ndarray, letters: np.ndarray, free: np.ndarray) -> np.ndarray:
+    """The part of a balloon its lettering mask stops short of, within `free` (outside every panel and the page):
+    the white (min channel >= 245) connected to the white deep inside a lettering mask, the letters it encloses, and
+    its rim (BALLOON_EDGE of the box's longer side: shading and outline). 2026-11-16: a balloon over a gutter whose
+    mask stopped at a straight line a third of the way up left its outline and letters below as art outside every
+    panel (its white inside was page by the flat page colour): the pieces touching a frame joined it, and the frame's
+    rectangle (step 7) ran out under the balloon to its far side (a 1030 px wide frame grew to 1640); the rest formed
+    a loose sliver frame behind the words. The seeds lie BALLOON_EDGE inside the masks, so a mask's fringe past the
+    outline, where it touches art, floods nothing, nor does a sound effect: only a balloon's inside is that wide.
+    Flooding light grey as well (min channel >= 150) ran from sound effects through whole panels of light art."""
+    from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, label as cc
+    if not letters.any() or not free.any():
+        return np.zeros(letters.shape, bool)
+    edge = max(2, round(BALLOON_EDGE * max(letters.shape)))
+    light = rgb.min(axis=2) >= 245
+    seeds = light & binary_erosion(letters, iterations=edge)
+    comps, _ = cc(light & (letters | free))
+    ids = np.unique(comps[seeds])
+    inside = binary_fill_holes(np.isin(comps, ids[ids > 0]))
+    rest = inside & free & ~letters
+    if not rest.any():
+        return rest
+    return binary_dilation(rest, iterations=edge) & free & ~letters
+
+
 @dataclass
 class Split:
     """A box's frames: masks (exclusive; with the page they cover the box), which of them are flat (text, credits:
@@ -557,6 +585,10 @@ def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.
     lettering = letters if letters is not None else np.zeros((h, w), bool)
     # lettering past every panel (a bubble breaking the border) is drawn by the lettering layer, unclipped: it joins
     # no frame, or its overhang grew the frame into bumps (39-p008)
+    # nor does the rest of a balloon its mask stops short of (balloon_rest): it is page, as a bubble on the page is in
+    # gutter(). It is found outside the gutter only, not the flat page colour, which takes the white inside such a
+    # balloon for page and leaves its outline and letters as art
+    page |= balloon_rest(rgb, lettering, (lab_ == 0) & ~gutter)
     spill = (lab_ == 0) & ~page & ~lettering
     if spill.any() and (lab_ > 0).any():
         dist, (iy, ix) = distance_transform_edt(lab_ == 0, return_indices=True)
