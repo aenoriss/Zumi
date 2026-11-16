@@ -149,7 +149,7 @@ float ZumiKeyShare(float2 p)
     return lerp(_Edge.z, 1.0, 1.0 - smoothstep(0.0, max(_Edge.w, 1e-4), past));
 }
 
-// metres over the sill within which the notches ease in: the sill stays straight, a flat ledge things can rest on
+// metres over the sill within which the notches ease in: the sill stays straight (no prop rests on it: ZumiPropPlacer)
 #define ZUMI_SILL_EASE 0.3
 
 // the outline with the broken wall's notches (as much of them as `notched`), the whole figure grown from the middle

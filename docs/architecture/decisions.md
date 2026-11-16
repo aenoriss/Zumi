@@ -55,12 +55,12 @@ These replace the rows above where they differ (Layout, Pacing, Input).
 | Decision | Choice |
 |---|---|
 | Panel | Floating at reading distance in front of the reader, viewed from the panel's own camera point: constant distance, each panel sized by its shape. |
-| Place | Shown on the nearest wall behind the panel, the wall found with Meta's scene understanding (MRUK). With no scanned room, the place stands behind the panel at a reasonable distance. |
+| Place | Shown on the nearest wall behind the panel, the wall found with Meta's scene understanding (MRUK). With no scanned room, the place stands behind the panel at a reasonable distance. Behind each place's meshes a soft backdrop (its view blurred, easing into its ambient light past the view's edge) fills the hole, so a head moved off the seat never sees a void at the hole's edge (2026-11-16). |
 | Seat | One fixed seat: the place's centre and the origin of its directions. |
 | Time | The episode plays on its clock by itself. A circular menu on the hand pauses, goes forward and goes back; the pinch-swipe of the carousel goes away. |
 | Lines without a voice | Shown as timed text at the clock's reading speed; no setting. The pipeline's job is that every speaking character has a voice. |
 | Episodes | Shipped inside the app for now; the episode source is still a seam a download can replace. |
-| Room | The place's own light and props dress the room. The candle ritual of room design v7 is superseded; its principles stay: the room changes slowly, the panel is exempt from the room's grade, the reader can turn room effects down or off. |
+| Room | The place's own light and props dress the room. Only furniture stands on the floor; every other prop rests on a real table or shelf, never on the hole's sill and never within 0.3 m of the hole, or is left out (2026-11-16). The candle ritual of room design v7 is superseded; its principles stay: the room changes slowly, the panel is exempt from the room's grade, the reader can turn room effects down or off. |
 | Animation | Rule-based accents only, written by the pipeline as tracks in `animations` and played by the reader: a pop on a speech line whose speaker changed, a cut on the first shout of a run, one impact per stretch of sound effects. What the pipeline writes, the reader shows; "motion off" is a comfort switch in the hand menu. |
 | Out of this catch-up | Library, rooms and sync, orbs, emotes, pause vote; the single clock is built so a networked one can replace it. |
 

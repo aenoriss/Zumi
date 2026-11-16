@@ -14,22 +14,39 @@ namespace Zumi
     /// Load: the page scanner. First the reader touches the surface they will scan on (a hint with a fingertip coming
     /// down asks for it): an index fingertip coming down onto a level surface of the scanned room (a table's or any
     /// furniture's top), or, without one, a fingertip that came down and holds still for TouchStillSeconds below the
-    /// chest (its height is the desk's). A ripple spreads where it touched, and a page-shaped guide (A4) lies centred
-    /// there: square to the surface's edge nearest the reader when the surface is known, else facing the reader.
-    /// The reader lays a pencil page in it and presses the Scan disc to the right of the guide (poked, or pointed at
-    /// and pinched): the guide's area of the passthrough camera image is straightened to a full-size page (each corner
-    /// projected into the image with the camera's pose and intrinsics, then a homography drawn by ZumiWarp), a light
-    /// sweeps the guide, and the page flies onto a stack floating beside the reader. The small disc beside Scan takes
-    /// the last page off the stack. The reader presses Done under the stack. The discs stand a little above the desk,
-    /// tilted toward the reader, so a fingertip can press through them before it meets the table. With no camera
-    /// access on the headset, or in the editor, a press takes the making-of's next pencil page instead; with the
-    /// camera there but not yet giving images, the disc shakes and the caption says so.
+    /// chest (its height is the desk's). A ripple spreads where it touched, and a guide lies centred there: a grid of
+    /// A4 portrait slots (Layouts, columns x rows, SlotGap apart, numbered faintly in reading order, the top row the
+    /// one farthest from the reader), square to the surface's edge nearest the reader when the surface is known, else
+    /// facing the reader, and kept on that surface's top. The Grid disc cycles the layouts the table's top has room
+    /// for (all of them on an unknown surface); the grid grows from its near right corner, so the discs stay put. The
+    /// grip under the grid slides the whole guide along the table (ZumiGuideDrag).
+    /// The reader lays pencil pages in the slots and presses the Scan disc right of the grid's near edge (poked, or
+    /// pointed at and pinched): one passthrough camera image is taken, every slot is projected into it with the
+    /// camera's pose and intrinsics and straightened to a full-size page by its own homography (ZumiWarp), a light
+    /// sweeps the grid, and the pages fly onto a stack floating left of the grid (the buttons are on its right) in slot order (at most the pages the episode
+    /// has left). If any slot is out of the camera's image the press takes nothing: those slots flush red and the
+    /// caption asks the reader to step back. The small disc beside Scan takes the last press's pages off the stack. The
+    /// reader presses Done under the stack. The discs stand a little above the desk, tilted toward the reader, so a
+    /// fingertip can press through them before it meets the table. With no camera access on the headset, or in the
+    /// editor, a press takes the making-of's next pencil pages instead; with the camera there but not yet giving
+    /// images, the disc shakes and the caption says so.
     /// </summary>
     public class ZumiScanner : MonoBehaviour
     {
         public const float DoneRadius = 0.03f;
-        /// <summary>A4, metres.</summary>
+        /// <summary>A4, metres: one slot.</summary>
         public static readonly Vector2 Guide = new(0.21f, 0.297f);
+        /// <summary>Metres between slots; and the margin the grid keeps inside a known table's top.</summary>
+        public const float SlotGap = 0.015f, FitMargin = 0.02f;
+        /// <summary>The grid's layouts, columns x rows, in the order the Grid disc steps through them.</summary>
+        public static readonly Vector2Int[] Layouts =
+        {
+            new(1, 1), new(2, 1), new(3, 1), new(2, 2), new(3, 2), new(4, 2), new(5, 2), new(5, 3),
+        };
+        /// <summary>The first layout is the largest that fits, up to this one (3 x 2): 5 x 3 is big.</summary>
+        public const int DefaultLayoutCap = 4;
+        /// <summary>Pages the demo episode has, when the making-of's pages are not loaded.</summary>
+        public const int DemoPages = 10;
         /// <summary>The touch on a known surface: the fingertip within this of its top (above it, or pressed through
         /// it, as tracking allows), having been at least TouchDrop above it within TouchWindow seconds; the footprint
         /// is widened by TouchMargin.</summary>
@@ -41,22 +58,35 @@ namespace Zumi
         public const float TouchStillSeconds = 0.4f, StillRadius = 0.008f, StillDrop = 0.04f, BelowEye = 0.35f;
         /// <summary>The ripple: seconds, and its radius from start to end.</summary>
         public const float RippleSeconds = 0.8f, RippleFrom = 0.008f, RippleTo = 0.07f;
-        public const float FlySeconds = 0.9f;
-        /// <summary>The capture: the guide's outline brightens and a light sweeps it once, far edge to near.</summary>
-        public const float SweepSeconds = 0.4f;
-        /// <summary>The Scan button stands to the right of the guide: its radius, and the gap to the guide.</summary>
-        public const float ScanRadius = 0.028f, ScanGap = 0.075f;
+        public const float FlySeconds = 0.9f, FlyStagger = 0.08f;
+        /// <summary>The capture: the slots' outlines brighten and a light sweeps the grid once, far edge to near.</summary>
+        public const float SweepSeconds = 0.5f;
+        /// <summary>The Scan button stands right of the grid's near edge: its radius, the gap to the grid, and its
+        /// centre's distance in from the near edge.</summary>
+        public const float ScanRadius = 0.028f, ScanGap = 0.075f, ScanInset = 0.04f;
         /// <summary>Undo, a small disc right of Scan: its radius, the gap between the two; a page taken off drops and fades.</summary>
         public const float UndoRadius = 0.016f, UndoGap = 0.016f, UndoSeconds = 0.4f;
+        /// <summary>Grid, a disc beyond Scan (away from the reader) that steps through the layouts: its radius and gap.</summary>
+        public const float GridRadius = 0.026f, GridGap = 0.018f;
+        /// <summary>The grip: a pill this far outside the grid's near edge, and its grab box.</summary>
+        public const float GripOut = 0.03f;
+        public static readonly Vector3 GripBox = new(0.14f, 0.05f, 0.04f);
         /// <summary>The discs lean this many degrees toward the reader, their near edge this far above the desk (a
         /// fingertip must pass through a disc's plane before it meets the table); a ray or a poke counts within
         /// HitRadius of a disc's centre at least (4 cm and more across, wider than the small disc drawn).</summary>
         public const float DiscTilt = 35f, DiscClearance = 0.015f, HitRadius = 0.022f;
         /// <summary>Hovered: the disc grows by this; pressed: it dips, then springs back; refused: it shakes.</summary>
         public const float HoverScale = 1.08f, PressSeconds = 0.25f, ShakeSeconds = 0.4f;
-        public const string CameraNotReady = "Camera not ready yet", OpeningLine = "Upload your sketches";
+        /// <summary>Seconds the slots out of the camera's view stay red.</summary>
+        public const float OutOfViewSeconds = 1f;
+        public const string CameraNotReady = "Camera not ready yet", OpeningLine = "Upload your sketches",
+            StepBack = "Step back so I can see every page";
         /// <summary>The stack: metres ahead of the eye, to its left, below it; a stacked page's height.</summary>
         public const float StackAhead = 0.55f, StackSide = -0.36f, StackDrop = 0.12f, StackPageHeight = 0.2f;
+        /// <summary>Once the guide lies on the desk the stack floats to the left of the grid (owner, 2026-11-16): this
+        /// far left of its left edge, its middle this high above the desk and this far in from the grid's near edge;
+        /// it follows the grid as it slides or changes layout, facing the reader.</summary>
+        public const float StackBeside = 0.17f, StackAbove = 0.22f, StackIn = 0.15f;
         /// <summary>The straightened page's pixels.</summary>
         public const int CaptureHeight = 1000;
         const string CameraPermission = "horizonos.permission.HEADSET_CAMERA";
@@ -70,7 +100,10 @@ namespace Zumi
         public string LastRefusal { get; private set; }
         public bool ScanHovered => scanDisc != null && scanDisc.Hovered;
         public bool UndoHovered => undoDisc != null && undoDisc.Hovered;
+        public bool GridHovered => gridDisc != null && gridDisc.Hovered;
         public int PagesCaptured => captures.Count;
+        /// <summary>Pages the last press added.</summary>
+        public int LastBatch { get; private set; }
         /// <summary>Where the guide was laid: "touch TABLE" (a known surface, its label), "touch still" (no surface known),
         /// "tool".</summary>
         public string GuideSource { get; private set; }
@@ -78,7 +111,23 @@ namespace Zumi
         public int TouchSurfaces => surfaces.Count;
         public Vector3 TouchPoint { get; private set; }
         public Vector3 GuideCentre => guide ? guide.position : default;
-        /// <summary>"camera" when the passthrough camera gave the last page, "fallback" when a pencil page stood in.</summary>
+        /// <summary>The height the guide was laid at (the table's top); it never leaves it.</summary>
+        public float GuidePlaneY { get; private set; }
+        /// <summary>The guide lies on a known table's top (it is kept on it).</summary>
+        public bool OnKnownTable => tableKnown;
+        /// <summary>Metres the guide's footprint reaches past the known table's top (0 on it, or with no table).</summary>
+        public float GuideOffTable => OffTable();
+        /// <summary>"3x2": the grid's columns and rows.</summary>
+        public string LayoutName => layout >= 0 ? $"{Layouts[layout].x}x{Layouts[layout].y}" : null;
+        public int SlotCount => layout >= 0 ? Layouts[layout].x * Layouts[layout].y : 0;
+        /// <summary>The layouts the Grid disc offers here.</summary>
+        public int LayoutsOffered { get { var n = 0; for (var i = 0; i < Layouts.Length; i++) if (Fits(i)) n++; return n; } }
+        public bool GuideDragging => drag && drag.Dragging;
+        public bool GripHovered => drag && drag.Hovered;
+        public float GuideSlid => drag ? drag.Slid : 0f;
+        /// <summary>Slots out of the camera's image at the last refused press.</summary>
+        public int SlotsOutOfView { get; private set; }
+        /// <summary>"camera" when the passthrough camera gave the last pages, "fallback" when pencil pages stood in.</summary>
         public string LastCaptureSource { get; private set; }
         public bool CameraPlaying => cameraAccess && cameraAccess.enabled && cameraAccess.IsPlaying;
 
@@ -87,31 +136,43 @@ namespace Zumi
             public Texture texture;
             public Transform card;
             public string source;
+            internal int slot;
+            internal Pose from;
+            internal Vector3 fromScale;
         }
         public IReadOnlyList<Capture> Captures => captures;
 
         Shader flat;
         ZumiCaption caption;
         ZumiMakingOfData data;
-        Transform guide, stack;
-        TextMesh counter;
+        Transform guide, stack, slotsRoot, grip;
+        TextMesh counter, hint, gridLabel;
         readonly ZumiDraw.Parts guideParts = new() { blended = true, queue = 3200 };
+        readonly ZumiDraw.Parts slotParts = new() { blended = true, queue = 3200 };
         readonly ZumiDraw.Parts stackParts = new() { blended = true, queue = 3300 };
         readonly List<Capture> captures = new();
+        readonly List<int> batches = new();
         readonly ZumiPinch pinch = new();
         PassthroughCameraAccess cameraAccess;
+        bool intrinsicsLogged;
         Material warp;
         float stateSince;
-        Disc scanDisc, undoDisc;
-        static readonly Color RingColour = ZumiDraw.Hex(0xD9C7B4);
+        Disc scanDisc, undoDisc, gridDisc;
+        ZumiGuideDrag drag;
+        static readonly Color RingColour = ZumiDraw.Hex(0xD9C7B4), RedInk = ZumiDraw.Hex(0xC2452D);
         static readonly Color CornersColour = new(ZumiDraw.FaintInk.r, ZumiDraw.FaintInk.g, ZumiDraw.FaintInk.b, 0.85f);
-        Material outlineMaterial, cornersMaterial;
-        Color outlineColour;
+        static readonly Color OutlineColour = new(ZumiDraw.Ink.r, ZumiDraw.Ink.g, ZumiDraw.Ink.b, 0.35f);
+        static readonly Color GripColour = new(ZumiDraw.SoftInk.r, ZumiDraw.SoftInk.g, ZumiDraw.SoftInk.b, 0.7f);
+        readonly List<Material> slotOutlines = new();
+        Material cornersMaterial, gripMaterial;
+        bool[] outOfView = new bool[0];
+        float outOfViewAt = -10f;
         Transform sweep;
         Pose head;
-        Capture flying, removing;
-        Pose flyFrom;
-        Vector3 flyFromScale;
+        readonly List<Capture> taking = new(), flying = new(), removing = new();
+        int layout = -1;
+        bool tableKnown;
+        Surface table;
 
         public System.Action Finished;
 
@@ -152,7 +213,7 @@ namespace Zumi
             cameraAccess.RequestedResolution = new Vector2Int(1280, 960);
             Debug.Log($"[ZumiScan] passthrough camera starting (permission {(granted ? "granted" : "requested")})");
 #else
-            Debug.Log("[ZumiScan] no passthrough camera in the editor; a press takes the making-of's next pencil page");
+            Debug.Log("[ZumiScan] no passthrough camera in the editor; a press takes the making-of's next pencil pages");
 #endif
         }
 
@@ -165,6 +226,20 @@ namespace Zumi
             if (!cameraAccess.enabled) return "camera access disabled";
             if (!cameraAccess.IsPlaying) return "camera not playing";
             return null;
+        }
+
+        // the camera's real field of view, once, from its intrinsics over the image it gives
+        void LogIntrinsics()
+        {
+            if (intrinsicsLogged || !CameraPlaying) return;
+            intrinsicsLogged = true;
+            var k = cameraAccess.Intrinsics;
+            Vector2 sensor = k.SensorResolution, image = cameraAccess.CurrentResolution;
+            var scale = image / sensor;
+            scale /= Mathf.Max(scale.x, scale.y);
+            var crop = Vector2.Scale(sensor, scale);
+            float h = 2f * Mathf.Atan(crop.x / 2f / k.FocalLength.x) * Mathf.Rad2Deg, v = 2f * Mathf.Atan(crop.y / 2f / k.FocalLength.y) * Mathf.Rad2Deg;
+            Debug.Log($"[ZumiScan] camera intrinsics: focal {k.FocalLength:F1}, principal {k.PrincipalPoint:F1}, sensor {k.SensorResolution}, image {cameraAccess.CurrentResolution}; field of view {h:F1} x {v:F1} degrees");
         }
 
         // ---- the guide on the desk -------------------------------------------------------------------------------
@@ -181,6 +256,9 @@ namespace Zumi
                 var d = p - centre;
                 return Mathf.Abs(Vector2.Dot(d, axis)) <= half.x + margin && Mathf.Abs(Vector2.Dot(d, ZumiRoom.Perp(axis))) <= half.y + margin;
             }
+
+            /// <summary>Half its extent along a level direction.</summary>
+            public float Reach(Vector2 dir) => Mathf.Abs(Vector2.Dot(dir, axis)) * half.x + Mathf.Abs(Vector2.Dot(dir, ZumiRoom.Perp(axis))) * half.y;
 
             /// <summary>Level, pointing into the surface from its edge nearest the eye.</summary>
             public Vector3 Inward(Vector2 eye)
@@ -246,10 +324,11 @@ namespace Zumi
         readonly List<TipTrack> tips = new();
 
         // an index fingertip coming down onto a known surface, or (none known) coming down and holding still
-        bool Touched(out Vector3 at, out Vector3 away, out string source)
+        bool Touched(out Vector3 at, out Vector3 away, out string source, out int on)
         {
             at = away = default;
             source = null;
+            on = -1;
             var now = Time.time;
             var eye = ZumiRoom.Flat(head.position);
             var i = 0;
@@ -262,8 +341,9 @@ namespace Zumi
                 var flat = ZumiRoom.Flat(p);
                 if (surfaces.Count > 0)
                 {
-                    foreach (var s in surfaces)
+                    for (var k = 0; k < surfaces.Count; k++)
                     {
+                        var s = surfaces[k];
                         if (!s.Over(flat, TouchMargin) || p.y > s.top + TouchAbove || p.y < s.top - TouchBelow) continue;
                         var cameDown = false;
                         foreach (var (t, q) in track.history)
@@ -272,6 +352,7 @@ namespace Zumi
                         at = new Vector3(p.x, s.top, p.z);
                         away = s.Inward(eye);
                         source = "touch " + s.label;
+                        on = k;
                         return true;
                     }
                     continue;
@@ -295,9 +376,11 @@ namespace Zumi
             return false;
         }
 
-        void Place(Vector3 at, Vector3 away, string source)
+        void Place(Vector3 at, Vector3 away, string source, int on)
         {
             TouchPoint = at;
+            tableKnown = on >= 0;
+            if (tableKnown) table = surfaces[on];
             HideTouchHint();
             Ripple(at, away);
             Debug.Log($"[ZumiScan] touched at {at:F3} ({source})");
@@ -305,11 +388,63 @@ namespace Zumi
             Lay(at + Vector3.up * 0.002f, away, source);
         }
 
-        /// <summary>Lays the guide as a touch there would (tools and tests).</summary>
+        /// <summary>Lays the guide as a touch there would (tools and tests): on the known surface under the point, if
+        /// there is one.</summary>
         public void TouchAt(Vector3 at)
         {
             if (State != "waiting_desk") return;
-            Place(at, Vector3.ProjectOnPlane(at - head.position, Vector3.up), "tool");
+            var eye = ZumiRoom.Flat(head.position);
+            for (var k = 0; k < surfaces.Count; k++)
+            {
+                var s = surfaces[k];
+                if (!s.Over(ZumiRoom.Flat(at), TouchMargin) || Mathf.Abs(at.y - s.top) > 0.1f) continue;
+                Place(new Vector3(at.x, s.top, at.z), s.Inward(eye), "tool " + s.label, k);
+                return;
+            }
+            Place(at, Vector3.ProjectOnPlane(at - head.position, Vector3.up), "tool", -1);
+        }
+
+        static Vector2 GridSize(Vector2Int g) => new(g.x * Guide.x + (g.x - 1) * SlotGap, g.y * Guide.y + (g.y - 1) * SlotGap);
+        Vector2 Size => GridSize(Layouts[layout]);
+
+        // the layout's grid fits the known table's top, the margin inside its edges (any fits on an unknown surface)
+        bool Fits(int i)
+        {
+            if (!tableKnown || !guide) return true;
+            var size = GridSize(Layouts[i]);
+            return size.x <= 2f * (table.Reach(ZumiRoom.Flat(guide.right).normalized) - FitMargin) + 1e-4f
+                && size.y <= 2f * (table.Reach(ZumiRoom.Flat(guide.up).normalized) - FitMargin) + 1e-4f;
+        }
+
+        // a guide centre kept on the known table's top (centred on it along a side it is longer than)
+        Vector3 Clamp(Vector3 centre)
+        {
+            if (!tableKnown || !guide || layout < 0) return centre;
+            Vector2 r = ZumiRoom.Flat(guide.right).normalized, f = ZumiRoom.Flat(guide.up).normalized;
+            var rel = ZumiRoom.Flat(centre) - table.centre;
+            var size = Size;
+            float ra = Mathf.Max(table.Reach(r) - size.x / 2f - FitMargin, 0f), rb = Mathf.Max(table.Reach(f) - size.y / 2f - FitMargin, 0f);
+            var a = Mathf.Clamp(Vector2.Dot(rel, r), -ra, ra);
+            var b = Mathf.Clamp(Vector2.Dot(rel, f), -rb, rb);
+            var flat = table.centre + r * a + f * b;
+            return new Vector3(flat.x, centre.y, flat.y);
+        }
+
+        float OffTable()
+        {
+            if (!tableKnown || !guide || layout < 0) return 0f;
+            Vector2 r = ZumiRoom.Flat(guide.right).normalized, f = ZumiRoom.Flat(guide.up).normalized;
+            var rel = ZumiRoom.Flat(guide.position) - table.centre;
+            var size = Size;
+            return Mathf.Max(0f, Mathf.Abs(Vector2.Dot(rel, r)) + size.x / 2f - table.Reach(r), Mathf.Abs(Vector2.Dot(rel, f)) + size.y / 2f - table.Reach(f));
+        }
+
+        // slot k's centre on the guide, in reading order: left to right, the far row first
+        static Vector2 SlotCentre(Vector2Int g, int k)
+        {
+            var size = GridSize(g);
+            int c = k % g.x, r = k / g.x;
+            return new Vector2(-size.x / 2f + Guide.x / 2f + c * (Guide.x + SlotGap), size.y / 2f - Guide.y / 2f - r * (Guide.y + SlotGap));
         }
 
         void Lay(Vector3 at, Vector3 away, string source)
@@ -317,35 +452,20 @@ namespace Zumi
             GuideSource = source;
             if (guide) Destroy(guide.gameObject);
             guideParts.Destroy();
+            slotParts.Destroy();
             guide = new GameObject("Scan guide").transform;
             // the guide lies flat: its -z (the side ZumiDraw draws on) faces up, its +y points away from the reader
             guide.SetPositionAndRotation(at, Quaternion.LookRotation(Vector3.down, away.sqrMagnitude > 1e-6f ? away.normalized : head.rotation * Vector3.forward));
-            ZumiDraw.Shape(flat, guideParts, "Fill", guide, 0f, new Color(1f, 1f, 1f, 0.18f), 0, ZumiDraw.Box(-Guide.x / 2f, -Guide.y / 2f, Guide.x, Guide.y));
-            const float t = 0.004f, corner = 0.04f;
-            float w = Guide.x / 2f, h = Guide.y / 2f;
-            // the four corners as quiet brackets, a faint outline between them
-            var marks = new List<Vector2[]>();
-            foreach (var (sx, sy) in new[] { (-1, -1), (1, -1), (1, 1), (-1, 1) })
-            {
-                marks.Add(ZumiDraw.Box(sx < 0 ? -w : w - corner, sy < 0 ? -h : h - t, corner, t));
-                marks.Add(ZumiDraw.Box(sx < 0 ? -w : w - t, sy < 0 ? -h : h - corner, t, corner));
-            }
-            cornersMaterial = ZumiDraw.Shape(flat, guideParts, "Corners", guide, -0.0005f, CornersColour, 1, marks.ToArray()).GetComponent<MeshRenderer>().sharedMaterial;
-            const float line = 0.0012f;
-            outlineColour = new Color(ZumiDraw.Ink.r, ZumiDraw.Ink.g, ZumiDraw.Ink.b, 0.35f);
-            outlineMaterial = ZumiDraw.Shape(flat, guideParts, "Outline", guide, -0.0003f, outlineColour, 1,
-                ZumiDraw.Box(-w, -h, 2f * w, line), ZumiDraw.Box(-w, h - line, 2f * w, line), ZumiDraw.Box(-w, -h, line, 2f * h), ZumiDraw.Box(w - line, -h, line, 2f * h)).GetComponent<MeshRenderer>().sharedMaterial;
-            // the capture's light: a soft band across the guide, swept far edge to near
-            sweep = ZumiDraw.Shape(flat, guideParts, "Sweep", guide, -0.0007f, new Color(1f, 0.93f, 0.78f, 0.9f), 1,
-                ZumiDraw.Box(-w, -0.006f, 2f * w, 0.012f), ZumiDraw.Box(-w, -0.02f, 2f * w, 0.014f));
-            sweep.gameObject.SetActive(false);
-            // everything lies flat, the right way up for the reader looking down from the seat
-            var label = ZumiDraw.Text(flat, guideParts, "Hint", guide, new Vector3(0f, -h - 0.025f, -0.001f), 0.012f, ZumiDraw.Ink, 2, "Lay a page here, then press the button");
-            label.transform.localRotation = Quaternion.identity;
-            // Scan: one cream disc to the right of the guide, a thin ring and a scan glyph, nothing else; the count is
-            // a light line under it
-            var bx = w + ScanGap;
-            scanDisc = MakeDisc("Scan", new Vector2(bx, 0f), ScanRadius, 0.0016f, how => PressScan(how));
+            GuidePlaneY = at.y;
+            // the largest layout that fits, up to 3 x 2
+            layout = 0;
+            for (var i = 0; i <= DefaultLayoutCap; i++)
+                if (Fits(i)) layout = i;
+            guide.position = Clamp(at);
+
+            // Scan: one cream disc right of the grid's near edge, a thin ring and a scan glyph; the count is a light
+            // line under it
+            scanDisc = MakeDisc("Scan", Vector2.zero, ScanRadius, 0.0016f, how => PressScan(how));
             const float g = 0.009f, s = 0.0045f, k = 0.0014f;
             var glyph = new List<Vector2[]>();
             foreach (var (sx, sy) in new[] { (-1, -1), (1, -1), (1, 1), (-1, 1) })
@@ -354,14 +474,138 @@ namespace Zumi
                 glyph.Add(ZumiDraw.Box(sx < 0 ? -g : g - k, sy < 0 ? -g : g - s, k, s));
             }
             ZumiDraw.Shape(flat, guideParts, "Glyph", scanDisc.face, -0.0006f, ZumiDraw.SoftInk, 3, glyph.ToArray());
-            counter = ZumiDraw.Text(flat, guideParts, "Counter", guide, new Vector3(bx, -ScanRadius - 0.022f, -0.001f), 0.0105f, ZumiDraw.SoftInk, 2, Count(captures.Count));
+            counter = ZumiDraw.Text(flat, guideParts, "Counter", guide, Vector3.zero, 0.0105f, ZumiDraw.SoftInk, 2, Count(captures.Count));
             counter.transform.localRotation = Quaternion.identity;
-            // Undo: a smaller disc to the right of Scan with a curved arrow, there once a page is on the stack
-            undoDisc = MakeDisc("Undo", new Vector2(bx + ScanRadius + UndoGap + UndoRadius, 0f), UndoRadius, 0.0012f, how => PressUndo(how));
+            // Undo: a smaller disc right of Scan with a curved arrow, there once a page is on the stack
+            undoDisc = MakeDisc("Undo", Vector2.zero, UndoRadius, 0.0012f, how => PressUndo(how));
             ZumiDraw.Shape(flat, guideParts, "Arrow", undoDisc.face, -0.0006f, ZumiDraw.SoftInk, 3, UndoArrow());
             undoDisc.root.gameObject.SetActive(captures.Count > 0);
+            // Grid: beyond Scan, its layout written on it
+            gridDisc = MakeDisc("Grid", Vector2.zero, GridRadius, 0.0014f, how => PressGrid(how));
+            gridLabel = ZumiDraw.Text(flat, guideParts, "Layout", gridDisc.face, new Vector3(0f, 0f, -0.0008f), 0.0085f, ZumiDraw.Ink, 3, "");
+            gridLabel.transform.localRotation = Quaternion.identity;
+            // the grip: a soft pill with three ridges under the grid's near edge; grabbing it slides the guide
+            var gripObject = new GameObject("Grip");
+            gripObject.SetActive(false);
+            grip = gripObject.transform;
+            grip.SetParent(guide, false);
+            drag = ZumiGuideDrag.Make(gripObject, guide, GripBox, Clamp);
+            ZumiDraw.Shape(flat, guideParts, "Grip plate", grip, 0f, new Color(1f, 1f, 1f, 0.55f), 1, ZumiDraw.Rounded(0.08f, 0.018f, 0.009f));
+            var ridges = new List<Vector2[]>();
+            for (var r = -1; r <= 1; r++) ridges.Add(ZumiDraw.Box(-0.022f, r * 0.004f - 0.0006f, 0.044f, 0.0012f));
+            gripMaterial = ZumiDraw.Shape(flat, guideParts, "Grip ridges", grip, -0.0005f, GripColour, 2, ridges.ToArray()).GetComponent<MeshRenderer>().sharedMaterial;
+            gripObject.SetActive(true);
+            // everything lies flat, the right way up for the reader looking down from the seat
+            hint = ZumiDraw.Text(flat, guideParts, "Hint", guide, Vector3.zero, 0.012f, ZumiDraw.Ink, 2, "");
+            hint.transform.localRotation = Quaternion.identity;
+            BuildGrid();
+            FollowGrid(true);
             Ready();
-            Debug.Log($"[ZumiScan] guide laid on {source} at {at:F2}");
+            Debug.Log($"[ZumiScan] guide laid on {source} at {guide.position:F2}, layout {LayoutName} ({LayoutsOffered} offered)");
+        }
+
+        // the slots, the sweep, and where the discs, grip and lines sit round them, for the current layout
+        void BuildGrid()
+        {
+            if (slotsRoot) Destroy(slotsRoot.gameObject);
+            slotParts.Destroy();
+            slotOutlines.Clear();
+            slotsRoot = new GameObject("Slots").transform;
+            slotsRoot.SetParent(guide, false);
+            var g = Layouts[layout];
+            var size = Size;
+            float w = Guide.x / 2f, h = Guide.y / 2f;
+            const float t = 0.004f, corner = 0.035f, line = 0.0012f;
+            var marks = new List<Vector2[]>();
+            var fills = new List<Vector2[]>();
+            for (var k = 0; k < g.x * g.y; k++)
+            {
+                var c = SlotCentre(g, k);
+                fills.Add(ZumiDraw.Box(c.x - w, c.y - h, Guide.x, Guide.y));
+                // the corners as quiet brackets, a faint outline between them, a faint number in the middle
+                foreach (var (sx, sy) in new[] { (-1, -1), (1, -1), (1, 1), (-1, 1) })
+                {
+                    marks.Add(ZumiDraw.Box(c.x + (sx < 0 ? -w : w - corner), c.y + (sy < 0 ? -h : h - t), corner, t));
+                    marks.Add(ZumiDraw.Box(c.x + (sx < 0 ? -w : w - t), c.y + (sy < 0 ? -h : h - corner), t, corner));
+                }
+                slotOutlines.Add(ZumiDraw.Shape(flat, slotParts, $"Outline {k + 1}", slotsRoot, -0.0003f, OutlineColour, 1,
+                    ZumiDraw.Box(c.x - w, c.y - h, Guide.x, line), ZumiDraw.Box(c.x - w, c.y + h - line, Guide.x, line),
+                    ZumiDraw.Box(c.x - w, c.y - h, line, Guide.y), ZumiDraw.Box(c.x + w - line, c.y - h, line, Guide.y)).GetComponent<MeshRenderer>().sharedMaterial);
+                var number = ZumiDraw.Text(flat, slotParts, $"Number {k + 1}", slotsRoot, new Vector3(c.x, c.y, -0.0004f), 0.03f,
+                    new Color(ZumiDraw.FaintInk.r, ZumiDraw.FaintInk.g, ZumiDraw.FaintInk.b, 0.45f), 1, (k + 1).ToString());
+                number.transform.localRotation = Quaternion.identity;
+            }
+            ZumiDraw.Shape(flat, slotParts, "Fill", slotsRoot, 0f, new Color(1f, 1f, 1f, 0.18f), 0, fills.ToArray());
+            cornersMaterial = ZumiDraw.Shape(flat, slotParts, "Corners", slotsRoot, -0.0005f, CornersColour, 1, marks.ToArray()).GetComponent<MeshRenderer>().sharedMaterial;
+            outOfView = new bool[g.x * g.y];
+            // the capture's light: a soft band across the whole grid, swept far edge to near
+            float W = size.x / 2f, H = size.y / 2f;
+            sweep = ZumiDraw.Shape(flat, slotParts, "Sweep", slotsRoot, -0.0007f, new Color(1f, 0.93f, 0.78f, 0.9f), 2,
+                ZumiDraw.Box(-W, -0.006f, 2f * W, 0.012f), ZumiDraw.Box(-W, -0.02f, 2f * W, 0.014f));
+            sweep.gameObject.SetActive(false);
+
+            var scanAt = new Vector2(W + ScanGap, -H + ScanInset);
+            Lift(scanDisc, scanAt, ScanRadius);
+            Lift(undoDisc, scanAt + new Vector2(ScanRadius + UndoGap + UndoRadius, 0f), UndoRadius);
+            Lift(gridDisc, scanAt + new Vector2(0f, ScanRadius + GridGap + GridRadius), GridRadius);
+            counter.transform.localPosition = new Vector3(scanAt.x, scanAt.y - ScanRadius - 0.022f, -0.001f);
+            grip.localPosition = new Vector3(0f, -H - GripOut, 0f);
+            hint.transform.localPosition = new Vector3(0f, -H - GripOut - 0.035f, -0.001f);
+            Hint();
+            gridLabel.text = $"{g.x} × {g.y}";
+        }
+
+        // the line under the grid: how many pages to lay now
+        void Hint()
+        {
+            if (!hint) return;
+            var lay = Mathf.Min(SlotCount, PageLimit - captures.Count);
+            hint.text = lay <= 0 ? "All pages are in" : lay == 1 ? "Lay a page here, then press the button" : $"Lay up to {lay} pages, then press the button";
+        }
+
+        /// <summary>Steps to the next layout that fits, as the Grid disc does (tools and tests).</summary>
+        public void NextLayout() => PressGrid("tool");
+
+        /// <summary>Sets a layout by name ("5x3"), even one the table has no room for (tools and screenshots).</summary>
+        public bool SetLayout(string name)
+        {
+            if (!guide || State != "ready") return false;
+            for (var i = 0; i < Layouts.Length; i++)
+                if ($"{Layouts[i].x}x{Layouts[i].y}" == name)
+                {
+                    ApplyLayout(i);
+                    return true;
+                }
+            return false;
+        }
+
+        void PressGrid(string how)
+        {
+            Debug.Log($"[ZumiScan] grid disc pressed ({how}), state {State}, layout {LayoutName}");
+            if (State != "ready") return;
+            gridDisc.pressedAt = Time.time;
+            for (var step = 1; step <= Layouts.Length; step++)
+            {
+                var i = (layout + step) % Layouts.Length;
+                if (!Fits(i)) continue;
+                ApplyLayout(i);
+                return;
+            }
+        }
+
+        // the new grid keeps its near right corner where it was (the discs stay under the hand), then stays on the table
+        void ApplyLayout(int i)
+        {
+            Vector3 right = guide.right, ahead = guide.up;
+            var old = Size;
+            var corner = guide.position + right * (old.x / 2f) - ahead * (old.y / 2f);
+            layout = i;
+            var size = Size;
+            var centre = Clamp(corner - right * (size.x / 2f) + ahead * (size.y / 2f));
+            centre.y = GuidePlaneY;
+            drag.Reset(centre);
+            BuildGrid();
+            Debug.Log($"[ZumiScan] layout {LayoutName} ({SlotCount} slots), guide at {centre:F2}");
         }
 
         // ---- the discs -----------------------------------------------------------------------------------------
@@ -400,9 +644,8 @@ namespace Zumi
             go.SetActive(false);
             d.root = go.transform;
             d.root.SetParent(guide, false);
-            var lift = radius * Mathf.Sin(DiscTilt * Mathf.Deg2Rad) + DiscClearance;
+            Lift(d, at, radius);
             // the guide's -z is up; turning about x by -tilt leans the disc's face (its -z) toward -y, the reader
-            d.root.localPosition = new Vector3(at.x, at.y, -lift);
             d.root.localRotation = Quaternion.Euler(-DiscTilt, 0f, 0f);
             var hit = Mathf.Max(radius, HitRadius);
             // the poke: a circle on the disc's plane, its normal (-z) toward the finger coming down
@@ -436,6 +679,12 @@ namespace Zumi
             return d;
         }
 
+        static void Lift(Disc d, Vector2 at, float radius)
+        {
+            var lift = radius * Mathf.Sin(DiscTilt * Mathf.Deg2Rad) + DiscClearance;
+            d.root.localPosition = new Vector3(at.x, at.y, -lift);
+        }
+
         // hover: a little larger, the rim amber; press: a dip into the disc and a flash; refused: a short shake
         void AnimateDisc(Disc d)
         {
@@ -451,6 +700,28 @@ namespace Zumi
             // the face's +z is into the disc
             d.face.localPosition = new Vector3(shake, 0f, 0.004f * press);
             d.ring.SetColor("_Color", Color.Lerp(RingColour, ZumiDraw.Hover, Mathf.Max(hovered ? 1f : 0f, press)));
+        }
+
+        // the grip's ridges and the slots' outlines turn amber while a hand is on or over it
+        void AnimateGrip()
+        {
+            if (!drag || !gripMaterial) return;
+            var lit = drag.Hovered || drag.Dragging;
+            gripMaterial.SetColor("_Color", lit ? ZumiDraw.Hover : GripColour);
+        }
+
+        // the slots' outlines: amber while the guide is held, red for a moment where the camera could not see
+        void AnimateOutlines(float sweepGlow)
+        {
+            var red = Time.time - outOfViewAt < OutOfViewSeconds;
+            var held = drag && (drag.Dragging || drag.Hovered);
+            for (var k = 0; k < slotOutlines.Count; k++)
+            {
+                var c = red && k < outOfView.Length && outOfView[k] ? RedInk
+                    : Color.Lerp(held ? new Color(ZumiDraw.Hover.r, ZumiDraw.Hover.g, ZumiDraw.Hover.b, 0.8f) : OutlineColour, ZumiDraw.Hover, sweepGlow);
+                slotOutlines[k].SetColor("_Color", c);
+            }
+            if (cornersMaterial) cornersMaterial.SetColor("_Color", Color.Lerp(CornersColour, Color.white, sweepGlow * 0.6f));
         }
 
         /// <summary>A curved arrow turning back: an arc over the top, its head at the left end pointing down.</summary>
@@ -622,15 +893,17 @@ namespace Zumi
         {
             AnimateRipple();
             if (State == "off" || State == "done") return;
+            LogIntrinsics();
+            var glow = 0f;
             switch (State)
             {
                 case "waiting_desk":
                     AnimateHint();
                     if (data == null) break;
-                    if (Touched(out var at, out var away, out var source)) Place(at, away, source);
+                    if (Touched(out var at, out var away, out var source, out var on)) Place(at, away, source, on);
                     break;
                 case "scanning":
-                    Sweep();
+                    glow = Sweep();
                     break;
                 case "flying":
                     Fly();
@@ -641,6 +914,28 @@ namespace Zumi
             }
             AnimateDisc(scanDisc);
             AnimateDisc(undoDisc);
+            AnimateDisc(gridDisc);
+            AnimateGrip();
+            AnimateOutlines(glow);
+            FollowGrid(false);
+        }
+
+        /// <summary>Where the stack floats: left of the grid, above the desk, facing the reader.</summary>
+        public Pose StackHome()
+        {
+            var size = Size;
+            var at = guide.position - guide.right * (size.x / 2f + StackBeside) - guide.up * (size.y / 2f - StackIn) + Vector3.up * StackAbove;
+            var eye = Camera.main ? Camera.main.transform.position : head.position;
+            return new Pose(at, ZumiFlowKit.Facing(at, eye));
+        }
+
+        // the stack (and the pages on it) eases to its place beside the grid
+        void FollowGrid(bool now)
+        {
+            if (!guide || !stack || layout < 0) return;
+            var home = StackHome();
+            var k = now ? 1f : 1f - Mathf.Exp(-10f * Time.deltaTime);
+            stack.SetPositionAndRotation(Vector3.Lerp(stack.position, home.position, k), Quaternion.Slerp(stack.rotation, home.rotation, k));
         }
 
         void Ready()
@@ -651,12 +946,13 @@ namespace Zumi
 
         // ---- capture -------------------------------------------------------------------------------------------
 
-        Capture taking;
+        int PageLimit => data != null && data.pages.Count > 0 ? data.pages.Count : DemoPages;
 
-        /// <summary>Takes the page in the guide now, as the Scan disc does (for tools and tests).</summary>
+        /// <summary>Takes the pages in the guide now, as the Scan disc does (for tools and tests).</summary>
         public void Scan() => PressScan("tool");
 
-        // the camera's image now, then the sweep, then the page flies; without camera access, the next pencil page
+        // one camera image, every slot straightened from it, then the sweep, then the pages fly; without camera
+        // access, the next pencil pages
         void PressScan(string how)
         {
             Debug.Log($"[ZumiScan] scan disc pressed ({how}), state {State}");
@@ -665,46 +961,82 @@ namespace Zumi
                 Debug.Log($"[ZumiScan] press ignored: the scanner is {State}");
                 return;
             }
+            if (drag && drag.Dragging)
+            {
+                Debug.Log("[ZumiScan] press ignored: the guide is being moved");
+                return;
+            }
             scanDisc.pressedAt = Time.time;
             LastCaptureTrigger = how;
             LastRefusal = null;
-            Debug.Log($"[ZumiScan] capture started (page {captures.Count + 1})");
-            Texture texture = null;
+            var n = Mathf.Min(SlotCount, PageLimit - captures.Count);
+            if (n <= 0)
+            {
+                Refuse("every page is taken", $"All {PageLimit} pages are in");
+                return;
+            }
+            Debug.Log($"[ZumiScan] capture started (pages {captures.Count + 1} to {captures.Count + n}, layout {LayoutName})");
+            taking.Clear();
             string source;
             if (cameraAccess)
             {
                 var problem = CameraProblem();
-                if (problem == null)
+                if (problem != null)
                 {
-                    texture = Straighten(out problem);
-                }
-                if (!texture)
-                {
-                    Refuse(problem);
+                    Refuse(problem, CameraNotReady);
                     return;
                 }
+                var pose = cameraAccess.GetCameraPose();
+                var corners = new Vector2[n][];
+                var outside = 0;
+                System.Array.Clear(outOfView, 0, outOfView.Length);
+                for (var k = 0; k < n; k++)
+                {
+                    corners[k] = SlotInImage(k, pose, out var inView);
+                    if (inView) continue;
+                    outOfView[k] = true;
+                    outside++;
+                }
+                SlotsOutOfView = outside;
+                if (outside > 0)
+                {
+                    outOfViewAt = Time.time;
+                    Refuse($"{outside} of {n} slots out of the camera's view", StepBack);
+                    return;
+                }
+                var image = cameraAccess.GetTexture();
+                if (!image)
+                {
+                    Refuse("camera texture null", CameraNotReady);
+                    return;
+                }
+                Debug.Log($"[ZumiScan] camera texture ready {image.width}x{image.height}");
+                for (var k = 0; k < n; k++) taking.Add(new Capture { texture = Straighten(image, corners[k], captures.Count + k + 1), source = "camera", slot = k });
                 source = "camera";
             }
             else
             {
                 source = "fallback";
-                if (data != null && data.pages.Count > 0) texture = data.pages[captures.Count % data.pages.Count].pencilTexture;
-                Debug.Log($"[ZumiScan] no camera access: the making-of's pencil page {captures.Count + 1} stands in ({(texture ? $"{texture.width}x{texture.height}" : "none loaded")})");
+                for (var k = 0; k < n; k++)
+                {
+                    Texture texture = data != null && data.pages.Count > 0 ? data.pages[(captures.Count + k) % data.pages.Count].pencilTexture : null;
+                    taking.Add(new Capture { texture = texture, source = source, slot = k });
+                }
+                Debug.Log($"[ZumiScan] no camera access: the making-of's pencil pages {captures.Count + 1} to {captures.Count + n} stand in");
             }
             LastCaptureSource = source;
-            taking = new Capture { texture = texture, source = source };
             State = "scanning";
             stateSince = Time.time;
             sweep.gameObject.SetActive(true);
         }
 
         // no page: the disc shakes and the caption says why, for a moment
-        void Refuse(string reason)
+        void Refuse(string reason, string line)
         {
             LastRefusal = reason;
             scanDisc.shakenAt = Time.time;
             Debug.LogWarning($"[ZumiScan] capture failed: {reason}");
-            caption.Show(CameraNotReady, 0.05f);
+            caption.Show(line, 0.05f);
             CancelInvoke(nameof(HideRefusal));
             Invoke(nameof(HideRefusal), 2f);
         }
@@ -717,58 +1049,73 @@ namespace Zumi
             else caption.Hide();
         }
 
-        // the outline lights up, a band of light passes over the page, far edge to near, and the page is taken
-        void Sweep()
+        // the outlines light up, a band of light passes over the grid, far edge to near, and the pages are taken
+        float Sweep()
         {
             var t = (Time.time - stateSince) / SweepSeconds;
             var glow = Mathf.Sin(Mathf.Clamp01(t) * Mathf.PI);
-            ZumiFlowKit.SetTint(outlineMaterial, Color.Lerp(outlineColour, ZumiDraw.Hover, glow));
-            ZumiFlowKit.SetTint(cornersMaterial, Color.Lerp(ZumiDraw.Hover, Color.white, glow * 0.6f));
-            var h = Guide.y / 2f - 0.012f;
+            var h = Size.y / 2f - 0.012f;
             sweep.localPosition = new Vector3(0f, Mathf.Lerp(h, -h, ZumiFlowKit.Smooth(t)), -0.0007f);
-            if (t < 1f) return;
+            if (t < 1f) return glow;
             sweep.gameObject.SetActive(false);
-            ZumiFlowKit.SetTint(outlineMaterial, outlineColour);
-            ZumiFlowKit.SetTint(cornersMaterial, CornersColour);
             Shoot();
+            return 0f;
         }
 
         void Shoot()
         {
-            var capture = taking;
-            taking = null;
-            capture.card = ZumiFlowKit.Card($"Scanned page {captures.Count + 1}", null, new Vector2(Guide.x, Guide.y), ZumiFlowKit.Picture(capture.texture, Color.white, 3250)).transform;
-            // it starts where the page lies, a breath above the guide, and flies onto the stack
-            capture.card.SetPositionAndRotation(guide.position - guide.forward * 0.004f, guide.rotation);
-            captures.Add(capture);
-            flying = capture;
-            flyFrom = new Pose(capture.card.position, capture.card.rotation);
-            flyFromScale = capture.card.localScale;
+            var g = Layouts[layout];
+            flying.Clear();
+            foreach (var capture in taking)
+            {
+                var c = SlotCentre(g, capture.slot);
+                capture.card = ZumiFlowKit.Card($"Scanned page {captures.Count + 1}", null, new Vector2(Guide.x, Guide.y), ZumiFlowKit.Picture(capture.texture, Color.white, 3250)).transform;
+                // it starts where the page lies, a breath above its slot, and flies onto the stack
+                capture.card.SetPositionAndRotation(guide.TransformPoint(new Vector3(c.x, c.y, -0.004f)), guide.rotation);
+                capture.from = new Pose(capture.card.position, capture.card.rotation);
+                capture.fromScale = capture.card.localScale;
+                captures.Add(capture);
+                flying.Add(capture);
+            }
+            LastBatch = taking.Count;
+            batches.Add(taking.Count);
+            taking.Clear();
             // the line has done its work
             CancelInvoke(nameof(HideRefusal));
             caption.Hide();
             State = "flying";
             stateSince = Time.time;
-            Debug.Log($"[ZumiScan] page added: {captures.Count} on the stack ({capture.source}, {LastCaptureTrigger})");
+            Debug.Log($"[ZumiScan] pages added: {LastBatch} this press, {captures.Count} on the stack ({LastCaptureSource}, {LastCaptureTrigger})");
         }
 
+        // the pages fly in slot order, each a beat after the one before
         void Fly()
         {
-            var t = (Time.time - stateSince) / FlySeconds;
-            var to = StackPose(captures.Count - 1);
-            var size = StackPageSize(flying.texture);
-            var k = ZumiFlowKit.Smooth(t);
-            var lift = Mathf.Sin(Mathf.Clamp01(t) * Mathf.PI) * 0.15f;
-            flying.card.SetPositionAndRotation(Vector3.Lerp(flyFrom.position, to.position, k) + Vector3.up * lift, Quaternion.Slerp(flyFrom.rotation, to.rotation, k));
-            flying.card.localScale = Vector3.Lerp(flyFromScale, new Vector3(size.x, size.y, 1f), k);
-            if (t < 1f) return;
-            flying = null;
+            var first = captures.Count - flying.Count;
+            var all = true;
+            for (var i = 0; i < flying.Count; i++)
+            {
+                var page = flying[i];
+                var t = (Time.time - stateSince - i * FlyStagger) / FlySeconds;
+                var to = StackPose(first + i);
+                var size = StackPageSize(page.texture);
+                var k = ZumiFlowKit.Smooth(Mathf.Clamp01(t));
+                var lift = Mathf.Sin(Mathf.Clamp01(t) * Mathf.PI) * 0.15f;
+                page.card.SetPositionAndRotation(Vector3.Lerp(page.from.position, to.position, k) + Vector3.up * lift, Quaternion.Slerp(page.from.rotation, to.rotation, k));
+                page.card.localScale = Vector3.Lerp(page.fromScale, new Vector3(size.x, size.y, 1f), k);
+                if (t < 1f) all = false;
+            }
+            if (!all) return;
+            // landed: they ride with the stack from now on
+            foreach (var page in flying) page.card.SetParent(stack, true);
+            flying.Clear();
             Landed();
         }
 
         void Landed()
         {
             counter.text = Count(captures.Count);
+            Hint();
             if (doneButton) doneButton.gameObject.SetActive(captures.Count > 0);
             if (undoDisc != null && undoDisc.root) undoDisc.root.gameObject.SetActive(captures.Count > 0);
             if (doneWanted && captures.Count > 0)
@@ -780,40 +1127,58 @@ namespace Zumi
             Ready();
         }
 
-        // ---- undo: the last page comes off the stack --------------------------------------------------------------
+        // ---- undo: the last press's pages come off the stack -----------------------------------------------------
 
         void PressUndo(string how)
         {
             Debug.Log($"[ZumiScan] undo disc pressed ({how}), state {State}, {captures.Count} pages");
             if (State != "ready" || captures.Count == 0) return;
             undoDisc.pressedAt = Time.time;
-            removing = captures[^1];
-            captures.RemoveAt(captures.Count - 1);
-            flyFrom = new Pose(removing.card.position, removing.card.rotation);
-            flyFromScale = removing.card.localScale;
+            var n = batches.Count > 0 ? batches[^1] : 1;
+            if (batches.Count > 0) batches.RemoveAt(batches.Count - 1);
+            n = Mathf.Min(n, captures.Count);
+            removing.Clear();
+            for (var i = captures.Count - n; i < captures.Count; i++)
+            {
+                var page = captures[i];
+                page.from = new Pose(page.card.position, page.card.rotation);
+                page.fromScale = page.card.localScale;
+                removing.Add(page);
+            }
+            captures.RemoveRange(captures.Count - n, n);
             State = "undoing";
             stateSince = Time.time;
-            Debug.Log($"[ZumiScan] undo: page {captures.Count + 1} taken off the stack, {captures.Count} left");
+            Debug.Log($"[ZumiScan] undo: {n} pages taken off the stack, {captures.Count} left");
         }
 
-        /// <summary>Takes the last page off the stack, as the undo disc does (for tools and tests).</summary>
+        /// <summary>Takes the last press's pages off the stack, as the undo disc does (for tools and tests).</summary>
         public void Undo() => PressUndo("tool");
 
         void Undoing()
         {
             var t = (Time.time - stateSince) / UndoSeconds;
             var k = ZumiFlowKit.Smooth(t);
-            removing.card.position = flyFrom.position + Vector3.down * 0.08f * k;
-            removing.card.localScale = flyFromScale * (1f - 0.6f * k);
-            var m = removing.card.GetComponent<MeshRenderer>().sharedMaterial;
-            ZumiFlowKit.SetTint(m, new Color(1f, 1f, 1f, 1f - k));
+            foreach (var page in removing)
+            {
+                page.card.position = page.from.position + Vector3.down * 0.08f * k;
+                page.card.localScale = page.fromScale * (1f - 0.6f * k);
+                ZumiFlowKit.SetTint(page.card.GetComponent<MeshRenderer>().sharedMaterial, new Color(1f, 1f, 1f, 1f - k));
+            }
             if (t < 1f) return;
-            Destroy(m);
-            Destroy(removing.card.gameObject);
-            // a camera capture is this page's own; a stand-in is the bundle's
-            if (removing.source == "camera" && removing.texture is RenderTexture rt) Destroy(rt);
-            removing = null;
+            foreach (var page in removing) Drop(page);
+            removing.Clear();
             Landed();
+        }
+
+        static void Drop(Capture page)
+        {
+            if (page.card)
+            {
+                Destroy(page.card.GetComponent<MeshRenderer>().sharedMaterial);
+                Destroy(page.card.gameObject);
+            }
+            // a camera capture is this page's own; a stand-in is the bundle's
+            if (page.source == "camera" && page.texture is RenderTexture rt) Destroy(rt);
         }
 
         /// <summary>Takes the bundle's pages left at once and ends the scan (the flow's skip).</summary>
@@ -821,11 +1186,13 @@ namespace Zumi
         {
             if (State is "scanning")
             {
-                if (taking?.source == "camera" && taking.texture is RenderTexture rt) Destroy(rt);
-                taking = null;
+                foreach (var page in taking)
+                    if (page.source == "camera" && page.texture is RenderTexture rt) Destroy(rt);
+                taking.Clear();
                 if (sweep) sweep.gameObject.SetActive(false);
                 Ready();
             }
+            var added = 0;
             while (data != null && captures.Count < data.pages.Count)
             {
                 var tex = data.pages[captures.Count].pencilTexture;
@@ -834,44 +1201,46 @@ namespace Zumi
                 var size = StackPageSize(tex);
                 c.card = ZumiFlowKit.Card($"Scanned page {captures.Count + 1}", null, size, ZumiFlowKit.Picture(tex, Color.white, 3250)).transform;
                 c.card.SetPositionAndRotation(pose.position, pose.rotation);
+                c.card.SetParent(stack, true);
                 captures.Add(c);
+                added++;
             }
+            if (added > 0) batches.Add(added);
             if (counter) counter.text = Count(captures.Count);
             // a page still in the air lands first
             if (State is "flying" or "undoing") doneWanted = true;
             else if (captures.Count > 0) Finish();
         }
 
-        // The guide's corners in the camera image, page (u, v): (0, 0) the near left corner as the reader sees it, v
-        // toward the far edge. The image is from the frame before (the texture is filled on the render thread).
-        Vector2[] GuideInImage(out Pose pose)
+        // Slot k's corners in the camera image, page (u, v): (0, 0) the near left corner as the reader sees it, v
+        // toward the far edge; and whether all four are in front of the camera and inside its image. The image is from
+        // the frame before (the texture is filled on the render thread).
+        Vector2[] SlotInImage(int k, Pose pose, out bool inView)
         {
-            pose = cameraAccess.GetCameraPose();
+            var c = SlotCentre(Layouts[layout], k);
             float w = Guide.x / 2f, h = Guide.y / 2f;
-            var corners = new[] { new Vector3(-w, -h), new Vector3(w, -h), new Vector3(w, h), new Vector3(-w, h) };
+            var corners = new[] { new Vector3(c.x - w, c.y - h), new Vector3(c.x + w, c.y - h), new Vector3(c.x + w, c.y + h), new Vector3(c.x - w, c.y + h) };
             var uv = new Vector2[4];
-            for (var i = 0; i < 4; i++) uv[i] = cameraAccess.WorldToViewportPoint(guide.TransformPoint(corners[i]), pose);
+            inView = true;
+            for (var i = 0; i < 4; i++)
+            {
+                var world = guide.TransformPoint(corners[i]);
+                uv[i] = cameraAccess.WorldToViewportPoint(world, pose);
+                var ahead = (Quaternion.Inverse(pose.rotation) * (world - pose.position)).z;
+                if (ahead <= 0.01f || uv[i].x < 0f || uv[i].x > 1f || uv[i].y < 0f || uv[i].y > 1f) inView = false;
+            }
             return uv;
         }
 
-        // the page drawn upright, full size, from the guide's corners in the camera image
-        Texture Straighten(out string problem)
+        // one page drawn upright, full size, from its slot's corners in the camera image
+        Texture Straighten(Texture image, Vector2[] uv, int number)
         {
-            problem = null;
-            var image = cameraAccess.GetTexture();
-            if (!image)
-            {
-                problem = "camera texture null";
-                return null;
-            }
-            Debug.Log($"[ZumiScan] camera texture ready {image.width}x{image.height}");
-            var uv = GuideInImage(out _);
             if (!warp) warp = new Material(ZumiFlowKit.WarpShader);
             SetHomography(warp, uv);
-            var rt = new RenderTexture(Mathf.RoundToInt(CaptureHeight * Guide.x / Guide.y), CaptureHeight, 0, RenderTextureFormat.ARGB32) { name = $"capture {captures.Count + 1}", wrapMode = TextureWrapMode.Clamp };
+            var rt = new RenderTexture(Mathf.RoundToInt(CaptureHeight * Guide.x / Guide.y), CaptureHeight, 0, RenderTextureFormat.ARGB32) { name = $"capture {number}", wrapMode = TextureWrapMode.Clamp };
             rt.Create();
             Graphics.Blit(image, rt, warp);
-            Debug.Log($"[ZumiScan] warp done {rt.width}x{rt.height}, page corners in the camera image {uv[0]:F3} {uv[1]:F3} {uv[2]:F3} {uv[3]:F3}");
+            Debug.Log($"[ZumiScan] page {number} warped {rt.width}x{rt.height}, corners in the camera image {uv[0]:F3} {uv[1]:F3} {uv[2]:F3} {uv[3]:F3}");
             return rt;
         }
 
@@ -908,16 +1277,21 @@ namespace Zumi
             CancelInvoke();
             if (guide) Destroy(guide.gameObject);
             guideParts.Destroy();
+            slotParts.Destroy();
             HideTouchHint();
             if (ripple) Destroy(ripple.gameObject);
             rippleParts.Destroy();
+            // the captured pages stay: off the stack before it goes
+            foreach (var page in captures)
+                if (page.card && page.card.parent == stack) page.card.SetParent(null, true);
             if (stack) Destroy(stack.gameObject);
             stackParts.Destroy();
             doneParts.Destroy();
-            if (taking?.source == "camera" && taking.texture is RenderTexture rt) Destroy(rt);
-            taking = null;
-            if (removing != null && removing.card) Destroy(removing.card.gameObject);
-            removing = null;
+            foreach (var page in taking)
+                if (page.source == "camera" && page.texture is RenderTexture rt) Destroy(rt);
+            taking.Clear();
+            foreach (var page in removing) Drop(page);
+            removing.Clear();
             if (cameraAccess) Destroy(cameraAccess);
         }
 

@@ -65,10 +65,6 @@ namespace Zumi
         /// VignetteInsetDegrees and VignetteDegrees), about the place's own centre: the scene always reaches past the
         /// hole's edge (owner, 2026-11-16: "make the hole a bit smaller in width compared to 3d scene").</summary>
         public const float WindowMarginDegrees = 8f;
-        /// <summary>Render queue of a prop on the window's ledge: after the opening's depth is cleared (2906), so the
-        /// place drawn in the hole never covers the half of it that stands inside the wall's thickness; before the
-        /// panel's frames, which still hide it by depth.</summary>
-        public const int LedgePropQueue = 2907;
         /// <summary>Segments of the reveal round the outline.</summary>
         public const int RevealSegments = 1024;
         /// <summary>Where the window folds onto a side wall: how much of the broken wall's notches and cracks it keeps
@@ -93,6 +89,16 @@ namespace Zumi
         [SerializeField] Shader shadowShader;
         [SerializeField] Shader breachShader;
         [SerializeField] Shader revealShader;
+        [SerializeField] Shader backdropShader;
+
+        /// <summary>The backdrop (Zumi/PlaceBackdrop): a dome round the eye the place was fitted from, this many degrees
+        /// to either side of the place's forward and up and down, so the window never shows a void past the view's
+        /// edge when the head has moved off that eye; its radius the place's far distance or the key wall plus
+        /// BackdropBeyond metres, whichever is more, times BackdropMargin; its colour the blurred view, easing to the
+        /// place's ambient light over BackdropFadeDegrees past the view's edge.</summary>
+        public const float BackdropAcross = 100f, BackdropUp = 70f, BackdropBeyond = 3f, BackdropMargin = 1.3f, BackdropFadeDegrees = 15f;
+        /// <summary>The blurred copy of the front picture the backdrop samples, in texels.</summary>
+        public const int BackdropBlurWidth = 32, BackdropBlurHeight = 16;
         [Tooltip("On: the window is a hole broken in the wall, with a cracked rim, opening as the place fades in. Off: a plain soft round fade")]
         [SerializeField] bool brokenWall = true;
         [Tooltip("On: behind and around the panel the place is darkened, desaturated and blurred, so the frames stand out. Off: the place is the same everywhere")]
@@ -125,7 +131,9 @@ namespace Zumi
             public ZumiGlb front, back;
             public Mesh frontMesh, backMesh;
             public Texture2D frontTexture, backTexture;
-            public Material frontMaterial, backMaterial;
+            public Material frontMaterial, backMaterial, backdropMaterial;
+            public RenderTexture blur, mean;
+            public Transform backdrop;
             public int fitSerial = -1;
             public float scale, clipped;
             public readonly List<Prop> props = new();
@@ -156,7 +164,7 @@ namespace Zumi
         readonly List<GameObject> rims = new();
         bool rimsShown;
         GameObject reveal;
-        Mesh quad, revealMesh;
+        Mesh quad, revealMesh, backdropMesh;
         int openingsSerial = -1;
         string lastOpenId;
 
@@ -307,8 +315,10 @@ namespace Zumi
             quad.SetUVs(0, new[] { new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 1f), new Vector2(1f, 1f) });
             quad.SetTriangles(new[] { 0, 2, 1, 2, 3, 1 }, 0);
             // the stencil's bit 7 is the opening's (the panel's frames keep 0 to 3)
-            openingMaterial = Marker("opening", 2900, 128, 0, 128, CompareFunction.Always, StencilOp.Replace, CompareFunction.LessEqual, false, CullMode.Off, false);
-            farMaterial = Marker("far", 2901, 128, 128, 0, CompareFunction.Equal, StencilOp.Keep, CompareFunction.Always, true, CullMode.Off, true);
+            openingMaterial = Marker("opening", 2899, 128, 0, 128, CompareFunction.Always, StencilOp.Replace, CompareFunction.LessEqual, false, CullMode.Off, false);
+            farMaterial = Marker("far", 2900, 128, 128, 0, CompareFunction.Equal, StencilOp.Keep, CompareFunction.Always, true, CullMode.Off, true);
+            // the place's backdrop is drawn next (2901), then its meshes over it (2902, 2903)
+            backdropMesh = Dome();
             // and again once the place and its rim are drawn: the panel's layers lie 1 to 3 m out, and the place's
             // depth must never hide one of its frames
             clearMaterial = Marker("clear", 2906, 128, 128, 0, CompareFunction.Equal, StencilOp.Keep, CompareFunction.Always, true, CullMode.Off, true);
@@ -462,7 +472,7 @@ namespace Zumi
                 if (slot.root.gameObject.activeSelf != visible) slot.root.gameObject.SetActive(visible);
                 if (!visible) continue;
                 open = slot;
-                foreach (var material in new[] { slot.frontMaterial, slot.backMaterial })
+                foreach (var material in new[] { slot.frontMaterial, slot.backMaterial, slot.backdropMaterial })
                 {
                     if (!material) continue;
                     material.SetFloat(Opacity, opacity);
@@ -575,6 +585,7 @@ namespace Zumi
                 if (this && !cancel.IsCancellationRequested)
                 {
                     (slot.frontMesh, slot.frontMaterial) = Layer(slot, slot.front, slot.frontTexture, "front", 2902);
+                    Backdrop(slot);
                     await Task.Yield();
                 }
                 if (this && !cancel.IsCancellationRequested && slot.back != null)
@@ -625,6 +636,89 @@ namespace Zumi
             renderer.sharedMaterial = material;
             renderer.shadowCastingMode = ShadowCastingMode.Off;
             return (mesh, material);
+        }
+
+        // The backdrop: the dome under the place's root, its picture the front's blurred down to a few texels (halving
+        // each step, so every texel is averaged in) and to one, its mean
+        void Backdrop(Slot slot)
+        {
+            if (!backdropShader) return;
+            var source = (Texture)slot.frontTexture;
+            int w = source.width, h = source.height;
+            RenderTexture step = null;
+            while (w > 1 || h > 1)
+            {
+                w = Mathf.Max(w / 2, 1);
+                h = Mathf.Max(h / 2, 1);
+                var next = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32);
+                next.filterMode = FilterMode.Bilinear;
+                Graphics.Blit(source, next);
+                if (step) RenderTexture.ReleaseTemporary(step);
+                step = next;
+                source = next;
+                if (!slot.blur && w <= BackdropBlurWidth && h <= BackdropBlurHeight)
+                {
+                    slot.blur = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32) { name = $"{slot.place.setting} backdrop", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+                    Graphics.Blit(next, slot.blur);
+                }
+            }
+            if (!slot.blur)
+            {
+                slot.blur = new RenderTexture(Mathf.Max(w, 1), Mathf.Max(h, 1), 0, RenderTextureFormat.ARGB32) { name = $"{slot.place.setting} backdrop", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+                Graphics.Blit(source, slot.blur);
+            }
+            slot.mean = new RenderTexture(1, 1, 0, RenderTextureFormat.ARGB32) { name = $"{slot.place.setting} mean" };
+            Graphics.Blit(source, slot.mean);
+            if (step) RenderTexture.ReleaseTemporary(step);
+
+            var material = slot.backdropMaterial = new Material(backdropShader) { name = $"{slot.place.setting} backdrop", mainTexture = slot.blur, renderQueue = 2901 };
+            material.SetTexture("_MeanTex", slot.mean);
+            material.SetFloat(Opacity, 0f);
+            material.SetVector("_Span", new Vector4(slot.place.hDeg, slot.place.vDeg, 0f, 0f));
+            material.SetFloat("_Fade", BackdropFadeDegrees);
+            var ambient = slot.place.light?.ambient;
+            // without the place's light, its own mean colour all round
+            material.SetColor("_Sky", Hex(ambient?.sky));
+            material.SetColor("_Horizon", Hex(ambient?.horizon));
+            material.SetColor("_Ground", Hex(ambient?.ground));
+            var go = new GameObject("backdrop", typeof(MeshFilter), typeof(MeshRenderer));
+            slot.backdrop = go.transform;
+            slot.backdrop.SetParent(slot.root, false);
+            go.GetComponent<MeshFilter>().sharedMesh = backdropMesh;
+            var renderer = go.GetComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+            renderer.shadowCastingMode = ShadowCastingMode.Off;
+        }
+
+        static Color Hex(string hex) => hex != null && ColorUtility.TryParseHtmlString(hex, out var c) ? c : new Color(0.5f, 0.5f, 0.5f);
+
+        // a unit dome about +z, BackdropAcross degrees to either side and BackdropUp up and down, each vertex's azimuth
+        // and elevation in degrees as its first texture coordinates
+        static Mesh Dome()
+        {
+            const int columns = 20, rows = 14;
+            var vertices = new List<Vector3>();
+            var directions = new List<Vector2>();
+            for (var r = 0; r <= rows; r++)
+                for (var c = 0; c <= columns; c++)
+                {
+                    float az = Mathf.Lerp(-BackdropAcross, BackdropAcross, (float)c / columns), el = Mathf.Lerp(-BackdropUp, BackdropUp, (float)r / rows);
+                    vertices.Add(Quaternion.Euler(-el, az, 0f) * Vector3.forward);
+                    directions.Add(new Vector2(az, el));
+                }
+            var triangles = new List<int>();
+            for (var r = 0; r < rows; r++)
+                for (var c = 0; c < columns; c++)
+                {
+                    int a = r * (columns + 1) + c, b = a + columns + 1;
+                    triangles.AddRange(new[] { a, b, a + 1, a + 1, b, b + 1 });
+                }
+            var mesh = new Mesh { name = "backdrop" };
+            mesh.SetVertices(vertices);
+            mesh.SetUVs(0, directions);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         // A model's picture as a texture. Texture2D.LoadImage decodes on the main thread (a 2160 x 1072 PNG stalls a
@@ -716,7 +810,7 @@ namespace Zumi
         static void Free(Slot slot)
         {
             if (slot.root) Destroy(slot.root.gameObject);
-            foreach (var o in new UnityEngine.Object[] { slot.frontMesh, slot.backMesh, slot.frontTexture, slot.backTexture, slot.frontMaterial, slot.backMaterial })
+            foreach (var o in new UnityEngine.Object[] { slot.frontMesh, slot.backMesh, slot.frontTexture, slot.backTexture, slot.frontMaterial, slot.backMaterial, slot.backdropMaterial, slot.blur, slot.mean })
                 if (o) Destroy(o);
             foreach (var prop in slot.props)
             {
@@ -765,7 +859,14 @@ namespace Zumi
                 slot.backMesh.SetUVs(1, fit.back);
                 slot.backMesh.RecalculateBounds();
             }
-            foreach (var material in new[] { slot.frontMaterial, slot.backMaterial })
+            if (slot.backdrop)
+            {
+                // beyond everything of the place and well past the wall, in the root's units (it carries the scale)
+                var far = (place.farM ?? slot.frontMesh.bounds.extents.magnitude) * fit.scale;
+                var radius = Mathf.Max(far, shape.wallDistance + BackdropBeyond) * BackdropMargin;
+                slot.backdrop.localScale = Vector3.one * (radius / Mathf.Max(fit.scale, 1e-4f));
+            }
+            foreach (var material in new[] { slot.frontMaterial, slot.backMaterial, slot.backdropMaterial })
             {
                 if (!material) continue;
                 SetWindow(material, shape);
@@ -960,10 +1061,11 @@ namespace Zumi
             {
                 var prop = slot.props[i];
                 prop.placement = results[i];
-                if (!results[i].placed) continue;
-                var ledge = results[i].on == SurfaceKind.Ledge;
-                prop.material.renderQueue = ledge ? LedgePropQueue : -1;
-                prop.shadowMaterial.renderQueue = ledge ? LedgePropQueue + 1 : -1;
+                if (!results[i].placed)
+                {
+                    Debug.Log($"[Zumi] props: {prop.data.name} left out: {results[i].reason}");
+                    continue;
+                }
                 var box = prop.glb.bounds;
                 // the point under its middle rests on the surface
                 var rest = new Vector3(box.center.x, box.min.y, box.center.z) * prop.scale;
@@ -1064,7 +1166,7 @@ namespace Zumi
         {
             foreach (var slot in slots.ToArray()) Drop(slot);
             if (stage) Destroy(stage.gameObject);
-            foreach (var o in new UnityEngine.Object[] { quad, openingMaterial, farMaterial, clearMaterial, breachMaterial })
+            foreach (var o in new UnityEngine.Object[] { quad, backdropMesh, openingMaterial, farMaterial, clearMaterial, breachMaterial })
                 if (o) Destroy(o);
         }
     }

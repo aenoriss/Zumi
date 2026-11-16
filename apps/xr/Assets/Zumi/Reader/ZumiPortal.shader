@@ -1,9 +1,9 @@
 // Draws no colour: marks the stencil or the depth buffer where a place may show. One shader, three uses, set by the
 // reader (ZumiPlaces) on three materials:
 //   opening   the window's quads (on the key wall, and its folds onto side walls), bit 7, where nothing nearer was
-//             drawn (queue 2900)
+//             drawn (queue 2899)
 //   far       the same rectangle again, inside bit 7: depth back to the far plane, so the place's meshes sort among
-//             themselves and nothing drawn behind the wall hides them (2901)
+//             themselves and nothing drawn behind the wall hides them (2900); the place's backdrop follows (2901)
 //   clear     the same once the place and its rim are drawn (2906): the place's depth never hides the panel's layers
 // The stencil's eight bits: 0 to 3 a panel's frames (Zumi/PanelWindow, Zumi/Card), 7 the place's opening; 4 to 6
 // are free. Each use reads and writes only its own bits.

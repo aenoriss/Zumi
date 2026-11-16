@@ -8,8 +8,7 @@ using static System.FormattableString;
 namespace Zumi
 {
     public enum RoomMode { None, Scanned }
-    /// <summary>Ledge: the bottom of the window's reveal on a real wall, the strip of wall thickness at its sill.</summary>
-    public enum SurfaceKind { Floor, Table, Shelf, Ledge }
+    public enum SurfaceKind { Floor, Table, Shelf }
 
     /// <summary>A flat, level surface things can stand on: a rectangle on the ground plan (or the floor's outline) at a height.</summary>
     public sealed class RoomSurface
@@ -200,11 +199,8 @@ namespace Zumi
         /// <summary>On a real wall: the window's corners' radius, and the width of its soft edge (the plain fade), in
         /// metres.</summary>
         public const float WallCorner = 0.45f, WallSoftEdge = 0.4f;
-        /// <summary>Metres the broken wall is thick: how far the reveal (Zumi/Reveal) goes back into it, and how deep
-        /// the window's ledge is.</summary>
+        /// <summary>Metres the broken wall is thick: how far the reveal (Zumi/Reveal) goes back into it.</summary>
         public const float WallThickness = 0.15f;
-        /// <summary>Least length of the ledge's flat part, in metres; shorter, there is no ledge.</summary>
-        const float MinLedgeLength = 0.1f;
         /// <summary>A table or storage top counts as a surface between these heights above the floor.</summary>
         public const float MinTopHeight = 0.3f, MaxTableHeight = 1.3f, MaxShelfHeight = 1.8f;
         /// <summary>A wall this many degrees to either side of the seat's forward can still be the key wall.</summary>
@@ -262,10 +258,6 @@ namespace Zumi
         public string BleedLine { get; private set; } = "none";
         /// <summary>The lowest point of anything a place is seen through, in metres above the floor.</summary>
         public float PortalFloorClearance { get; private set; }
-        /// <summary>The window's ledge: the flat bottom of its reveal on the key wall, the sill's straight part (between
-        /// the rounded corners, short of a fold) by the wall's thickness, from the wall's face into it. Null when the
-        /// window is not on a real wall or its sill has no straight part.</summary>
-        public RoomSurface Ledge { get; private set; }
 
         // ---- read-only state for tests and tools ---------------------------------------------------------------
         public string ModeName => Mode.ToString();
@@ -400,7 +392,6 @@ namespace Zumi
             boxes.Clear();
             portals.Clear();
             rims.Clear();
-            Ledge = null;
             BleedLine = "none";
             Vector3 eye = seat.Position, ahead = seat.Forward;
             string why = null;
@@ -529,7 +520,6 @@ namespace Zumi
                     height = box.top, centre = box.footCentre, axis = box.footAxis, half = box.footHalf, box = i,
                 });
             }
-            if (Ledge != null) surfaces.Add(Ledge);
             foreach (var s in surfaces) Measure(s);
             return true;
         }
@@ -650,20 +640,6 @@ namespace Zumi
             float y0 = Mathf.Max(floorY, w.centre.y - w.size.y / 2f - RimMargin), y1 = Mathf.Min(wallTop, w.centre.y + w.size.y / 2f + RimMargin);
             rims.Add(Strip("window", KeyWallPoint + Shape.right * x0, KeyWallPoint + Shape.right * x1, KeyWallPoint, KeyWallPlane, y0, y1));
             for (var i = 1; i < portals.Count; i++) rims.Add(portals[i]);
-
-            // the ledge: the sill's straight part on the key wall, kept a wall's thickness off a fold (the sill bends
-            // into the side wall there), from the wall's face back into the wall
-            float from = Mathf.Max(Shape.rect.x + Shape.corner, mid - w.size.x / 2f + (Shape.sideOk[0] ? WallThickness : 0f));
-            float to = Mathf.Min(Shape.rect.y - Shape.corner, mid + w.size.x / 2f - (Shape.sideOk[1] ? WallThickness : 0f));
-            if (to - from >= MinLedgeLength)
-            {
-                var centre = KeyWallPoint + Shape.right * ((from + to) / 2f) - KeyWallNormal * (WallThickness / 2f);
-                Ledge = new RoomSurface
-                {
-                    kind = SurfaceKind.Ledge, name = "LEDGE", height = Shape.rect.z, centre = Flat(centre), axis = Flat(Shape.right).normalized,
-                    half = new Vector2((to - from) / 2f, WallThickness / 2f),
-                };
-            }
             return null;
         }
 

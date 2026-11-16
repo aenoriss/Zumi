@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using static System.FormattableString;
 
 namespace Zumi
 {
@@ -27,11 +26,9 @@ namespace Zumi
     /// Only furniture stands on the reader's floor (owner, 2026-11-16). Furniture stands on a surface of its own kind
     /// when one has room for it, and otherwise switches to another kind: a floor piece to a table top then a shelf top.
     /// Anything else rests on a real table or shelf top (its own kind first, then the other; a floor prop that is not
-    /// furniture, a potted plant, tries a table then a shelf), and failing both on the window's ledge (ZumiRoom.Ledge,
-    /// only on a real wall): along the sill, side by side by their boxes with PropGap between, the row centred on it,
-    /// each prop's middle on the ledge's middle line (a prop deeper than the ledge overhangs it), facing the seat; a
-    /// prop the ledge has no length left for is skipped. A prop with nowhere to rest is not shown, and the result says
-    /// why.
+    /// furniture, a potted plant, tries a table then a shelf), never on the window's sill: a prop in the hole broke the
+    /// place's drawing (owner, 2026-11-16). No prop comes within PortalClearance of the window (its hole, its reveal,
+    /// the wall round it, the space in front of it). A prop with nowhere to rest is not shown, and the result says why.
     /// </summary>
     public static class ZumiPropPlacer
     {
@@ -56,6 +53,9 @@ namespace Zumi
         /// <summary>What a spot behind the panel costs, in the degrees spots are ranked by: it is taken only when no
         /// spot beside the panel is within that many degrees of bearing (or their worth in distance).</summary>
         public const float BehindPanelCost = 30f;
+        /// <summary>Metres every prop keeps from the window: the hole, the reveal and the wall round it, and the space
+        /// in front of it. A prop in or at the hole broke the place's drawing (owner, 2026-11-16).</summary>
+        public const float PortalClearance = 0.3f;
         const float FloorStep = 0.1f, OpenFloorStep = 0.2f, TopStep = 0.05f, VirtualWallReach = 4f;
 
         public sealed class Request
@@ -100,7 +100,6 @@ namespace Zumi
 
             var results = new Result[requests.Count];
             var standing = new List<Result>();
-            var forLedge = new List<int>();
             Vector2 seat = ZumiRoom.Flat(seatEye), ahead = ZumiRoom.Flat(seatForward).normalized;
             foreach (var index in order)
             {
@@ -122,52 +121,28 @@ namespace Zumi
                     standing.Add(result);
                 }
                 if (result.placed) continue;
-                result.reason = $"no {string.Join(" or ", tried)} in view with room for it";
-                if (!request.furniture) forLedge.Add(index);
+                result.reason = $"no {string.Join(" or ", tried)} in view with room for it, clear of the window";
             }
-            OnLedge(room.Ledge, seat, requests, results, forLedge);
             return new List<Result>(results);
         }
 
-        // the props no top took, along the window's ledge in their order (the larger first), the row centred on it
-        static void OnLedge(RoomSurface ledge, Vector2 seat, IReadOnlyList<Request> requests, Result[] results, List<int> waiting)
+        /// <summary>Whether a prop's box (footprint circle of radius round p, from height up by its height) comes within
+        /// PortalClearance of any window quad: the hole, the reveal behind it and the wall round it.</summary>
+        public static bool NearPortal(ZumiRoom room, Vector2 p, float bottom, float radius, float height)
         {
-            if (waiting.Count == 0) return;
-            if (ledge == null)
+            foreach (var q in room.Portals)
             {
-                foreach (var i in waiting) results[i].reason += ", and the window has no ledge (not on a real wall)";
-                return;
+                var from = p - ZumiRoom.Flat(q.centre);
+                var normal = ZumiRoom.Flat(q.normal).normalized;
+                var across = ZumiRoom.Flat(q.right).normalized;
+                // in front of the wall by less than the clearance (or behind it, where the reveal is)
+                if (Vector2.Dot(from, normal) - radius >= PortalClearance) continue;
+                if (Mathf.Abs(Vector2.Dot(from, across)) - radius >= q.size.x / 2f + PortalClearance) continue;
+                float low = q.centre.y - q.size.y / 2f - PortalClearance, high = q.centre.y + q.size.y / 2f + PortalClearance;
+                if (bottom + height <= low || bottom >= high) continue;
+                return true;
             }
-            var room = 2f * (ledge.half.x - EdgeGap);
-            var taken = new List<int>();
-            var used = 0f;
-            foreach (var i in waiting)
-            {
-                var width = 2f * requests[i].half.x;
-                var need = used + (taken.Count > 0 ? PropGap : 0f) + width;
-                if (need > room)
-                {
-                    results[i].reason += Invariant($", and the ledge has {Mathf.Max(room - used - (taken.Count > 0 ? PropGap : 0f), 0f):F2} m left for its {width:F2} m");
-                    continue;
-                }
-                used = need;
-                taken.Add(i);
-            }
-            var u = -used / 2f;
-            foreach (var i in taken)
-            {
-                var width = 2f * requests[i].half.x;
-                var at = ledge.centre + ledge.axis * (u + width / 2f);
-                u += width + PropGap;
-                var result = results[i];
-                result.placed = true;
-                result.reason = null;
-                result.on = SurfaceKind.Ledge;
-                result.surface = ledge.name;
-                result.position = new Vector3(at.x, ledge.height, at.y);
-                var away = at - seat;
-                result.rotation = Quaternion.LookRotation(new Vector3(away.x, 0f, away.y));
-            }
+            return false;
         }
 
         // what is not furniture rests on a top: its own kind first, then the other
@@ -284,6 +259,7 @@ namespace Zumi
             var shape = room.Shape;
             if (Vector2.Dot(from, ahead) < SeatRadius) return false;
             if (Vector2.Dot(p - ZumiRoom.Flat(shape.eye), ZumiRoom.Flat(shape.forward)) > shape.wallDistance - radius - WallGap) return false;
+            if (NearPortal(room, p, surface.height, request.half.magnitude, request.height)) return false;
             if (Mathf.Atan2(surface.height + request.height / 2f - eye.y, distance) * Mathf.Rad2Deg < -MaxPitchDegrees) return false;
             var edgeYaw = yaw - Mathf.Asin(Mathf.Min(1f, radius / distance)) * Mathf.Rad2Deg;
             var topPitch = Mathf.Atan2(surface.height + request.height - eye.y, Mathf.Max(distance - radius, 0.05f)) * Mathf.Rad2Deg;
