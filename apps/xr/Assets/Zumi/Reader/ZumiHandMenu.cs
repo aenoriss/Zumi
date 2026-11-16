@@ -422,17 +422,6 @@ namespace Zumi
             }.ToArray());
             reset.state = () => resetAt >= 0f && Time.unscaledTime - resetAt < ReseatedSeconds ? "Demo\nreset" : "Reset\ndemo";
             reset.label = ZumiDraw.Text(flatShader, parts, "Reset label", menu, reset.button.transform.localPosition + new Vector3(0f, -PetalRadius - 0.0105f, -0.001f), LabelCap, ZumiDraw.SoftInk, 3, reset.state());
-
-            // Record scan samples (for tuning the scanner's detector): a small disc left of the petal, a dot lit
-            // while it is on
-            var record = Add(true, "Record", new Vector2(-Pitch, -PetalDrop), PetalRadius, () =>
-            {
-                ZumiScanner.RecordSamples = !ZumiScanner.RecordSamples;
-                return ZumiScanner.RecordSamples ? "record_on" : "record_off";
-            });
-            Lit(record, () => ZumiScanner.RecordSamples, ZumiDraw.Disc(0.0042f, 20));
-            record.state = () => ZumiScanner.RecordSamples ? "Record\nscans on" : "Record\nscans off";
-            record.label = ZumiDraw.Text(flatShader, parts, "Record label", menu, record.button.transform.localPosition + new Vector3(0f, -PetalRadius - 0.0105f, -0.001f), LabelCap, ZumiDraw.SoftInk, 3, record.state());
         }
 
         /// <summary>The settings face's "Reset demo" (set by the creation flow); null: the button does nothing.</summary>

@@ -9,7 +9,7 @@ namespace Zumi
     ///   logo      the Zumi logo moment (ZumiMenu.LogoSeconds)
     ///   home      the carousel (ZumiCarousel): the comics made so far and "New comic"
     ///   scanner   New comic: the carousel folds away, the reader touches the table, the page guide lies there, each
-    ///             page is taken when it lies still, then Done (ZumiScanner)
+    ///             page is taken when the Scan disc is pressed, then Done (ZumiScanner)
     ///   pipeline  the mocked pipeline playback (ZumiMakingOf), which fades out at its end; a pinch or the hand menu
     ///             skips it; then home again, and the new comic (Dan &amp; Buck) arrives out of the last glow
     ///   opening   the middle comic was brought close or ray-pinched and opens (ZumiBook)
