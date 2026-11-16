@@ -205,6 +205,38 @@ def reviewer_stamp(text: str) -> str:
     return fresh.digest(text, REVIEW_TASK, MODEL, REASONING)
 
 
+def unnamed(text: str) -> str:
+    """The material with every balloon's speaker left out ("  - p001/b2 speech: "..."), its frames, kinds, words and
+    order kept: the scene structure the spans are cut on."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("  - ") and ': "' in line:
+            bid, kind, rest = line[4:].split(" ", 2)
+            line = f'  - {bid} {kind}: "' + rest.partition(': "')[2]
+        out.append(line)
+    return "\n".join(out)
+
+
+def structure_stamp(text: str) -> str:
+    """The stamp of the material without its speakers (unnamed) and the recipe. A changed speaker keeps the spans and
+    so every song (2026-11-16: a speaker-rule fix on dan-buck moved one line from Buck to Dan; the whole stamp would
+    have bought the reviewer and, through new span colours, the songs again). Names still reach the reviewer when it
+    runs for another reason."""
+    return fresh.digest(unnamed(text), REVIEW_TASK, MODEL, REASONING)
+
+
+def _saved_structure(old: dict, out: Path) -> str | None:
+    """A saved spans.json's structure stamp: its own, or for one saved before 2026-11-16, that of the material.md
+    beside it when that file is what the saved stamp was made from."""
+    if old.get("stamp_structure"):
+        return old["stamp_structure"]
+    f = out / "material.md"
+    if not f.exists():
+        return None
+    text = f.read_text(encoding="utf-8")
+    return structure_stamp(text) if reviewer_stamp(text) == old.get("stamp") else None
+
+
 def reviewer_step(ep: Episode, n_boxes: int, settings: dict) -> dict | None:
     """spans.json: {"spans": [...], "buttons": [...], "ids": [...]} from one reviewer call; kept while its stamp (the
     material, REVIEW_TASK, the model and its effort) holds. When the call cannot be made (the cap, an offline run)
@@ -212,9 +244,14 @@ def reviewer_step(ep: Episode, n_boxes: int, settings: dict) -> dict | None:
     out = ep.out / "music"
     f_json = out / "spans.json"
     text, ids = material(ep, n_boxes, settings)
-    stamp = reviewer_stamp(text)
+    stamp, structure = reviewer_stamp(text), structure_stamp(text)
     old = json.loads(f_json.read_text(encoding="utf-8")) if f_json.exists() else None
-    if old and old.get("stamp") == stamp:
+    if old and fresh.holds(old.get("stamp"), stamp, lambda: old.get("stamp") if _saved_structure(old, out) == structure
+                           else None,"music spans (only speakers changed)"):
+        if old["stamp"] != stamp or old.get("stamp_structure") != structure:
+            old["stamp"], old["stamp_structure"] = stamp, structure
+            (out / "material.md").write_text(text, encoding="utf-8")
+            f_json.write_text(json.dumps(old, indent=1, ensure_ascii=False), encoding="utf-8")
         print(f"  spans current: {len(old['spans'])}")
         return old
     content = [{"type": "text", "text": REVIEW_TASK}, {"type": "text", "text": "episode.md:\n" + text}]
@@ -229,7 +266,7 @@ def reviewer_step(ep: Episode, n_boxes: int, settings: dict) -> dict | None:
     (out / "task.md").write_text(REVIEW_TASK, encoding="utf-8")
     (out / "reply.json").write_text(json.dumps({"cost": cost, **reply}, indent=1, ensure_ascii=False), encoding="utf-8")
     tiled, buttons = tile(reply, ids)
-    data = {"stamp": stamp, "ids": ids, "spans": tiled, "buttons": buttons, "cost": cost, "notes": reply.get("notes")}
+    data = {"stamp": stamp, "stamp_structure": structure, "ids": ids, "spans": tiled, "buttons": buttons, "cost": cost, "notes": reply.get("notes")}
     f_json.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
     print(f"  spans: {len(tiled)}, buttons {len(buttons)}; " +
           " | ".join(f"{s['from']}-{s['to']} {s['mood']}/{s['role']}" for s in tiled) + f"; {cost:.3f} USD")

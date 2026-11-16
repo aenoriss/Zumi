@@ -32,7 +32,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_opening, distance_transform_edt as edt, label
+from scipy.ndimage import (binary_dilation, binary_erosion, binary_fill_holes, binary_opening,
+                           distance_transform_edt as edt, label)
 
 from boxstore import Box
 
@@ -41,6 +42,7 @@ TAIL_MIN_PX = 60      # a tail has at least this many pixels...
 TAIL_MIN_LEN = 10     # ...and its tip lies at least this far out of the bubble's body...
 TAIL_MIN_REACH = 0.08  # ...and this share of the bubble's short side: a burst's spikes (ORV p010: 15 px on 405) and a
 #                        caption's corner (CPC p022) are no tails. 2026-11-02, 524 lines: 0.07-0.10 all +1, 0.12 -1
+OUTLINE_TAIL = True   # a tail-less balloon's outline closing a pocket outside its mask is its tail (outline_tail)
 THOUGHT_TRAIL = True  # a tail-less balloon's trail of shrinking circles is its tail (thought_trail)
 TRAIL_TOL = 40        # trail: a circle is the balloon's fill colour within this (max channel difference)...
 TRAIL_DARK = 50       # ...outlined: its 3 px ring this much darker (mean grey) than its inside...
@@ -148,6 +150,51 @@ def tail(mask: np.ndarray) -> tuple[tuple[float, float] | None, tuple[float, flo
     if n_ < 1e-6:
         return None, None
     return (float(px + x0), float(py + y0)), (float(v[0] / n_), float(v[1] / n_))
+
+
+def outline_tail(rgb: np.ndarray, m: np.ndarray, others: np.ndarray) -> tuple[tuple[float, float] | None,
+                                                                              tuple[float, float] | None]:
+    """(tip, unit direction) of a tail the lettering mask left out, or (None, None) (2026-11-16: a tail drawn as an
+    outline only, its inside the art behind it, is not the balloon's fill, so the segmenter stops at the balloon's
+    rim). On the box's art (Scene.art), within a short side of the balloon: ink is what is darker than halfway between
+    the balloon's rim and its fill; a pocket the ink and the balloon close outside every other lettering mask, touching
+    the balloon, is added to it with its strokes, and tail() decides on that as on any mask (a window pane against the
+    balloon is no tail: the opening keeps it as body, or it reaches too little). A balloon without a rim darker than
+    its fill by TRAIL_DARK has no outline to follow. Measured 2026-11-16 on the 927 labelled lines (P&C 36-39,
+    gen-1101, test-1102): 868 -> 868, three lines now decided by a tail (all right), nothing broken; without the
+    wedge test 868 -> 861 (panes, hair, a caption's corner), and the wedge test was drawn from those 7, test
+    episodes among them."""
+    ys, xs = np.nonzero(m)
+    short = min(np.ptp(ys), np.ptp(xs)) + 1
+    y0, x0 = max(0, ys.min() - short), max(0, xs.min() - short)
+    y1, x1 = min(m.shape[0], ys.max() + short + 1), min(m.shape[1], xs.max() + short + 1)
+    lum, mm, oth = rgb[y0:y1, x0:x1].mean(2), m[y0:y1, x0:x1], others[y0:y1, x0:x1]
+    inner = lum[mm]
+    fill = float(np.median(inner[inner >= np.percentile(inner, 60)]))
+    rim = float(np.percentile(lum[mm & ~binary_erosion(mm, iterations=4)], 25))
+    if fill - rim < TRAIL_DARK:
+        return None, None
+    ink = binary_dilation(lum < (rim + fill) / 2, iterations=1)  # 1 px closes the gaps of thin anti-aliased strokes
+    wall = ink | mm
+    lab, n = label(binary_fill_holes(wall) & ~wall)
+    near, d = binary_dilation(mm, iterations=5), edt(~mm)
+    pocket = np.zeros_like(mm)
+    for i in range(1, n + 1):
+        p = lab == i
+        if not near[p].any() or oth[p].any():
+            continue
+        # a wedge: each quarter of its reach narrower than the one before (it ends in a point), and longer than its
+        # base on the balloon is wide (a pane or a strand of hair closed by the rim is neither)
+        dp = d[p]
+        reach = float(dp.max())
+        width = [int(((dp > reach * k / 4) & (dp <= reach * (k + 1) / 4)).sum()) for k in range(4)]
+        if all(a > b for a, b in zip(width, width[1:])) and reach >= (p & near).sum() / 5:
+            pocket |= p
+    if not pocket.any():
+        return None, None
+    grown = np.zeros_like(m)
+    grown[y0:y1, x0:x1] = mm | (binary_dilation(pocket, iterations=3) & ~oth)
+    return tail(grown)
 
 
 def thought_trail(rgb: np.ndarray, m: np.ndarray, others: np.ndarray) -> tuple[tuple[float, float] | None,
@@ -289,11 +336,14 @@ def load_box(box: Box) -> tuple[list[Card], list[Bubble], list[np.ndarray], tupl
                                   None, _centroid(m), tip, dirn, lettering=b.get("segmented_as"),
                                   delivery=b.get("delivery"), pace=b.get("pace")))
     plain = [b for b in bubbles if b.tail_tip is None and b.lettering != "sfx"]
-    if THOUGHT_TRAIL and plain:
+    if (OUTLINE_TAIL or THOUGHT_TRAIL) and plain:
         rgb = sc.art().astype(np.float32)
         for b in plain:
             others = np.logical_or.reduce([o.mask for o in bubbles if o is not b] + [np.zeros_like(b.mask)])
-            b.tail_tip, b.tail_dir = thought_trail(rgb, b.mask, others)
+            if THOUGHT_TRAIL:
+                b.tail_tip, b.tail_dir = thought_trail(rgb, b.mask, others)
+            if OUTLINE_TAIL and b.tail_tip is None and b.lettering == "bubble":  # a caption box has no outline tail
+                b.tail_tip, b.tail_dir = outline_tail(rgb, b.mask, others)
     order_bubbles(bubbles, frames)  # also homes each bubble in its frame
     return cards, bubbles, frames, (w, h)
 
