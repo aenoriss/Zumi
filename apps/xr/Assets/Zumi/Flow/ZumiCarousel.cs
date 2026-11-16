@@ -30,7 +30,7 @@ namespace Zumi
         public sealed class Look
         {
             /// <summary>Metres from the eye (level) to the arc's middle, and below the eye (chest height).</summary>
-            public float distance = 0.8f, drop = 0.35f;
+            public float distance = 0.8f, drop = 0.15f;
             /// <summary>The middle item's size (a book is scaled to its height).</summary>
             public Vector2 cardSize = new(0.21f, 0.29f);
             public float cardCorner = 0.012f;

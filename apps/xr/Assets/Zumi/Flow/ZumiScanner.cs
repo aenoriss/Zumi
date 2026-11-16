@@ -16,13 +16,11 @@ namespace Zumi
     /// furniture's top), or, without one, a fingertip that came down and holds still for TouchStillSeconds below the
     /// chest (its height is the desk's). A ripple spreads where it touched, and a page-shaped guide (A4) lies centred
     /// there: square to the surface's edge nearest the reader when the surface is known, else facing the reader.
-    /// The reader lays a pencil page in it and the scanner takes it by itself: a few times a second the guide's area
-    /// of the passthrough camera image is straightened into a small sample (each corner of the guide projected into
-    /// the image with the camera's pose and intrinsics, then a homography drawn by ZumiWarp) and read back without
-    /// stalling. A page is taken when the sample is mostly paper (bright, colourless), has held still for
-    /// <see cref="StillSeconds"/> (the hand has left), and the scanner is armed: after each capture it re-arms only
-    /// once the guide has been seen without a page or a hand has passed over it (the sheet lifted or swapped).
-    /// The guide's corners say what it sees, a line fills along its border while the page holds still, a light sweeps
+    /// The reader lays a pencil page in it and the scanner takes it by itself: ten times a second the guide's area of
+    /// the passthrough camera image, with a ring of desk around it, is straightened into a small sample (each corner
+    /// projected into the image with the camera's pose and intrinsics, then a homography drawn by ZumiWarp), read
+    /// back without stalling and fed to <see cref="ZumiPageDetector"/>, which says when a new pencil page lies still
+    /// in the guide with no hand over it. The guide's corners say what it sees, a line fills along its border while the page holds still, a light sweeps
     /// it, and the full-size straightened page flies onto a stack floating beside the reader. The Scan disc to the
     /// right of the guide takes a page at once; the small disc beside it takes the last page off the stack. The reader
     /// presses Done under the stack. Without the camera (the permission refused, no camera, the editor) the
@@ -58,34 +56,37 @@ namespace Zumi
         const string CameraPermission = "horizonos.permission.HEADSET_CAMERA";
 
         // ---- detection ------------------------------------------------------------------------------------------
-        /// <summary>The guide's sample: pixels across and down (drawn at twice that and averaged 2x2, against aliasing).</summary>
-        public const int SampleWidth = 64, SampleHeight = 90;
         /// <summary>Seconds between samples.</summary>
         public const float SampleInterval = 0.1f;
-        /// <summary>A paper pixel: luma at least this (0..1) and colour (max - min of r, g, b) at most this.</summary>
-        public const float PaperMinLuma = 0.4f, PaperMaxChroma = 0.15f;
-        /// <summary>A page is present when at least this share of the guide is paper.</summary>
-        public const float PaperMinShare = 0.65f;
-        /// <summary>Motion and content are compared over blocks of the sample, so a pixel's shift does not count:
-        /// this many blocks across and down.</summary>
-        public const int BlocksX = 16, BlocksY = 18;
-        /// <summary>Still: the mean absolute luma change per block from the sample before is below this...</summary>
-        public const float StillMaxDiff = 0.015f;
-        /// <summary>...for this long (the hand has left, the sheet lies flat).</summary>
-        public const float StillSeconds = 0.6f;
-        /// <summary>Pencil: a pixel this much darker than the paper around it (share of the paper's luma) is a mark.</summary>
-        public const float InkMinDarkening = 0.25f;
-        /// <summary>A sheet with fewer marks than this share of its pixels is blank (or bare desk): not taken by itself.</summary>
-        public const float MinInkShare = 0.004f;
-        /// <summary>Re-arming: after a page is taken the next one is taken only once the guide has been seen without a
-        /// page (the sheet lifted or swapped) or a sample moved at least this much (a hand passing over it).</summary>
-        public const float RearmMotion = 0.06f;
-        /// <summary>Optional extra test, off: the blocks' pencil must also differ from the page taken last by at
-        /// least this (mean absolute difference); kept loose, as similar pages and light changes can defeat it.</summary>
-        public const bool RequireNewContent = false;
-        public const float NewMinDiff = 0.008f;
-        /// <summary>Every sample's measures to the log, to tune the thresholds on the headset.</summary>
-        public static bool LogDetection = false;
+        /// <summary>On: a page whose pencil matches a page taken this session is not taken by itself (simulation: no
+        /// page taken twice). Off: after a capture the next page counts once the guide was seen empty or a hand passed
+        /// over it. Either way the Scan disc takes whatever lies in the guide.</summary>
+        [Tooltip("Refuse a page whose pencil matches a page already taken; off: re-arm by an empty guide or a hand pass")]
+        public bool RequireNovelty = true;
+
+        // ---- recording, for tuning the detector on the headset (scan_sim.py replay FILE) ------------------------
+        /// <summary>The recording: [float32 time][ReadWidth x ReadHeight x 4 RGBA bytes] per sample, appended.</summary>
+        public const string RecordFile = "scan-samples.bin";
+        const string RecordKey = "zumi.scanner.record";
+        static int recordSetting = -1;
+        /// <summary>Every sample appended to <see cref="RecordFile"/> under Application.persistentDataPath, and the
+        /// detector's measures logged once a second; the hand menu's settings face switches it, kept across launches.</summary>
+        public static bool RecordSamples
+        {
+            get
+            {
+                if (recordSetting < 0) recordSetting = PlayerPrefs.GetInt(RecordKey, 0);
+                return recordSetting == 1;
+            }
+            set
+            {
+                recordSetting = value ? 1 : 0;
+                PlayerPrefs.SetInt(RecordKey, recordSetting);
+                PlayerPrefs.Save();
+                Debug.Log($"[Zumi] scanner: recording scan samples {(value ? "on" : "off")} ({RecordPath})");
+            }
+        }
+        public static string RecordPath => System.IO.Path.Combine(Application.persistentDataPath, RecordFile);
 
         // ---- the editor's stand-in: a pencil page arrives in the guide ------------------------------------------
         /// <summary>The guide lies empty this long, then a page slides in for this long, then lies still.</summary>
@@ -97,13 +98,11 @@ namespace Zumi
         /// <summary>What the guide sees while ready: "empty", "seen" (a page, moving or not re-armed), "holding" (a
         /// page holding still, the border filling); "capturing" during the sweep.</summary>
         public string Detect { get; private set; } = "empty";
-        /// <summary>The last sample's measures: paper share, motion, ink share, difference from the page taken last.</summary>
-        public float PaperShare { get; private set; }
-        public float Motion { get; private set; }
-        public float InkShare { get; private set; }
-        public float Novelty { get; private set; }
+        /// <summary>The detector, its last sample's measures included (camera only).</summary>
+        public ZumiPageDetector Detector => detector;
         /// <summary>The border's fill while a page holds still, 0..1.</summary>
-        public float HoldProgress => holdSince < 0f ? 0f : Mathf.Clamp01((Time.time - holdSince) / StillSeconds);
+        public float HoldProgress => CameraPlaying ? detector.HoldProgress
+            : simHoldSince < 0f ? 0f : Mathf.Clamp01((Time.time - simHoldSince) / ZumiPageDetector.HoldSeconds);
         /// <summary>"auto" or "manual": how the last page was taken.</summary>
         public string LastCaptureTrigger { get; private set; }
         public int PagesCaptured => captures.Count;
@@ -123,8 +122,6 @@ namespace Zumi
             public Texture texture;
             public Transform card;
             public string source;
-            /// <summary>The pencil per block when it was taken (camera only).</summary>
-            public float[] ink;
         }
         public IReadOnlyList<Capture> Captures => captures;
 
@@ -171,6 +168,7 @@ namespace Zumi
             StartCamera();
             BuildStack();
             FindSurfaces();
+            detector.Reset();
             tips.Clear();
             ShowTouchHint();
             Debug.Log($"[Zumi] scanner: waiting for a touch on the desk ({surfaces.Count} level surfaces known)");
@@ -606,17 +604,18 @@ namespace Zumi
             State = "ready";
             stateSince = Time.time;
             Detect = "empty";
-            holdSince = -1f;
-            lastBlocks = null;
+            // samples resume after the sweep and the flight: no stillness across the gap
+            detector.Resume();
+            simHoldSince = -1f;
             simStart = Time.time;
         }
 
         // ---- watching the guide --------------------------------------------------------------------------------
 
+        readonly ZumiPageDetector detector = new();
         RenderTexture sampleRt;
         bool sampling;
-        float nextSample, holdSince = -1f;
-        float[] lastBlocks, lastInk;
+        float nextSample;
 
         void Watch()
         {
@@ -632,10 +631,11 @@ namespace Zumi
             var image = cameraAccess.GetTexture();
             if (!image) return;
             if (!warp) warp = new Material(ZumiFlowKit.WarpShader);
-            SetHomography(warp, GuideInImage(out _));
+            // the guide and a ring of desk around it
+            SetHomography(warp, GuideInImage(out _, ZumiPageDetector.RingMetres(Guide)));
             if (!sampleRt)
             {
-                sampleRt = new RenderTexture(SampleWidth * 2, SampleHeight * 2, 0, RenderTextureFormat.ARGB32) { name = "guide sample", wrapMode = TextureWrapMode.Clamp };
+                sampleRt = new RenderTexture(ZumiPageDetector.ReadWidth, ZumiPageDetector.ReadHeight, 0, RenderTextureFormat.ARGB32) { name = "guide sample", wrapMode = TextureWrapMode.Clamp };
                 sampleRt.Create();
             }
             Graphics.Blit(image, sampleRt, warp);
@@ -643,114 +643,78 @@ namespace Zumi
             AsyncGPUReadback.Request(sampleRt, 0, TextureFormat.RGBA32, OnSample);
         }
 
-        readonly float[] luma = new float[SampleWidth * SampleHeight];
-
         void OnSample(AsyncGPUReadbackRequest request)
         {
             sampling = false;
             if (!this || State != "ready" || request.hasError) return;
-            Measure(request.GetData<Color32>());
-        }
-
-        /// <summary>The sample's measures: how much of it is paper, how much it moved, how much pencil it carries
-        /// and how far that pencil is from the page taken last.</summary>
-        void Measure(NativeArray<Color32> px)
-        {
-            const int sw = SampleWidth * 2;
-            int paperCount = 0;
-            var paperSum = 0f;
-            for (var y = 0; y < SampleHeight; y++)
-            for (var x = 0; x < SampleWidth; x++)
-            {
-                float r = 0f, g = 0f, b = 0f;
-                for (var dy = 0; dy < 2; dy++)
-                for (var dx = 0; dx < 2; dx++)
-                {
-                    var c = px[(2 * y + dy) * sw + 2 * x + dx];
-                    r += c.r; g += c.g; b += c.b;
-                }
-                r /= 4f * 255f; g /= 4f * 255f; b /= 4f * 255f;
-                var l = 0.299f * r + 0.587f * g + 0.114f * b;
-                luma[y * SampleWidth + x] = l;
-                if (l >= PaperMinLuma && Mathf.Max(r, Mathf.Max(g, b)) - Mathf.Min(r, Mathf.Min(g, b)) <= PaperMaxChroma)
-                {
-                    paperCount++;
-                    paperSum += l;
-                }
-            }
-            const int n = SampleWidth * SampleHeight;
-            var paperLevel = paperCount > 0 ? paperSum / paperCount : 1f;
-            var blocks = new float[BlocksX * BlocksY];
-            var ink = new float[BlocksX * BlocksY];
-            var marks = 0;
-            for (var y = 0; y < SampleHeight; y++)
-            for (var x = 0; x < SampleWidth; x++)
-            {
-                var l = luma[y * SampleWidth + x];
-                var dark = Mathf.Clamp01((paperLevel - l) / Mathf.Max(paperLevel, 0.05f));
-                if (dark >= InkMinDarkening) marks++;
-                var i = y * BlocksY / SampleHeight * BlocksX + x * BlocksX / SampleWidth;
-                blocks[i] += l;
-                ink[i] += dark;
-            }
-            const float perBlock = (float)n / (BlocksX * BlocksY);
-            for (var i = 0; i < blocks.Length; i++)
-            {
-                blocks[i] /= perBlock;
-                ink[i] /= perBlock;
-            }
-            var motion = lastBlocks == null ? 1f : MeanDiff(blocks, lastBlocks);
-            lastBlocks = blocks;
-            var novelty = lastInk == null ? 1f : MeanDiff(ink, lastInk);
-            Judge((float)paperCount / n, motion, (float)marks / n, novelty, ink);
-        }
-
-        static float MeanDiff(float[] a, float[] b)
-        {
-            var sum = 0f;
-            for (var i = 0; i < a.Length; i++) sum += Mathf.Abs(a[i] - b[i]);
-            return sum / a.Length;
-        }
-
-        float[] heldInk;
-        /// <summary>False from a capture until the guide was seen empty or a hand passed over it.</summary>
-        public bool Armed { get; private set; } = true;
-
-        /// <summary>Armed, present and still for <see cref="StillSeconds"/>: the page is taken.</summary>
-        void Judge(float paper, float motion, float ink, float novelty, float[] inkBlocks)
-        {
-            PaperShare = paper;
-            Motion = motion;
-            InkShare = ink;
-            Novelty = novelty;
-            var present = paper >= PaperMinShare;
-            var still = motion <= StillMaxDiff;
-            if (!Armed && (!present || (motion >= RearmMotion && motion < 1f)))
-            {
-                Armed = true;
-                if (LogDetection) Debug.Log($"[Zumi] scanner: re-armed ({(present ? "a hand passed" : "the guide is empty")})");
-            }
-            var fresh = Armed && ink >= MinInkShare && (!RequireNewContent || novelty >= NewMinDiff);
             var now = Time.time;
-            if (present && still && fresh)
+            Record(request.GetData<byte>(), now);
+            detector.RequireNovelty = RequireNovelty;
+            var seen = detector.Feed(request.GetData<Color32>().AsReadOnlySpan(), now);
+            Detect = seen switch
             {
-                if (holdSince < 0f) holdSince = now;
-                Detect = "holding";
-            }
-            else
+                ZumiPageDetector.State.Empty => "empty",
+                ZumiPageDetector.State.Seen => "seen",
+                _ => "holding",
+            };
+            if (recording && now >= nextRecordLog)
             {
-                holdSince = -1f;
-                Detect = present ? "seen" : "empty";
+                nextRecordLog = now + 1f;
+                Debug.Log($"[Zumi] scanner sample {now:F1}: {seen} {detector}");
             }
-            if (LogDetection)
-                Debug.Log($"[Zumi] scanner sample: paper {paper:F2} motion {motion:F4} ink {ink:F4} new {novelty:F4} armed {Armed} -> {Detect}");
-            heldInk = inkBlocks;
-            if (Detect == "holding" && now - holdSince >= StillSeconds)
-            {
-                Debug.Log($"[Zumi] scanner: page seen still for {StillSeconds:F1} s (paper {paper:F2}, motion {motion:F4}, ink {ink:F4}, new {novelty:F4})");
-                Take("auto");
-            }
+            if (seen != ZumiPageDetector.State.Capture) return;
+            Debug.Log($"[Zumi] scanner: page held still for {ZumiPageDetector.HoldSeconds:F1} s ({detector})");
+            Take("auto");
         }
+
+        // ---- recording -----------------------------------------------------------------------------------------
+
+        System.IO.FileStream recordStream;
+        bool recording;
+        float nextRecordLog;
+
+        // the sample as scan_sim.py replay reads it: [float32 time][RGBA bytes], appended
+        void Record(NativeArray<byte> px, float time)
+        {
+            recording = RecordSamples;
+            if (!recording)
+            {
+                StopRecording();
+                return;
+            }
+            if (recordStream == null)
+            {
+                try
+                {
+                    recordStream = new System.IO.FileStream(RecordPath, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.Read, 1 << 18);
+                    Debug.Log($"[Zumi] scanner: recording samples to {RecordPath} ({recordStream.Length / (4 + px.Length)} already there)");
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogWarning($"[Zumi] scanner: cannot record to {RecordPath}: {e.Message}");
+                    recording = false;
+                    return;
+                }
+            }
+            System.Span<byte> stamp = stackalloc byte[4];
+            System.BitConverter.TryWriteBytes(stamp, time);
+            recordStream.Write(stamp);
+            recordStream.Write(px.AsReadOnlySpan());
+        }
+
+        void StopRecording()
+        {
+            if (recordStream == null) return;
+            recordStream.Dispose();
+            recordStream = null;
+        }
+
+        void OnApplicationPause(bool paused)
+        {
+            if (paused) recordStream?.Flush();
+        }
+
+        void OnApplicationQuit() => StopRecording();
 
         // the corners and the border say what the guide sees
         void ShowDetect()
@@ -773,26 +737,22 @@ namespace Zumi
 
         // ---- the editor's stand-in -----------------------------------------------------------------------------
 
-        float simStart;
+        float simStart, simHoldSince = -1f;
         Transform simCard;
         Material simMaterial;
 
-        // the next pencil page slides into the guide, wobbles as a hand lets it go, then lies still; the same
-        // measures a camera sample gives go to the same judge
+        // the next pencil page slides into the guide, wobbles as a hand lets it go, then lies still: the guide's
+        // states are driven directly (empty, seen while it slides, holding once it lies still), not through the
+        // detector, which needs camera pixels
         void Simulate()
         {
-            if (data == null || data.pages.Count == 0 || captures.Count >= data.pages.Count)
+            if (data == null || data.pages.Count == 0 || captures.Count >= data.pages.Count || Time.time - simStart < SimEmptySeconds)
             {
-                Judge(0.05f, 0f, 0f, 0f, null);
+                ClearSimSheet();
+                SimDetect("empty");
                 return;
             }
             var t = Time.time - simStart;
-            if (t < SimEmptySeconds)
-            {
-                ClearSimSheet();
-                Judge(0.05f, 0.001f, 0f, 0f, null);
-                return;
-            }
             if (!simCard)
             {
                 var tex = data.pages[captures.Count % data.pages.Count].pencilTexture;
@@ -804,9 +764,15 @@ namespace Zumi
             var wobble = (1f - k) * Mathf.Sin(t * 18f) * 0.004f;
             simCard.localPosition = new Vector3(wobble, -Guide.y * 0.7f * (1f - slide), -0.0004f);
             simCard.localRotation = Quaternion.Euler(0f, 0f, (1f - slide) * 8f);
-            var arrived = k >= 1f;
-            var paper = arrived ? 0.9f : Mathf.Lerp(0.2f, 0.85f, slide);
-            Judge(paper, arrived ? 0.004f : 0.08f, 0.05f, 1f, null);
+            SimDetect(k >= 1f ? "holding" : slide > 0.5f ? "seen" : "empty");
+            if (Detect == "holding" && Time.time - simHoldSince >= ZumiPageDetector.HoldSeconds) Take("auto");
+        }
+
+        void SimDetect(string seen)
+        {
+            if (seen == "holding" && simHoldSince < 0f) simHoldSince = Time.time;
+            if (seen != "holding") simHoldSince = -1f;
+            Detect = seen;
         }
 
         void ClearSimSheet()
@@ -834,11 +800,10 @@ namespace Zumi
             if (!texture && data != null && data.pages.Count > 0) texture = data.pages[captures.Count % data.pages.Count].pencilTexture;
             LastCaptureSource = source;
             LastCaptureTrigger = trigger;
-            taking = new Capture { texture = texture, source = source, ink = heldInk };
-            if (source == "camera" && taking.ink != null) lastInk = taking.ink;
-            // the sheet just taken is not taken again until it is lifted or a hand passes over it
-            Armed = false;
-            holdSince = -1f;
+            taking = new Capture { texture = texture, source = source };
+            // the sheet just taken (its pencil, or with novelty off until the scanner re-arms) is not taken again
+            if (source == "camera") detector.Captured();
+            simHoldSince = -1f;
             Detect = "capturing";
             State = "scanning";
             stateSince = Time.time;
@@ -923,7 +888,8 @@ namespace Zumi
             if (State != "ready" || captures.Count == 0) return;
             removing = captures[^1];
             captures.RemoveAt(captures.Count - 1);
-            // the sheet in the guide is not taken again until the scanner re-arms (the Scan disc retakes it at once)
+            // that page's pencil may be taken again
+            if (removing.source == "camera") detector.Forget();
             flyFrom = new Pose(removing.card.position, removing.card.rotation);
             flyFromScale = removing.card.localScale;
             ClearSimSheet();
@@ -980,11 +946,12 @@ namespace Zumi
         }
 
         // The guide's corners in the camera image, page (u, v): (0, 0) the near left corner as the reader sees it, v
-        // toward the far edge. The image is from the frame before (the texture is filled on the render thread).
-        Vector2[] GuideInImage(out Pose pose)
+        // toward the far edge. The image is from the frame before (the texture is filled on the render thread). The
+        // corners are moved out by grow on each side (the detector's desk ring).
+        Vector2[] GuideInImage(out Pose pose, Vector2 grow = default)
         {
             pose = cameraAccess.GetCameraPose();
-            float w = Guide.x / 2f, h = Guide.y / 2f;
+            float w = Guide.x / 2f + grow.x, h = Guide.y / 2f + grow.y;
             var corners = new[] { new Vector3(-w, -h), new Vector3(w, -h), new Vector3(w, h), new Vector3(-w, h) };
             var uv = new Vector2[4];
             for (var i = 0; i < 4; i++) uv[i] = cameraAccess.WorldToViewportPoint(guide.TransformPoint(corners[i]), pose);
@@ -1051,6 +1018,7 @@ namespace Zumi
             removing = null;
             if (sampleRt) Destroy(sampleRt);
             if (cameraAccess) Destroy(cameraAccess);
+            StopRecording();
         }
 
         void OnDestroy() => Close();
