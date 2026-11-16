@@ -280,6 +280,14 @@ namespace Zumi
             seat = GetComponent<ZumiSeat>();
             if (places == null) return;
             foreach (var mesh in places.meshes) known[mesh.setting] = mesh;
+            // the window is no wider or taller than what every place fills at full strength (inside its vignette)
+            var span = new Vector2(float.MaxValue, float.MaxValue);
+            foreach (var mesh in places.meshes)
+            {
+                span.x = Mathf.Min(span.x, mesh.hDeg - 2f * (VignetteInsetDegrees + VignetteDegrees));
+                span.y = Mathf.Min(span.y, mesh.vDeg - 2f * (VignetteInsetDegrees + VignetteDegrees));
+            }
+            if (span.x < float.MaxValue) room.LimitToContent(Vector2.Max(span, new Vector2(20f, 20f)));
 
             stage = new GameObject("Places").transform;
             openings = new GameObject("Openings").transform;

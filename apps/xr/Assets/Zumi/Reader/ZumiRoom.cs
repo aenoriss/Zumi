@@ -342,6 +342,20 @@ namespace Zumi
             loadNote = result == MRUK.LoadDeviceResult.Success ? null : $"sample room {index}: {result}";
         }
 
+        /// <summary>The most of the window the places can fill: across and up, in degrees about the panel's direction
+        /// and the eye's level, where every place of the episode still shows at full strength (inside its vignette).
+        /// The window never runs past it: the hole on the wall was bigger than the scene behind it, which faded out
+        /// well inside the hole's edge (owner, 2026-11-16). Set by ZumiPlaces once the episode is known.</summary>
+        public Vector2 ContentSpan { get; private set; } = new Vector2(WindowWidthDegrees, WindowHeightDegrees);
+        int contentSerial;
+
+        public void LimitToContent(Vector2 span)
+        {
+            if (span == ContentSpan) return;
+            ContentSpan = span;
+            contentSerial++;
+        }
+
         void Update()
         {
             if (!seat.Taken) return;
@@ -359,7 +373,7 @@ namespace Zumi
             if (mruk && mruk.IsInitialized && mruk.Rooms.Count > 0) room = mruk.GetCurrentRoom();
             unchecked
             {
-                var h = seat.Seatings * 397 + (loading ? 1 : 0);
+                var h = (seat.Seatings * 397 + (loading ? 1 : 0)) * 31 + contentSerial;
                 if (room) h = h * 31 + room.GetHashCode() + room.Anchors.Count * 7919;
                 return h;
             }
@@ -670,12 +684,15 @@ namespace Zumi
             var panelAt = Azimuth(eye, eye + ahead);
             var azLeft = sideL != null ? Azimuth(eye, sideL.corner + sideL.along * sideL.metres) : Mathf.Atan2(left, d) * Mathf.Rad2Deg;
             var azRight = sideR != null ? Azimuth(eye, sideR.corner + sideR.along * sideR.metres) : Mathf.Atan2(right, d) * Mathf.Rad2Deg;
-            azLeft = Mathf.Max(azLeft, panelAt - WindowWidthDegrees / 2f, -MaxWindowAzimuth);
-            azRight = Mathf.Min(azRight, panelAt + WindowWidthDegrees / 2f, MaxWindowAzimuth);
+            var width = Mathf.Min(WindowWidthDegrees, ContentSpan.x);
+            azLeft = Mathf.Max(azLeft, panelAt - width / 2f, -MaxWindowAzimuth);
+            azRight = Mathf.Min(azRight, panelAt + width / 2f, MaxWindowAzimuth);
             var reach = d / Mathf.Cos(Mathf.Clamp(panelAt, -MaxWindowAzimuth, MaxWindowAzimuth) * Mathf.Deg2Rad);
             var bottomY = Shape.floorY + WindowSill;
-            var elLow = Mathf.Max(-WindowHeightDegrees / 2f, Mathf.Atan2(bottomY - eye.y, reach) * Mathf.Rad2Deg);
-            var elHigh = Mathf.Min(elLow + WindowHeightDegrees, Mathf.Atan2(topY - eye.y, reach) * Mathf.Rad2Deg);
+            // up: the place is drawn about the eye's level, so the window keeps within ContentSpan.y of it both ways
+            var height = Mathf.Min(WindowHeightDegrees, ContentSpan.y);
+            var elLow = Mathf.Max(-height / 2f, Mathf.Atan2(bottomY - eye.y, reach) * Mathf.Rad2Deg);
+            var elHigh = Mathf.Min(Mathf.Min(elLow + height, height / 2f), Mathf.Atan2(topY - eye.y, reach) * Mathf.Rad2Deg);
             float toLeft = panelAt - azLeft, toRight = azRight - panelAt;
             // On a real wall the window stays on the wall at whatever size the wall holds: the owner's rule is that the
             // opening's edge sticks to the real wall, and refusing a wall below the free window's minimum sent most
