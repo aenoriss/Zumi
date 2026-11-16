@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using GLTFast;
+using GLTFast.Materials;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -65,7 +66,7 @@ namespace Zumi
                                                       Shader cardShader, CancellationToken cancel)
         {
             var json = JObject.Parse(Encoding.UTF8.GetString(glb, 20, BitConverter.ToInt32(glb, 12)));
-            var scene = new ZumiPanelScene { Root = new GameObject("scene").transform, gltf = new GltfImport() };
+            var scene = new ZumiPanelScene { Root = new GameObject("scene").transform, gltf = new GltfImport(materialGenerator: NoMaterials.Instance) };
             scene.Root.SetParent(eye, false);
             // glTFast keeps -Z as the camera's view; turning it 180 points it the way the eye looks
             scene.Root.SetLocalPositionAndRotation(Vector3.zero, Quaternion.Euler(0f, 180f, 0f));
@@ -118,10 +119,10 @@ namespace Zumi
                     transform = go.transform,
                 };
                 var first = true;
+                var k = 0;
                 foreach (var r in renderers)
                 {
-                    var src = r.sharedMaterial;
-                    var tex = src.mainTexture ? src.mainTexture : src.HasProperty("baseColorTexture") ? src.GetTexture("baseColorTexture") : null;
+                    var tex = BaseColour(json, scene.gltf, (int)i, k++);
                     Material m;
                     if (node.kind == "window")
                         m = new Material(windowShader) { name = name, mainTexture = tex };
@@ -144,6 +145,27 @@ namespace Zumi
                 scene.nodes.Add(node);
             }
             return scene;
+        }
+
+        // A node's art, by the file's own indices (node -> mesh -> primitive -> material -> baseColorTexture -> texture),
+        // from the textures glTFast decoded. Never through glTFast's materials: their shaders are in no scene, so a
+        // build strips them, and on the headset the lookup came back empty and every card drew white.
+        static Texture2D BaseColour(JObject json, GltfImport gltf, int node, int primitive)
+        {
+            var mesh = json["nodes"]?[node]?["mesh"];
+            if (mesh == null || json["meshes"]?[(int)mesh]?["primitives"] is not JArray primitives || primitives.Count == 0) return null;
+            var material = primitives[Mathf.Min(primitive, primitives.Count - 1)]["material"];
+            var texture = material == null ? null : json["materials"]?[(int)material]?["pbrMetallicRoughness"]?["baseColorTexture"]?["index"];
+            return texture == null ? null : gltf.GetTexture((int)texture);
+        }
+
+        // glTFast builds no materials: the reader makes its own from Zumi/Window and Zumi/Card
+        sealed class NoMaterials : IMaterialGenerator
+        {
+            public static readonly NoMaterials Instance = new();
+            public Material GetDefaultMaterial(bool pointsSupport = false) => null;
+            public Material GenerateMaterial(GLTFast.Schema.MaterialBase gltfMaterial, IGltfReadable gltf, bool pointsSupport = false) => null;
+            public void SetLogger(GLTFast.Logging.ICodeLogger logger) { }
         }
 
         /// <summary>A layer's colour: its art times rgb, drawn at alpha (0 is not drawn at all).</summary>

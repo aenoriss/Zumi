@@ -66,7 +66,7 @@ namespace Zumi
         }
     }
 
-    /// <summary>A flat rectangle of the room a place is seen through: a wall, the ceiling, or the window that stands in for them.</summary>
+    /// <summary>A flat rectangle of the room: a wall, or the window on it a place is seen through.</summary>
     public struct RoomQuad
     {
         public string name;
@@ -77,7 +77,7 @@ namespace Zumi
 
     /// <summary>
     /// What a place is fitted to, as plain numbers (read off the main thread): where the seat's eye is, which way the key
-    /// wall lies, and how far the room reaches from the eye in any direction.
+    /// wall lies, and the one window on it the place is seen through.
     /// </summary>
     public sealed class RoomShape
     {
@@ -86,61 +86,22 @@ namespace Zumi
         public Vector3 eye;
         /// <summary>Level, from the eye to the key wall and square to it; right is to the right of someone facing it.</summary>
         public Vector3 forward, right;
-        /// <summary>Level, the seat's own forward: the panel floats along it, which is not always square to the key wall.</summary>
-        public Vector3 ahead;
         /// <summary>Metres from the eye to the key wall along forward.</summary>
         public float wallDistance;
-        public float floorY, ceilingY;
-        /// <summary>Scanned: the walls' corners on the ground plan, in order.</summary>
-        public Vector2[] outline;
-        /// <summary>No room: the window on the wall plane, its middle and its half sizes across and up.</summary>
+        public float floorY;
+        /// <summary>The window on the key wall: its middle and its half sizes across (along right) and up, in metres.</summary>
         public Vector3 windowCentre;
         public Vector2 windowHalf;
 
-        /// <summary>Whether a line of sight from the eye along a unit direction leaves the room through an opening a
-        /// place is seen through: any direction in a scanned room, only the window's without one.</summary>
-        public bool Through(Vector3 dir)
+        /// <summary>Metres from the eye to the key wall's plane along a unit direction (infinity where it never meets
+        /// it), and whether the line of sight crosses the plane inside the window.</summary>
+        public bool Window(Vector3 dir, out float metres)
         {
-            if (mode == RoomMode.Scanned) return true;
-            var t = Distance(dir);
-            if (float.IsInfinity(t)) return false;
-            var at = eye + dir * t - windowCentre;
+            var toward = Vector3.Dot(dir, forward);
+            metres = toward > 1e-4f ? wallDistance / toward : float.PositiveInfinity;
+            if (float.IsInfinity(metres)) return false;
+            var at = eye + dir * metres - windowCentre;
             return Mathf.Abs(Vector3.Dot(at, right)) <= windowHalf.x && Mathf.Abs(at.y) <= windowHalf.y;
-        }
-
-        /// <summary>Metres from the eye to the room's edge along a unit direction: its walls, floor and ceiling when it is
-        /// scanned, the one wall plane otherwise. Infinity where the direction meets none.</summary>
-        public float Distance(Vector3 dir) => Distance(dir, out _);
-
-        /// <summary>The same, and whether that edge is a wall (without a room: the wall plane) rather than the floor or
-        /// the ceiling.</summary>
-        public float Distance(Vector3 dir, out bool wall)
-        {
-            wall = false;
-            if (mode == RoomMode.None)
-            {
-                var toward = Vector3.Dot(dir, forward);
-                wall = toward > 1e-4f;
-                return wall ? wallDistance / toward : float.PositiveInfinity;
-            }
-            var t = float.PositiveInfinity;
-            if (dir.y > 1e-6f) t = (ceilingY - eye.y) / dir.y;
-            else if (dir.y < -1e-6f) t = (floorY - eye.y) / dir.y;
-            Vector2 o = new(eye.x, eye.z), d = new(dir.x, dir.z);
-            for (int i = 0, j = outline.Length - 1; i < outline.Length; j = i++)
-            {
-                Vector2 a = outline[j], e = outline[i] - a;
-                var cross = d.x * e.y - d.y * e.x;
-                if (Mathf.Abs(cross) < 1e-8f) continue;
-                var along = ((a.x - o.x) * e.y - (a.y - o.y) * e.x) / cross;
-                var on = ((a.x - o.x) * d.y - (a.y - o.y) * d.x) / cross;
-                if (along > 1e-4f && on >= 0f && on <= 1f && along < t)
-                {
-                    t = along;
-                    wall = true;
-                }
-            }
-            return t;
         }
     }
 
@@ -149,8 +110,8 @@ namespace Zumi
     /// not (None: no scan, permission refused, the load failed; a normal outcome); where the seat is; which wall is the
     /// key wall, the nearest one behind the panel as the seat sees it: on the seat's forward, or failing that on the
     /// nearest bearing to either side, and facing the seat (without a room, or with no such wall: a wall plane
-    /// VirtualWallDistance ahead of the seat); how far the room reaches (RoomShape); what a place is seen through (the
-    /// walls ahead and the ceiling, never the floor; without a room one window); the furniture as boxes; and the level surfaces things can
+    /// VirtualWallDistance ahead of the seat); the one window on it a place is seen through (RoomShape, Portals); the
+    /// furniture as boxes; and the level surfaces things can
     /// stand on, by kind. It is worked out again when the seat is taken again and when the scanned room arrives,
     /// changes or goes. It also asks MRUK for the room: from the headset when one is on (never starting the system's
     /// room scan by itself), from one of MRUK's sample rooms in the editor without a headset.
@@ -161,11 +122,15 @@ namespace Zumi
         /// <summary>Without a scanned room: metres from the seat's eye to the wall plane the place stands on, 1 m behind
         /// the panel.</summary>
         public const float VirtualWallDistance = 2.0f;
-        /// <summary>Without a scanned room: the window on that plane, in metres. 3.4 by 2.1 at 2 m is 81 by 55 degrees:
-        /// the 55-degree panel leaves 13 degrees of it showing on either side.</summary>
-        public const float WindowWidth = 3.4f, WindowHeight = 2.1f;
-        /// <summary>The window's lower edge is never nearer the floor than this.</summary>
+        /// <summary>The window a place is seen through, as the angles it spans from the seat's eye, centred on the
+        /// panel's direction: the panel at 1 m spans 55 degrees on its long side, so 100 leaves 22 or more on either
+        /// side of it. Clamped to the key wall's extent when the wall is smaller.</summary>
+        public const float WindowWidthDegrees = 100f, WindowHeightDegrees = 56f;
+        /// <summary>Metres above the floor the window's lower edge never goes below (the window moves up to keep it).</summary>
         public const float WindowSill = 0.2f;
+        /// <summary>Directions further than this from the key wall's normal never meet it usefully: the window's side
+        /// edges are cut there.</summary>
+        const float MaxWindowAzimuth = 80f;
         /// <summary>A table or storage top counts as a surface between these heights above the floor.</summary>
         public const float MinTopHeight = 0.3f, MaxTableHeight = 1.3f, MaxShelfHeight = 1.8f;
         /// <summary>A wall this many degrees to either side of the seat's forward can still be the key wall.</summary>
@@ -206,7 +171,11 @@ namespace Zumi
         public Bounds Bounds { get; private set; }
         public IReadOnlyList<RoomSurface> Surfaces => surfaces;
         public IReadOnlyList<RoomBox> Boxes => boxes;
+        /// <summary>What a place is seen through: the one window on the key wall.</summary>
         public IReadOnlyList<RoomQuad> Portals => portals;
+        /// <summary>Degrees the window spans from the seat's eye, across and up (smaller than the defaults when the key
+        /// wall cuts it).</summary>
+        public Vector2 WindowSpan { get; private set; }
         /// <summary>The lowest point of anything a place is seen through, in metres above the floor.</summary>
         public float PortalFloorClearance { get; private set; }
 
@@ -349,7 +318,7 @@ namespace Zumi
             surfaceLines.Clear();
             foreach (var s in surfaces)
                 surfaceLines.Add(Invariant($"{s.kind.ToString().ToLowerInvariant()} {s.name} h {s.height - Shape.floorY:F2} area {s.area:F2} free {s.freeArea:F2}"));
-            Debug.Log(Invariant($"[Zumi] room: {Mode}{(why != null ? $" ({why})" : "")}, key wall {KeyWallName} {KeyWallDistance:F2} m away, {portals.Count} openings, floor {FloorCount} table {TableCount} shelf {ShelfCount}, {boxes.Count} boxes"));
+            Debug.Log(Invariant($"[Zumi] room: {Mode}{(why != null ? $" ({why})" : "")}, key wall {KeyWallName} {KeyWallDistance:F2} m away, window {Shape.windowHalf.x * 2f:F2} x {Shape.windowHalf.y * 2f:F2} m ({WindowSpan.x:F0} x {WindowSpan.y:F0} deg), floor {FloorCount} table {TableCount} shelf {ShelfCount}, {boxes.Count} boxes"));
         }
 
         // ---- a scanned room ------------------------------------------------------------------------------------
@@ -408,27 +377,19 @@ namespace Zumi
                 why = "the seat is against the wall";
                 return false;
             }
-            Shape = new RoomShape { eye = eye, ahead = ahead, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY, ceilingY = ceilingY, outline = outline };
+            Shape = new RoomShape { eye = eye, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY };
             KeyWallNormal = normal;
             KeyWallPoint = eye - normal * distance;
             KeyWallName = keyWall.name;
             KeyWallAhead = WallHit(keyWall, eye, ahead, out var straight) ? straight : distance / Mathf.Max(Vector3.Dot(ahead, -normal), 1e-3f);
             Bounds = room.GetRoomBounds();
 
-            // what the place is seen through: the walls ahead of the seat's eye and the ceiling, never the floor
-            foreach (var wall in room.WallAnchors)
-            {
-                if (!IsWall(wall)) continue;
-                var quad = Quad(wall);
-                var inFront = false;
-                for (var c = 0; c < 4; c++)
-                {
-                    var corner = quad.centre + quad.right * ((c & 1) == 0 ? -0.5f : 0.5f) * quad.size.x + quad.up * ((c & 2) == 0 ? -0.5f : 0.5f) * quad.size.y;
-                    inFront |= Vector3.Dot(corner - eye, Shape.forward) > 0f;
-                }
-                if (inFront) portals.Add(quad);
-            }
-            if (ceilingAnchor.PlaneRect.HasValue) portals.Add(Quad(ceilingAnchor));
+            // the wall's extent in the window's frame: across along Shape.right from KeyWallPoint, up in world y
+            var wallQuad = Quad(keyWall);
+            var across = Vector3.Dot(wallQuad.centre - KeyWallPoint, Shape.right);
+            var halfAcross = Mathf.Abs(Vector3.Dot(wallQuad.right, Shape.right)) * wallQuad.size.x / 2f;
+            var halfUp = Mathf.Abs(wallQuad.up.y) * wallQuad.size.y / 2f;
+            Window(eye, ahead, new Vector2(across - halfAcross, across + halfAcross), new Vector2(wallQuad.centre.y - halfUp, wallQuad.centre.y + halfUp));
 
             foreach (var anchor in room.Anchors)
             {
@@ -518,26 +479,44 @@ namespace Zumi
             // the tracked floor: the rig's tracking origin is at floor level
             var rig = FindAnyObjectByType<OVRCameraRig>();
             var floorY = rig && rig.trackingSpace ? rig.trackingSpace.position.y : 0f;
-            Shape = new RoomShape
-            {
-                eye = eye, ahead = ahead, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance,
-                floorY = floorY, ceilingY = float.PositiveInfinity, outline = System.Array.Empty<Vector2>(),
-            };
+            Shape = new RoomShape { eye = eye, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance, floorY = floorY };
             KeyWallNormal = -ahead;
             KeyWallPoint = eye + ahead * VirtualWallDistance;
             KeyWallName = "virtual";
             KeyWallAhead = VirtualWallDistance;
             Bounds = default;
-            var centre = KeyWallPoint;
-            centre.y = Mathf.Max(eye.y, floorY + WindowSill + WindowHeight / 2f);
-            Shape.windowCentre = centre;
-            Shape.windowHalf = new Vector2(WindowWidth, WindowHeight) / 2f;
-            portals.Add(new RoomQuad { name = "window", centre = centre, normal = -ahead, right = Shape.right, up = Vector3.up, size = new Vector2(WindowWidth, WindowHeight) });
+            Window(eye, ahead, new Vector2(float.NegativeInfinity, float.PositiveInfinity), new Vector2(floorY, float.PositiveInfinity));
             surfaces.Add(new RoomSurface
             {
                 kind = SurfaceKind.Floor, name = "FLOOR", height = floorY, unbounded = true, centre = Flat(eye), axis = Vector2.right,
                 area = float.PositiveInfinity, freeArea = float.PositiveInfinity,
             });
+        }
+
+        // ---- the window ----------------------------------------------------------------------------------------
+
+        // The window on the key wall's plane: WindowWidthDegrees across about the panel's direction (the seat's
+        // forward), WindowHeightDegrees up about the eye's level at the distance along that direction, lifted to keep
+        // its lower edge at WindowSill, then cut to the wall's extent: across (metres along Shape.right from
+        // KeyWallPoint) and up (world y).
+        void Window(Vector3 eye, Vector3 ahead, Vector2 wallAcross, Vector2 wallUp)
+        {
+            var d = Shape.wallDistance;
+            var panelAt = Mathf.Atan2(Vector3.Dot(ahead, Shape.right), Vector3.Dot(ahead, Shape.forward)) * Mathf.Rad2Deg;
+            float Across(float deg) => d * Mathf.Tan(Mathf.Clamp(deg, -MaxWindowAzimuth, MaxWindowAzimuth) * Mathf.Deg2Rad);
+            float left = Mathf.Max(Across(panelAt - WindowWidthDegrees / 2f), wallAcross.x), right = Mathf.Min(Across(panelAt + WindowWidthDegrees / 2f), wallAcross.y);
+            var reach = d / Mathf.Cos(Mathf.Clamp(panelAt, -MaxWindowAzimuth, MaxWindowAzimuth) * Mathf.Deg2Rad);
+            var half = reach * Mathf.Tan(WindowHeightDegrees / 2f * Mathf.Deg2Rad);
+            var bottom = Mathf.Max(eye.y - half, Shape.floorY + WindowSill);
+            var top = Mathf.Min(bottom + 2f * half, wallUp.y);
+            bottom = Mathf.Max(bottom, wallUp.x);
+            var centre = KeyWallPoint + Shape.right * ((left + right) / 2f);
+            centre.y = (bottom + top) / 2f;
+            var size = new Vector2(Mathf.Max(right - left, 0f), Mathf.Max(top - bottom, 0f));
+            Shape.windowCentre = centre;
+            Shape.windowHalf = size / 2f;
+            portals.Add(new RoomQuad { name = "window", centre = centre, normal = KeyWallNormal, right = Shape.right, up = Vector3.up, size = size });
+            WindowSpan = new Vector2(Mathf.Atan2(right, d) - Mathf.Atan2(left, d), Mathf.Atan2(top - eye.y, reach) - Mathf.Atan2(bottom - eye.y, reach)) * Mathf.Rad2Deg;
         }
 
         // ---- surfaces ------------------------------------------------------------------------------------------
