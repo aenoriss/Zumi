@@ -39,6 +39,10 @@ namespace Zumi
         bool resumeAfterInterruption;
 
         public IEpisodeClock Clock => clock;
+        /// <summary>The episode file, once open: the creation flow reads a panel's scene and its sounds from it.</summary>
+        public IEpisodeSource Source => source;
+        /// <summary>The episode is open but waits for a book to be opened (ZumiFlow): no seat, nothing shown, no clock.</summary>
+        public bool WaitsForBook { get; private set; }
         public ZumiTimeline Timeline => timeline;
         /// <summary>Raised each time the clock reaches the episode's end. What comes after an episode (the next
         /// chapter, the library) hangs on this.</summary>
@@ -141,6 +145,25 @@ namespace Zumi
             Debug.Log("[Zumi] reader: replay");
         }
 
+        /// <summary>Called before Start by the creation flow: the episode opens, but nothing of it shows and the seat is
+        /// not taken until Begin.</summary>
+        public void HoldForBook()
+        {
+            WaitsForBook = true;
+            Part<ZumiSeat>().Held = true;
+        }
+
+        /// <summary>A book was opened: the seat is taken where the head is now and the episode begins from its title.</summary>
+        public void Begin()
+        {
+            WaitsForBook = false;
+            var s = Part<ZumiSeat>();
+            s.Held = false;
+            s.Reseat();
+            if (clock != null && !autoStarted) cards.Arm();
+            Debug.Log("[Zumi] reader: a book was opened, the episode begins");
+        }
+
         /// <summary>The accents on or off, kept between launches.</summary>
         public void SetMotion(bool on)
         {
@@ -166,7 +189,7 @@ namespace Zumi
             if (clock.Time < clock.Duration) Ended = false;
             // once the title has had its moment, the first panel is drawn, the music of the opening is decoded and the
             // opening's place is fitted to the room: nothing joins late
-            if (!autoStarted && cards.TitleReady && presenter.CurrentSettled && music.ReadyAt(clock.Time) && places.ReadyAt(clock.Time))
+            if (!autoStarted && !WaitsForBook && seat.Taken && cards.TitleReady && presenter.CurrentSettled && music.ReadyAt(clock.Time) && places.ReadyAt(clock.Time))
             {
                 autoStarted = true;
                 if (FirstPanelSeconds < 0f)

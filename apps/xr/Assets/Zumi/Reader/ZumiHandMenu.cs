@@ -33,9 +33,12 @@ namespace Zumi
         public const float CloseSeconds = 0.25f;
         // an open finger's tip is about 1.8 times as far from the wrist as its knuckle; a curled one's is nearer
         const float OpenFingerRatio = 1.4f;
-        const float LiftMetres = 0.08f, PlateRadius = 0.058f, ButtonRadius = 0.019f, RingRadius = 0.033f, FollowPerSecond = 18f;
-        // the petal, and the settings' face: three buttons in a row, their two-line labels under them
-        const float PetalRadius = 0.01f, PetalDrop = 0.044f, SettingRadius = 0.017f, SettingPitch = 0.038f, SettingRise = 0.012f, LabelCap = 0.0036f;
+        // one pill of three round buttons on each face, the same size and pitch on both; the petal a small disc under
+        // the pill; the settings' names under their buttons
+        const float LiftMetres = 0.08f, ButtonRadius = 0.018f, Pitch = 0.046f, FollowPerSecond = 18f;
+        const float PillWidth = 0.158f, PillHeight = 0.054f, SettingsHeight = 0.086f, RowRise = 0.012f;
+        const float PetalRadius = 0.0105f, PetalDrop = 0.062f, LabelCap = 0.0052f, Ring = 0.0012f;
+        static readonly Color RingColour = ZumiDraw.Hex(0xD9C7B4);
 
         [Tooltip("Zumi/Flat: one flat colour, unlit")]
         [SerializeField] Shader flatShader;
@@ -69,6 +72,11 @@ namespace Zumi
         internal Shader FlatShader => flatShader;
 
         public bool Open => owner != null;
+        /// <summary>While on, the menu does not open (the creation flow's menu and scanner own the hands).</summary>
+        public bool Suppressed { get; set; }
+        /// <summary>Asked first when a button is pressed, with its name; true: the press was taken (the creation flow's
+        /// playback skips to its end) and the reader does not see it.</summary>
+        public Func<string, bool> Intercept { get; set; }
         /// <summary>"left" or "right" while open; null otherwise.</summary>
         public string OpenHand => owner == null ? null : owner.Handedness == Handedness.Left ? "left" : "right";
         /// <summary>The face on show: "main" (the transport) or "settings"; null while the menu is closed.</summary>
@@ -107,6 +115,13 @@ namespace Zumi
             if (transport == null || !Camera.main) return;
             if (hands.Length == 0) hands = FindObjectsByType<Hand>(FindObjectsInactive.Include);
             var head = Camera.main.transform;
+            if (Suppressed)
+            {
+                owner = candidate = null;
+                if (menu.gameObject.activeSelf) menu.gameObject.SetActive(false);
+                Hints(head);
+                return;
+            }
 
             if (owner != null)
             {
@@ -135,6 +150,8 @@ namespace Zumi
                 }
             }
 
+            if (Open) everOpened = true;
+            Hints(head);
             if (menu.gameObject.activeSelf != Open) menu.gameObject.SetActive(Open);
             if (!Open) return;
             Place(head, snap: false);
@@ -145,6 +162,8 @@ namespace Zumi
                 if (item.button.transform.gameObject.activeSelf != shown) item.button.transform.gameObject.SetActive(shown);
                 if (item.label && item.label.gameObject.activeSelf != shown) item.label.gameObject.SetActive(shown);
             }
+            mainPlate.SetActive(!settings);
+            settingsPlate.SetActive(settings);
             dotsIcon.SetActive(!settings);
             returnIcon.SetActive(settings);
             pauseIcon.SetActive(transport.Playing);
@@ -199,9 +218,129 @@ namespace Zumi
         void Fire(Item item)
         {
             if (!Open || (item.face != null && item.face != settings)) return;
+            if (Intercept != null && Intercept(item.action))
+            {
+                LastAction = "intercepted";
+                ActionCount++;
+                Debug.Log($"[Zumi] menu: {item.action} taken by the creation flow");
+                return;
+            }
             LastAction = item.fire();
             ActionCount++;
             Debug.Log($"[Zumi] menu: {LastAction}");
+        }
+
+        // ---- telling the reader the menu is there ---------------------------------------------------------------
+        // While reading, a small Zumi glow sits on the inside of each wrist in view (it pulses a few times the first
+        // time, then stays quiet), and until the menu has been opened once a line low in the view says how to open
+        // it, beside a little hand that turns its palm toward the reader.
+
+        public const float DotSize = 0.032f, DotPulseSeconds = 0.8f, CoachAhead = 0.62f, CoachBelow = 0.27f, CoachCap = 0.012f;
+        public const string CoachLine = "Turn your palm toward you for the menu";
+        /// <summary>The menu has been opened at least once (the coach mark is gone for good).</summary>
+        public bool EverOpened => everOpened;
+        /// <summary>The coach mark is on show.</summary>
+        public bool CoachShown => coach && coach.gameObject.activeSelf;
+        bool everOpened;
+        readonly Dictionary<Hand, (Transform dot, Material material)> dots = new();
+        float dotsSince = -1f, coachAlpha;
+        Transform coach, coachHand;
+        readonly ZumiDraw.Parts coachParts = new() { blended = true, queue = 3600 };
+
+        bool Reading => !Suppressed && Intercept == null && reader != null && !reader.WaitsForBook;
+
+        void Hints(Transform head)
+        {
+            var reading = Reading;
+            // several Hand components feed each hand (raw data, filters): one hint per handedness
+            var done = 0;
+            foreach (var hand in hands)
+            {
+                if (!hand) continue;
+                var bit = hand.Handedness == Handedness.Left ? 1 : 2;
+                if ((done & bit) != 0)
+                {
+                    if (dots.TryGetValue(hand, out var extra)) extra.dot.gameObject.SetActive(false);
+                    continue;
+                }
+                // any tracked hand the reader can see (wider than the menu's own view check)
+                var show = reading && !Open && hand.isActiveAndEnabled && hand.IsTrackedDataValid
+                           && hand.GetJointPose(HandJointId.HandWristRoot, out var seen)
+                           && Vector3.Angle(head.forward, seen.position - head.position) < 60f;
+                if (!dots.TryGetValue(hand, out var dot))
+                {
+                    if (!show) continue;
+                    var m = new Material(ZumiFlowKit.GlowShader) { renderQueue = 3550 };
+                    // small: all colour, no white core, so it reads as Zumi and not as a light
+                    m.SetFloat("_Core", 0f);
+                    dot = (ZumiFlowKit.Card($"Menu hint {hand.Handedness}", null, Vector2.one, m).transform, m);
+                    dots[hand] = dot;
+                }
+                dot.dot.gameObject.SetActive(show);
+                if (!show) continue;
+                done |= bit;
+                // the pulses start the first time a hand is seen while reading
+                if (dotsSince < 0f) dotsSince = Time.unscaledTime;
+                hand.GetJointPose(HandJointId.HandWristRoot, out var w);
+                hand.GetJointPose(HandJointId.HandMiddle1, out var mid);
+                hand.GetJointPose(HandJointId.HandIndex1, out var ix);
+                hand.GetJointPose(HandJointId.HandPinky1, out var px);
+                var palm = (w.position + mid.position) * 0.5f;
+                var normal = Vector3.Cross(ix.position - w.position, px.position - w.position).normalized;
+                // on the wrist, a little toward the hand, lifted off the skin on whichever side faces the eyes (the
+                // inside when the palm is up, the back when it is down), so it is always seen
+                var side = Vector3.Dot(normal, head.position - palm) >= 0f ? normal : -normal;
+                var at = Vector3.Lerp(w.position, palm, 0.3f) + side * 0.016f;
+                dot.dot.SetPositionAndRotation(at, Quaternion.LookRotation(at - head.position, Vector3.up));
+                // three slow pulses the first time, then a quiet glow
+                var t = (Time.unscaledTime - dotsSince) / DotPulseSeconds;
+                var pulse = t < 3f ? Mathf.Sin(t * Mathf.PI) * Mathf.Sin(t * Mathf.PI) : 0f;
+                dot.dot.localScale = Vector3.one * DotSize * (1f + 0.45f * pulse);
+                dot.material.SetFloat("_Turn", Time.unscaledTime * 0.5f);
+                dot.material.SetColor("_Color", new Color(1f, 1f, 1f, 0.75f + 0.25f * pulse));
+            }
+            // the coach mark
+            var wanted = reading && !everOpened;
+            if (wanted && !coach) BuildCoach(head);
+            if (!coach) return;
+            coachAlpha = Mathf.MoveTowards(coachAlpha, wanted && !Open ? 1f : 0f, Time.unscaledDeltaTime / 0.4f);
+            coach.gameObject.SetActive(coachAlpha > 0.001f);
+            if (!coach.gameObject.activeSelf) return;
+            coachParts.SetAlpha(coachAlpha);
+            var level = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
+            var target = head.position + level * CoachAhead + Vector3.down * CoachBelow;
+            var k = 1f - Mathf.Exp(-2.5f * Time.unscaledDeltaTime);
+            coach.SetPositionAndRotation(Vector3.Lerp(coach.position, target, k), Quaternion.Slerp(coach.rotation, Quaternion.LookRotation(target - head.position, Vector3.up), k));
+            // the little hand turns its palm to the reader and back, slowly
+            // never thinner than a quarter, so it reads as a hand at every moment
+            var turnK = Mathf.Cos(Time.unscaledTime * 1.8f);
+            coachHand.localScale = new Vector3(Mathf.Sign(turnK) * Mathf.Max(0.25f, Mathf.Abs(turnK)), 1f, 1f) * handScale;
+        }
+
+        float handScale = 1f;
+
+        void BuildCoach(Transform head)
+        {
+            coach = new GameObject("Menu coach").transform;
+            var level = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
+            var at = head.position + level * CoachAhead + Vector3.down * CoachBelow;
+            coach.SetPositionAndRotation(at, Quaternion.LookRotation(at - head.position, Vector3.up));
+            var textWidth = ZumiDraw.Width(CoachLine, CoachCap);
+            var width = textWidth + 0.09f;
+            ZumiDraw.Shape(flatShader, coachParts, "Plate", coach, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(width, 0.06f, 0.03f));
+            ZumiDraw.Text(flatShader, coachParts, "Line", coach, new Vector3(0.025f, 0f, -0.002f), CoachCap, ZumiDraw.Ink, 2, CoachLine);
+            // a small open hand: palm, four fingers, a thumb; a dot of the Zumi colours on its palm
+            coachHand = new GameObject("Hand").transform;
+            coachHand.SetParent(coach, false);
+            coachHand.localPosition = new Vector3(-width / 2f + 0.026f, -0.007f, -0.002f);
+            coachHand.localScale = Vector3.one * 1.5f;
+            handScale = 1.5f;
+            ZumiDraw.Shape(flatShader, coachParts, "Palm", coachHand, 0f, ZumiDraw.SoftInk, 1,
+                ZumiDraw.Rounded(0.014f, 0.014f, 0.004f), ZumiDraw.Box(-0.0068f, 0.006f, 0.003f, 0.012f), ZumiDraw.Box(-0.0031f, 0.006f, 0.003f, 0.014f),
+                ZumiDraw.Box(0.0006f, 0.006f, 0.003f, 0.013f), ZumiDraw.Box(0.0043f, 0.006f, 0.0027f, 0.01f), ZumiDraw.Box(0.0062f, -0.004f, 0.0075f, 0.003f));
+            ZumiDraw.Shape(flatShader, coachParts, "Dot", coachHand, -0.0005f, ZumiDraw.Hex(0xC7A8FF), 2, ZumiDraw.Disc(0.0028f, 16));
+            coachAlpha = 0f;
+            coachParts.SetAlpha(0f);
         }
 
         // ---- the menu's objects, built once -------------------------------------------------------------------
@@ -210,19 +349,22 @@ namespace Zumi
         {
             menu = new GameObject("HandMenu").transform;
             menu.gameObject.SetActive(false);
-            ZumiDraw.Shape(flatShader, parts, "Plate", menu, 0f, ZumiDraw.Plate, 0, ZumiDraw.Disc(PlateRadius));
+            // the transport's pill, and the settings' taller one (their names under the buttons)
+            mainPlate = ZumiDraw.Shape(flatShader, parts, "Plate", menu, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(PillWidth, PillHeight, PillHeight / 2f)).gameObject;
+            settingsPlate = ZumiDraw.Shape(flatShader, parts, "Settings plate", menu, 0f, ZumiDraw.Plate, 0,
+                ZumiDraw.Moved(ZumiDraw.Rounded(PillWidth, SettingsHeight, 0.026f), new Vector2(0f, RowRise - SettingsHeight / 2f + PillHeight / 2f))).gameObject;
 
-            // seen from the front, +x is the reader's right: back on the left, forward on the right, pause on top
-            var pause = Add(false, "Pause", OnRing(90f), ButtonRadius, () =>
+            // seen from the front, +x is the reader's right: back, pause, forward in a row
+            var pause = Add(false, "Pause", new Vector2(0f, 0f), ButtonRadius, () =>
             {
                 var was = transport.Playing;
                 transport.TogglePause();
                 return was ? "pause" : "resume";
             });
-            pauseIcon = Icon(pause, ZumiDraw.Bars(-0.0065f, 0.0045f), ZumiDraw.Bars(0.002f, 0.0045f)).gameObject;
-            playIcon = Icon(pause, ZumiDraw.Triangle(-0.005f, 0.011f)).gameObject;
-            Icon(Add(false, "Forward", OnRing(-30f), ButtonRadius, () => { transport.Forward(); return "forward"; }), ZumiDraw.Triangle(-0.007f, 0.01f), ZumiDraw.Bars(0.004f, 0.003f));
-            Icon(Add(false, "Back", OnRing(210f), ButtonRadius, () => { transport.Back(); return "back"; }), ZumiDraw.Triangle(0.007f, -0.01f), ZumiDraw.Bars(-0.007f, 0.003f));
+            pauseIcon = Icon(pause, ZumiDraw.Bars(-0.0055f, 0.0038f), ZumiDraw.Bars(0.0017f, 0.0038f)).gameObject;
+            playIcon = Icon(pause, ZumiDraw.Triangle(-0.004f, 0.0095f)).gameObject;
+            Icon(Add(false, "Forward", new Vector2(Pitch, 0f), ButtonRadius, () => { transport.Forward(); return "forward"; }), ZumiDraw.Triangle(-0.006f, 0.0085f), ZumiDraw.Bars(0.0035f, 0.0026f));
+            Icon(Add(false, "Back", new Vector2(-Pitch, 0f), ButtonRadius, () => { transport.Back(); return "back"; }), ZumiDraw.Triangle(0.006f, -0.0085f), ZumiDraw.Bars(-0.0061f, 0.0026f));
 
             // the petal: three dots to the settings, an arrow back to the transport
             var petal = Add(null, "Petal", new Vector2(0f, -PetalDrop), PetalRadius, () =>
@@ -230,11 +372,11 @@ namespace Zumi
                 settings = !settings;
                 return settings ? "settings" : "main";
             });
-            dotsIcon = Icon(petal, ZumiDraw.Moved(ZumiDraw.Disc(0.0014f, 10), new Vector2(-0.0045f, 0f)), ZumiDraw.Disc(0.0014f, 10), ZumiDraw.Moved(ZumiDraw.Disc(0.0014f, 10), new Vector2(0.0045f, 0f))).gameObject;
-            returnIcon = Icon(petal, new[] { new Vector2(0.003f, -0.005f), new Vector2(0.003f, 0.005f), new Vector2(-0.005f, 0f) }).gameObject;
+            dotsIcon = Icon(petal, ZumiDraw.Moved(ZumiDraw.Disc(0.0013f, 10), new Vector2(-0.0042f, 0f)), ZumiDraw.Disc(0.0013f, 10), ZumiDraw.Moved(ZumiDraw.Disc(0.0013f, 10), new Vector2(0.0042f, 0f))).gameObject;
+            returnIcon = Icon(petal, new[] { new Vector2(0.0028f, -0.0045f), new Vector2(0.0028f, 0.0045f), new Vector2(-0.0045f, 0f) }).gameObject;
 
-            // the settings: a row of three, each with its name and what it is set to
-            var motion = Add(true, "Motion", new Vector2(-SettingPitch, SettingRise), SettingRadius, () =>
+            // the settings: the same row of three, each with its name and what it is set to
+            var motion = Add(true, "Motion", new Vector2(-Pitch, RowRise), ButtonRadius, () =>
             {
                 reader.SetMotion(!reader.MotionEnabled);
                 return reader.MotionEnabled ? "motion_on" : "motion_off";
@@ -244,7 +386,7 @@ namespace Zumi
                 ZumiDraw.Box(-0.0095f, 0.0026f, 0.0075f, 0.0015f), ZumiDraw.Box(-0.0115f, -0.00075f, 0.0095f, 0.0015f), ZumiDraw.Box(-0.0095f, -0.0041f, 0.0075f, 0.0015f));
             Label(motion, () => reader.MotionEnabled ? "Motion\non" : "Motion\noff");
 
-            var room = Add(true, "Room", new Vector2(0f, SettingRise), SettingRadius, () =>
+            var room = Add(true, "Room", new Vector2(0f, RowRise), ButtonRadius, () =>
             {
                 reader.CycleRoomEffects();
                 return "room_" + reader.RoomEffects.ToString().ToLowerInvariant();
@@ -254,7 +396,7 @@ namespace Zumi
                 ZumiDraw.Box(-0.0085f, -0.0076f, 0.0016f, 0.0152f), ZumiDraw.Box(0.0069f, -0.0076f, 0.0016f, 0.0152f), ZumiDraw.Box(-0.0006f, -0.0076f, 0.0012f, 0.0152f), ZumiDraw.Box(-0.0085f, -0.0006f, 0.017f, 0.0012f));
             Label(room, () => reader.RoomEffects switch { RoomEffects.Full => "Room\nfull", RoomEffects.NoGrade => "Room\nplain", _ => "Room\noff" });
 
-            var reseat = Add(true, "Reseat", new Vector2(SettingPitch, SettingRise), SettingRadius, () =>
+            var reseat = Add(true, "Reseat", new Vector2(Pitch, RowRise), ButtonRadius, () =>
             {
                 reader.Reseat();
                 reseatedAt = Time.unscaledTime;
@@ -267,18 +409,20 @@ namespace Zumi
             Label(reseat, () => reseatedAt >= 0f && Time.unscaledTime - reseatedAt < ReseatedSeconds ? "Re-seat\ndone" : "Re-seat\nhere");
         }
 
-        static Vector2 OnRing(float degrees) => new Vector2(Mathf.Cos(degrees * Mathf.Deg2Rad), Mathf.Sin(degrees * Mathf.Deg2Rad)) * RingRadius;
+        GameObject mainPlate, settingsPlate;
 
         Item Add(bool? face, string name, Vector2 at, float radius, Func<string> fire)
         {
             var item = new Item { action = name, face = face, fire = fire };
-            item.button = ZumiDraw.Round(flatShader, parts, name, menu, at, radius, 0, () => Fire(item));
+            item.button = ZumiDraw.Round(flatShader, parts, name, menu, at, radius, 1, () => Fire(item));
+            // a thin ring: the button reads as one, on the cream plate
+            ZumiDraw.Shape(flatShader, parts, "Ring", item.button.transform, -0.0005f, RingColour, 2, ZumiDraw.Arc(radius, Ring, 0f, 360f, 40));
             items.Add(item);
             return item;
         }
 
         Transform Icon(Item item, params Vector2[][] polygons) =>
-            ZumiDraw.Shape(flatShader, parts, "Icon", item.button.transform, -0.002f, ZumiDraw.Ink, 0, polygons);
+            ZumiDraw.Shape(flatShader, parts, "Icon", item.button.transform, -0.002f, ZumiDraw.Ink, 3, polygons);
 
         // an icon that is ink while its setting is on and faint while it is off
         void Lit(Item item, Func<bool> lit, params Vector2[][] polygons)
@@ -290,14 +434,21 @@ namespace Zumi
         void Label(Item item, Func<string> state)
         {
             item.state = state;
-            var at = item.button.transform.localPosition + new Vector3(0f, -SettingRadius - 0.0105f, -0.001f);
-            item.label = ZumiDraw.Text(flatShader, parts, $"{item.action} label", menu, at, LabelCap, ZumiDraw.Ink, 1, state());
+            var at = item.button.transform.localPosition + new Vector3(0f, -ButtonRadius - 0.0125f, -0.001f);
+            item.label = ZumiDraw.Text(flatShader, parts, $"{item.action} label", menu, at, LabelCap, ZumiDraw.SoftInk, 3, state());
         }
 
         void OnDestroy()
         {
             if (menu) Destroy(menu.gameObject);
             parts.Destroy();
+            if (coach) Destroy(coach.gameObject);
+            coachParts.Destroy();
+            foreach (var (dot, material) in dots.Values)
+            {
+                if (dot) Destroy(dot.gameObject);
+                Destroy(material);
+            }
         }
     }
 }

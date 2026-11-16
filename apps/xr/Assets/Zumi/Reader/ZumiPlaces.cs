@@ -971,6 +971,8 @@ namespace Zumi
                 var across = 2f * Mathf.Max(box.extents.x, box.extents.z) * prop.scale * 1.5f;
                 prop.shadow.SetPositionAndRotation(results[i].position + Vector3.up * 0.003f, Quaternion.Euler(90f, 0f, 0f));
                 prop.shadow.localScale = new Vector3(across, across, 1f);
+                // a small prop can be picked up and glides back here when let go; furniture stays put
+                if (!prop.data.furniture) ZumiGrabbableProp.Attach(prop.root.gameObject, prop.glb.bounds).SetHome(prop.root.position, prop.root.rotation);
             }
             foreach (var prop in slot.props) Measure(prop);
         }

@@ -291,6 +291,7 @@ GameObject:
   - component: {fileID: 422204915}
   - component: {fileID: 422204917}
   - component: {fileID: 422204916}
+  - component: {fileID: 422204918}
   m_Layer: 0
   m_Name: Reader
   m_TagString: Untagged
@@ -326,6 +327,22 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Zumi.ZumiReader
   episodeFile: Episodes/dan-buck.zumi
+--- !u!114 &422204918
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 422204907}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0c7097029e8a4df8a0d05411351c3c2c, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::Zumi.ZumiFlow
+  flowEnabled: 1
+  mascot: {fileID: 4042451863800827726, guid: e9ea94045749f234fb93e70968ea517a, type: 3}
+  captions: 1
+  readingCaption: 0
 --- !u!114 &422204912
 MonoBehaviour:
   m_ObjectHideFlags: 0

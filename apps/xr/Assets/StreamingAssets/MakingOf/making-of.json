@@ -1,0 +1,1551 @@
+{
+ "title": "Dan & Buck",
+ "pages": [
+  {
+   "index": 1,
+   "pencil": "pencil/01.jpg",
+   "colour": "colour/01.jpg",
+   "masks": "masks/01.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    1
+   ],
+   "frames": [
+    [
+     203,
+     0,
+     928,
+     488
+    ],
+    [
+     203,
+     675,
+     928,
+     1149
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      207,
+      6,
+      559,
+      95
+     ],
+     "text": "NEO-CAPITAL. A METROPOLIS WHERE THE FUTURE SOLVES EVERYTHING... EXCEPT THE DESIRE TO GET A COFFEE AT 8:00 AM",
+     "speaker": null,
+     "kind": "caption",
+     "panel": "p000",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      305,
+      627,
+      599,
+      785
+     ],
+     "text": "STATISTICALLY, DETECTIVE MARINETTI, THAT BROWN LIQUID HAS A 91% PROBABILITY OF CAUSING ACUTE GASTRITIS",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p001",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      600,
+      635,
+      807,
+      769
+     ],
+     "text": "I SUGGEST RECHARGING YOUR ENERGY WITH A PROTEIN INFUSION",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p001",
+     "bubble": "b2"
+    },
+    {
+     "box": [
+      416,
+      1063,
+      830,
+      1432
+     ],
+     "text": "THIS RADIOACTIVE JUNK IS THE ONLY THING KEEPING ME ALIVE AND IT'S JUST BUCK, NO NEED TO OVERCHARGE YOUR SPEAKERS, DAN WE'RE HERE TO INVESTIGATE A MINOR DISTORTION REPORT IN SECTOR 4, NOT TO LISTEN TO YOUR STATISTICS",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p001",
+     "bubble": "b3"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      593,
+      779,
+      769,
+      1147
+     ],
+     "centre": [
+      683,
+      971
+     ],
+     "panel": "p001",
+     "card": "card-1"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      294,
+      819,
+      567,
+      1145
+     ],
+     "centre": [
+      415,
+      986
+     ],
+     "panel": "p001",
+     "card": "card-2"
+    }
+   ]
+  },
+  {
+   "index": 2,
+   "pencil": "pencil/02.jpg",
+   "colour": "colour/02.jpg",
+   "masks": "masks/02.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    2
+   ],
+   "frames": [
+    [
+     230,
+     47,
+     956,
+     498
+    ],
+    [
+     175,
+     635,
+     585,
+     923
+    ],
+    [
+     515,
+     1039,
+     956,
+     1325
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      231,
+      52,
+      593,
+      226
+     ],
+     "text": "GOOD MORNING, CITIZENS! I AM BARIST.AI IS YOUR DAY A 10 OUT OF 10 OR DO YOU NEED CAFFEINE TO AVOID CRYING?",
+     "speaker": "Barist.AI",
+     "kind": "speech",
+     "panel": "p002",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      476,
+      623,
+      818,
+      835
+     ],
+     "text": "GIMME A DOUBLE ESPRESSO, PIPIN' HOT AND WITHOUT ANY EXISTENTIAL CRAP, TOASTER",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p003",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      245,
+      1027,
+      599,
+      1244
+     ],
+     "text": "CLANC-CLANC-CLANC!",
+     "speaker": null,
+     "kind": "sfx",
+     "panel": "p004",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      346,
+      1296,
+      698,
+      1513
+     ],
+     "text": "ERROR... RUDE BEHAVIOUR DETECTED.. INITIATING CUSTOMER PURGE PROTOCOL",
+     "speaker": "Barist.AI",
+     "kind": "speech",
+     "panel": "p004",
+     "bubble": "b2"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K3",
+     "name": "Barist.AI",
+     "box": [
+      517,
+      124,
+      725,
+      363
+     ],
+     "centre": [
+      626,
+      252
+     ],
+     "panel": "p002",
+     "card": "card-1"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      383,
+      243,
+      560,
+      498
+     ],
+     "centre": [
+      475,
+      397
+     ],
+     "panel": "p002",
+     "card": "card-2"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      604,
+      290,
+      852,
+      498
+     ],
+     "centre": [
+      729,
+      416
+     ],
+     "panel": "p002",
+     "card": "card-3"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      184,
+      638,
+      537,
+      923
+     ],
+     "centre": [
+      346,
+      789
+     ],
+     "panel": "p003",
+     "card": "card-1"
+    }
+   ]
+  },
+  {
+   "index": 3,
+   "pencil": "pencil/03.jpg",
+   "colour": "colour/03.jpg",
+   "masks": "masks/03.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    3
+   ],
+   "frames": [
+    [
+     175,
+     53,
+     956,
+     576
+    ],
+    [
+     176,
+     886,
+     956,
+     1396
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      412,
+      1357,
+      744,
+      1550
+     ],
+     "text": "NO ONE LEAVES UNTIL YOU LEARN TO SAY ‘PLEASE’",
+     "speaker": "Barist.AI",
+     "kind": "speech",
+     "panel": "p006",
+     "bubble": "b1"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K4",
+     "name": "Shearling coat",
+     "box": [
+      549,
+      337,
+      745,
+      575
+     ],
+     "centre": [
+      646,
+      479
+     ],
+     "panel": "p005",
+     "card": "card-1"
+    },
+    {
+     "cast": "K5",
+     "name": "Pink top",
+     "box": [
+      208,
+      363,
+      407,
+      574
+     ],
+     "centre": [
+      296,
+      492
+     ],
+     "panel": "p005",
+     "card": "card-2"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      679,
+      214,
+      954,
+      575
+     ],
+     "centre": [
+      865,
+      412
+     ],
+     "panel": "p005",
+     "card": "card-3"
+    },
+    {
+     "cast": "K3",
+     "name": "Barist.AI",
+     "box": [
+      284,
+      886,
+      862,
+      1394
+     ],
+     "centre": [
+      556,
+      1165
+     ],
+     "panel": "p006",
+     "card": "card-1"
+    }
+   ]
+  },
+  {
+   "index": 4,
+   "pencil": "pencil/04.jpg",
+   "colour": "colour/04.jpg",
+   "masks": "masks/04.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    4
+   ],
+   "frames": [
+    [
+     301,
+     112,
+     677,
+     358
+    ],
+    [
+     438,
+     230,
+     829,
+     473
+    ],
+    [
+     301,
+     720,
+     826,
+     1119
+    ],
+    [
+     347,
+     1207,
+     651,
+     1455
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      434,
+      178,
+      686,
+      420
+     ],
+     "text": "SHOOOOOSH!",
+     "speaker": null,
+     "kind": "sfx",
+     "panel": "p007",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      313,
+      777,
+      483,
+      921
+     ],
+     "text": "WHAT'S WRONG WITH THIS MACHINE?!",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p008",
+     "bubble": "b2"
+    },
+    {
+     "box": [
+      486,
+      723,
+      810,
+      886
+     ],
+     "text": "ACCORDING TO MY PRELIMINARY ANALYSIS, BARIST.AI'S BEHAVIOR HAS EXPERIENCED A MASSIVE ALTERATION IT MUST BE SUFFERING A STRANGE MALFUNCTION",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p008",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      593,
+      1262,
+      812,
+      1468
+     ],
+     "text": "SAVE THE STATISTICS FOR THE REPORT DAN! WE NEED TO GET OUT OF HERE!",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p009",
+     "bubble": "b1"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      341,
+      124,
+      582,
+      261
+     ],
+     "centre": [
+      456,
+      194
+     ],
+     "panel": "p007",
+     "card": "card-1"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      627,
+      236,
+      828,
+      473
+     ],
+     "centre": [
+      732,
+      375
+     ],
+     "panel": "p007",
+     "card": "card-3"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      397,
+      895,
+      545,
+      1118
+     ],
+     "centre": [
+      470,
+      1018
+     ],
+     "panel": "p008",
+     "card": "card-1"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      604,
+      868,
+      754,
+      1108
+     ],
+     "centre": [
+      677,
+      993
+     ],
+     "panel": "p008",
+     "card": "card-2"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      359,
+      1222,
+      630,
+      1454
+     ],
+     "centre": [
+      502,
+      1352
+     ],
+     "panel": "p009",
+     "card": "card-1"
+    }
+   ]
+  },
+  {
+   "index": 5,
+   "pencil": "pencil/05.jpg",
+   "colour": "colour/05.jpg",
+   "masks": "masks/05.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    5
+   ],
+   "frames": [
+    [
+     301,
+     52,
+     829,
+     287
+    ],
+    [
+     534,
+     330,
+     796,
+     561
+    ],
+    [
+     301,
+     621,
+     609,
+     944
+    ],
+    [
+     301,
+     1200,
+     829,
+     1514
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      417,
+      288,
+      578,
+      424
+     ],
+     "text": "SPLAFF",
+     "speaker": null,
+     "kind": "sfx",
+     "panel": "p010",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      551,
+      675,
+      790,
+      814
+     ],
+     "text": "DAMN IT! I HATE THE 21ST CENTURY!",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p011",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      524,
+      1073,
+      823,
+      1233
+     ],
+     "text": "EVASION ATTEMPT DETECTED YOUR IQ IS COMPARABLE TO YOUR LACK OF MANNERS",
+     "speaker": "Barist.AI",
+     "kind": "speech",
+     "panel": "p012",
+     "bubble": "b1"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      494,
+      58,
+      785,
+      286
+     ],
+     "centre": [
+      620,
+      183
+     ],
+     "panel": "p010",
+     "card": "card-1"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      535,
+      330,
+      720,
+      535
+     ],
+     "centre": [
+      614,
+      436
+     ],
+     "panel": "p010",
+     "card": "card-3"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      326,
+      643,
+      527,
+      944
+     ],
+     "centre": [
+      433,
+      814
+     ],
+     "panel": "p011",
+     "card": "card-1"
+    },
+    {
+     "cast": "K3",
+     "name": "Barist.AI",
+     "box": [
+      444,
+      1246,
+      728,
+      1512
+     ],
+     "centre": [
+      592,
+      1394
+     ],
+     "panel": "p012",
+     "card": "card-1"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      301,
+      1250,
+      422,
+      1512
+     ],
+     "centre": [
+      354,
+      1382
+     ],
+     "panel": "p012",
+     "card": "card-2"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      675,
+      1338,
+      812,
+      1481
+     ],
+     "centre": [
+      750,
+      1413
+     ],
+     "panel": "p012",
+     "card": "card-3"
+    }
+   ]
+  },
+  {
+   "index": 6,
+   "pencil": "pencil/06.jpg",
+   "colour": "colour/06.jpg",
+   "masks": "masks/06.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    6
+   ],
+   "frames": [
+    [
+     140,
+     181,
+     991,
+     610
+    ],
+    [
+     140,
+     834,
+     991,
+     1293
+    ],
+    [
+     659,
+     1203,
+     991,
+     1444
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      558,
+      189,
+      982,
+      433
+     ],
+     "text": "HEY! LISTEN HERE COFFEE MACHINE WITH A DICTATOR COMPLEX I HAVE A COMPLAINT ABOUT MY SERVICE!",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p013",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      224,
+      854,
+      607,
+      1004
+     ],
+     "text": "PREPARING BOILING MILK JET FOR THE NOISY HUMAN",
+     "speaker": "Barist.AI",
+     "kind": "shout",
+     "panel": "p014",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      251,
+      1309,
+      626,
+      1539
+     ],
+     "text": "INFILTRATING SECONDARY SECURITY PROTOCOL 45%... 78%",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p014",
+     "bubble": "b2"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K6",
+     "name": "Grey hoodie",
+     "box": [
+      141,
+      290,
+      390,
+      609
+     ],
+     "centre": [
+      271,
+      442
+     ],
+     "panel": "p013",
+     "card": "card-1"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      320,
+      260,
+      675,
+      608
+     ],
+     "centre": [
+      466,
+      457
+     ],
+     "panel": "p013",
+     "card": "card-2"
+    },
+    {
+     "cast": "K3",
+     "name": "Barist.AI",
+     "box": [
+      572,
+      865,
+      718,
+      1059
+     ],
+     "centre": [
+      656,
+      966
+     ],
+     "panel": "p014",
+     "card": "card-2"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      319,
+      1001,
+      692,
+      1293
+     ],
+     "centre": [
+      528,
+      1170
+     ],
+     "panel": "p014",
+     "card": "card-4"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      659,
+      1203,
+      990,
+      1442
+     ],
+     "centre": [
+      865,
+      1364
+     ],
+     "panel": "p014",
+     "card": "card-6"
+    }
+   ]
+  },
+  {
+   "index": 7,
+   "pencil": "pencil/07.jpg",
+   "colour": "colour/07.jpg",
+   "masks": "masks/07.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    7
+   ],
+   "frames": [
+    [
+     211,
+     40,
+     928,
+     430
+    ],
+    [
+     170,
+     635,
+     961,
+     985
+    ],
+    [
+     244,
+     1142,
+     692,
+     1461
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      539,
+      1113,
+      926,
+      1362
+     ],
+     "text": "AHA! COMPILATION LOGS. HERE IS THE ROOT OF THE GLITCH!",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p017",
+     "bubble": "b1"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      293,
+      43,
+      841,
+      429
+     ],
+     "centre": [
+      575,
+      271
+     ],
+     "panel": "p015",
+     "card": "card-1"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      456,
+      828,
+      681,
+      982
+     ],
+     "centre": [
+      567,
+      921
+     ],
+     "panel": "p016",
+     "card": "card-1"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      246,
+      1143,
+      511,
+      1461
+     ],
+     "centre": [
+      343,
+      1318
+     ],
+     "panel": "p017",
+     "card": "card-2"
+    }
+   ]
+  },
+  {
+   "index": 8,
+   "pencil": "pencil/08.jpg",
+   "colour": "colour/08.jpg",
+   "masks": "masks/08.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    8
+   ],
+   "frames": [
+    [
+     177,
+     128,
+     954,
+     604
+    ],
+    [
+     177,
+     785,
+     661,
+     1113
+    ],
+    [
+     471,
+     979,
+     691,
+     1169
+    ],
+    [
+     573,
+     1023,
+     954,
+     1405
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      449,
+      144,
+      664,
+      281
+     ],
+     "text": "GET OVER HERE!",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p018",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      396,
+      907,
+      638,
+      1108
+     ],
+     "text": "CRAAAACK",
+     "speaker": null,
+     "kind": "sfx",
+     "panel": "p019",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      529,
+      1069,
+      694,
+      1187
+     ],
+     "text": "TICK",
+     "speaker": null,
+     "kind": "sfx",
+     "panel": "p019",
+     "bubble": "b2"
+    },
+    {
+     "box": [
+      267,
+      1147,
+      543,
+      1339
+     ],
+     "text": "SYSTEM DEACTIVATED",
+     "speaker": "Barist.AI",
+     "kind": "speech",
+     "panel": "p019",
+     "bubble": "b3"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      215,
+      215,
+      468,
+      601
+     ],
+     "centre": [
+      369,
+      403
+     ],
+     "panel": "p018",
+     "card": "card-1"
+    },
+    {
+     "cast": "K3",
+     "name": "Barist.AI",
+     "box": [
+      513,
+      232,
+      898,
+      601
+     ],
+     "centre": [
+      747,
+      451
+     ],
+     "panel": "p018",
+     "card": "card-2"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      178,
+      884,
+      461,
+      1111
+     ],
+     "centre": [
+      315,
+      1012
+     ],
+     "panel": "p019",
+     "card": "card-1"
+    },
+    {
+     "cast": "K3",
+     "name": "Barist.AI",
+     "box": [
+      669,
+      1043,
+      953,
+      1403
+     ],
+     "centre": [
+      816,
+      1239
+     ],
+     "panel": "p019",
+     "card": "card-5"
+    }
+   ]
+  },
+  {
+   "index": 9,
+   "pencil": "pencil/09.jpg",
+   "colour": "colour/09.jpg",
+   "masks": "masks/09.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    9,
+    10
+   ],
+   "frames": [
+    [
+     0,
+     350,
+     554,
+     700
+    ],
+    [
+     0,
+     932,
+     554,
+     1250
+    ],
+    [
+     661,
+     346,
+     979,
+     680
+    ],
+    [
+     838,
+     675,
+     1078,
+     866
+    ],
+    [
+     694,
+     1016,
+     1082,
+     1297
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      105,
+      637,
+      372,
+      760
+     ],
+     "text": "HSSSSSSSS!",
+     "speaker": null,
+     "kind": "sfx",
+     "panel": "p020",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      868,
+      210,
+      1121,
+      431
+     ],
+     "text": "SEE, DAN? IN REAL LIFE, PROBLEMS AREN'T SOLVED WITH ZEROS AND ONES, BUT WITH A BIT OF CUNNING AND NATURAL INSTINCT",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p022",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      635,
+      642,
+      933,
+      832
+     ],
+     "text": "ACTUALLY... MY LOGS INDICATE THAT THE SYSTEM SHUTDOWN OCCURRED 0.4 SECONDS BEFORE YOU YANKED THAT DECORATIVE CABLING",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p022",
+     "bubble": "b2"
+    },
+    {
+     "box": [
+      617,
+      982,
+      833,
+      1259
+     ],
+     "text": "TECHNICAL DETAILS, DAN! THE HUMAN FACTOR INTIMIDATED THE MACHINE LET'S GO BEFORE THEY CHARGE US FOR THE COFFEE",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p023",
+     "bubble": "b1"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K6",
+     "name": "Grey hoodie",
+     "box": [
+      209,
+      1015,
+      310,
+      1249
+     ],
+     "centre": [
+      268,
+      1127
+     ],
+     "panel": "p021",
+     "card": "card-1"
+    },
+    {
+     "cast": "K4",
+     "name": "Shearling coat",
+     "box": [
+      294,
+      990,
+      482,
+      1249
+     ],
+     "centre": [
+      371,
+      1116
+     ],
+     "panel": "p021",
+     "card": "card-2"
+    },
+    {
+     "cast": "K5",
+     "name": "Pink top",
+     "box": [
+      1,
+      980,
+      255,
+      1250
+     ],
+     "centre": [
+      157,
+      1135
+     ],
+     "panel": "p021",
+     "card": "card-3"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      723,
+      372,
+      950,
+      680
+     ],
+     "centre": [
+      832,
+      542
+     ],
+     "panel": "p022",
+     "card": "card-1"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      862,
+      689,
+      1077,
+      866
+     ],
+     "centre": [
+      993,
+      790
+     ],
+     "panel": "p022",
+     "card": "card-3"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      748,
+      1040,
+      1054,
+      1297
+     ],
+     "centre": [
+      905,
+      1181
+     ],
+     "panel": "p023",
+     "card": "card-2"
+    }
+   ]
+  },
+  {
+   "index": 10,
+   "pencil": "pencil/10.jpg",
+   "colour": "colour/10.jpg",
+   "masks": "masks/10.png",
+   "size": [
+    1131,
+    1600
+   ],
+   "colourPages": [
+    11
+   ],
+   "frames": [
+    [
+     237,
+     81,
+     911,
+     406
+    ],
+    [
+     244,
+     550,
+     892,
+     750
+    ],
+    [
+     505,
+     859,
+     911,
+     1112
+    ],
+    [
+     296,
+     1261,
+     633,
+     1504
+    ]
+   ],
+   "balloons": [
+    {
+     "box": [
+      220,
+      82,
+      370,
+      140
+     ],
+     "text": "LATER",
+     "speaker": null,
+     "kind": "caption",
+     "panel": "p024",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      489,
+      518,
+      892,
+      723
+     ],
+     "text": "ANALYZING TERMINAL DATA: BARIST.AI’S DATABASE SHOWS POOR AI ALIGNMENT TRAINING, WHICH TRIGGERED A CRITICAL BREACH IN ITS PATIENCE THRESHOLD FOLLOWING YOUR DERIGATORY COMMENT, DETECTIVE MARINE... I MEAN BUCK",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p025",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      234,
+      853,
+      726,
+      1139
+     ],
+     "text": "WELL, WELL, I MIGHT BE BE NO DIPLOMATIC, BUT A COMMERCIAL SOFTWARE SHOULDN'T LOSE ITS TEMPER OVER A SILLY JOKE ANY CASE, WE SHOULD INVESTIGATE THE LAB BEHIND BARIST.AI. THEY MAY HAVE CUT CORNERS ON STRESS TESTING TO SAVE CREDITS",
+     "speaker": "Buck",
+     "kind": "speech",
+     "panel": "p026",
+     "bubble": "b1"
+    },
+    {
+     "box": [
+      578,
+      1314,
+      848,
+      1487
+     ],
+     "text": "A LOGICALLY IMPECCABLE DEDUCTION, DETECTIVE BUCK. TOMORROW MORNING WE SHOULD SEND THE CITATION",
+     "speaker": "Dan",
+     "kind": "speech",
+     "panel": "p027",
+     "bubble": "b1"
+    }
+   ],
+   "characters": [
+    {
+     "cast": "K9",
+     "name": "Officer",
+     "box": [
+      645,
+      941,
+      732,
+      1111
+     ],
+     "centre": [
+      684,
+      999
+     ],
+     "panel": "p026",
+     "card": "card-1"
+    },
+    {
+     "cast": "K1",
+     "name": "Buck",
+     "box": [
+      676,
+      883,
+      911,
+      1111
+     ],
+     "centre": [
+      799,
+      1014
+     ],
+     "panel": "p026",
+     "card": "card-2"
+    },
+    {
+     "cast": "K2",
+     "name": "Dan",
+     "box": [
+      306,
+      1293,
+      611,
+      1503
+     ],
+     "centre": [
+      459,
+      1416
+     ],
+     "panel": "p027",
+     "card": "card-1"
+    }
+   ]
+  }
+ ],
+ "depth": {
+  "panel": "p001",
+  "page": 1,
+  "box": [
+   203,
+   626,
+   928,
+   1432
+  ]
+ },
+ "voice": {
+  "panel": "p011",
+  "bubble": "b1",
+  "speaker": "Buck",
+  "text": "DAMN IT! I HATE THE 21ST CENTURY!",
+  "audio": "panels/p011/voice/b1.wav"
+ },
+ "sfx": {
+  "panel": "p019",
+  "bubble": "b1",
+  "text": "CRAAAACK",
+  "audio": "panels/p019/sfx/b1.wav"
+ },
+ "music": "city-exterior-light",
+ "place": "city-exterior",
+ "cover": "the cover will be on the book",
+ "cast": [
+  {
+   "id": "K1",
+   "name": "Buck",
+   "colour": "#E5332A"
+  },
+  {
+   "id": "K2",
+   "name": "Dan",
+   "colour": "#1E88E5"
+  },
+  {
+   "id": "K3",
+   "name": "Barist.AI",
+   "colour": "#A64DFF"
+  },
+  {
+   "id": "K4",
+   "name": "Shearling coat",
+   "colour": "#F0B03A"
+  },
+  {
+   "id": "K5",
+   "name": "Pink top",
+   "colour": "#FF4FB0"
+  },
+  {
+   "id": "K6",
+   "name": "Grey hoodie",
+   "colour": "#34C759"
+  },
+  {
+   "id": "K9",
+   "name": "Officer",
+   "colour": "#00B3A4"
+  }
+ ]
+}

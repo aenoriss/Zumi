@@ -22,10 +22,12 @@ namespace Zumi
         public Quaternion Rotation => transform.rotation;
         /// <summary>How many times the seat was taken: 1 after the start, one more per Reseat.</summary>
         public int Seatings { get; private set; }
+        /// <summary>While held the seat is not taken by itself: the creation flow takes it when a book opens.</summary>
+        public bool Held { get; set; }
 
         void Update()
         {
-            if (Taken || !Camera.main) return;
+            if (Taken || Held || !Camera.main) return;
             if (Camera.main.transform.position.y > MinHeadHeight || Time.timeSinceLevelLoad > SettleSeconds) Take();
         }
 

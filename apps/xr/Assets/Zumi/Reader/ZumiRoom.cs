@@ -562,7 +562,7 @@ namespace Zumi
             return Mathf.Abs(Vector3.Dot(at, quad.right)) <= quad.size.x / 2f && Mathf.Abs(Vector3.Dot(at, quad.up)) <= quad.size.y / 2f;
         }
 
-        static RoomBox Box(MRUKAnchor anchor)
+        internal static RoomBox Box(MRUKAnchor anchor)
         {
             var bounds = anchor.VolumeBounds.Value;
             var t = anchor.transform;

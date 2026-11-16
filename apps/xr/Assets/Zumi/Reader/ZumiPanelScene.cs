@@ -185,7 +185,7 @@ namespace Zumi
         // A node's art, by the file's own indices (node -> mesh -> primitive -> material -> baseColorTexture -> texture),
         // from the textures glTFast decoded. Never through glTFast's materials: their shaders are in no scene, so a
         // build strips them, and on the headset the lookup came back empty and every card drew white.
-        static Texture2D BaseColour(JObject json, GltfImport gltf, int node, int primitive)
+        internal static Texture2D BaseColour(JObject json, GltfImport gltf, int node, int primitive)
         {
             var mesh = json["nodes"]?[node]?["mesh"];
             if (mesh == null || json["meshes"]?[(int)mesh]?["primitives"] is not JArray primitives || primitives.Count == 0) return null;
@@ -195,7 +195,7 @@ namespace Zumi
         }
 
         // glTFast builds no materials: the reader makes its own from Zumi/Window and Zumi/Card
-        sealed class NoMaterials : IMaterialGenerator
+        internal sealed class NoMaterials : IMaterialGenerator
         {
             public static readonly NoMaterials Instance = new();
             public Material GetDefaultMaterial(bool pointsSupport = false) => null;

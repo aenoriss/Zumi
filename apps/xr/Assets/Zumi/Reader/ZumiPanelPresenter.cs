@@ -43,6 +43,9 @@ namespace Zumi
         [Tooltip("The pipeline's accents (pop, cut, impact) play; off: nothing moves")]
         [SerializeField] bool motionEnabled = true;
 
+        internal Shader WindowShader => windowShader;
+        internal Shader CardShader => cardShader;
+
         sealed class Slot
         {
             public int index;
