@@ -143,8 +143,12 @@ and `pin`; the easing curves are now stated. What the pipeline writes, the reade
 view's centre down -z), the span of the view (`hDeg`, `vDeg`) and how far the place is in the meshes' own units
 (`nearM`, `medianM`, `farM`: the 5th, 50th and 95th percentile of the distance from the eye). The meshes are in the
 depth model's metres, not the room's. The reader puts the origin at the seat's eye, turns -z to the key wall and
-scales both meshes by one factor so the place lies beyond the wall: with a wall D metres ahead,
-`(D + 0.25) / nearM`. The schema states the whole rule (`$defs.place`), and what `light.key.yaw` is measured from.
+fits the place to its room: the picture's core (its central 60 %) is zoomed by one factor, between 0.5 and 1, so it
+fits the key wall, equally across and up; outside the core the zoom follows the walls so each metre of wall gets a
+like amount of picture; nothing shows on the floor, the ceiling, or a wall seen at a grazing angle. Depth is then
+set so 95 % of what shows lies beyond the room's edge. The schema states the whole rule (`$defs.place`), and what
+`light.key.yaw` is measured from. (Until 2026-11-16 the place was scaled by one factor with every direction kept:
+in a narrow room most of it fell on the side walls, stretched along them.)
 
 `props[]` lists the objects of the place that stand in the room while it is open: the model's path, its real
 `heightM`, the `surface` it rests on (`floor`, `table`, `shelf`) and its `bounds`. No positions: placing them is the
