@@ -86,6 +86,8 @@ namespace Zumi
         public Vector3 eye;
         /// <summary>Level, from the eye to the key wall and square to it; right is to the right of someone facing it.</summary>
         public Vector3 forward, right;
+        /// <summary>Level, the seat's own forward: the panel floats along it, which is not always square to the key wall.</summary>
+        public Vector3 ahead;
         /// <summary>Metres from the eye to the key wall along forward.</summary>
         public float wallDistance;
         public float floorY, ceilingY;
@@ -406,7 +408,7 @@ namespace Zumi
                 why = "the seat is against the wall";
                 return false;
             }
-            Shape = new RoomShape { eye = eye, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY, ceilingY = ceilingY, outline = outline };
+            Shape = new RoomShape { eye = eye, ahead = ahead, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY, ceilingY = ceilingY, outline = outline };
             KeyWallNormal = normal;
             KeyWallPoint = eye - normal * distance;
             KeyWallName = keyWall.name;
@@ -518,7 +520,7 @@ namespace Zumi
             var floorY = rig && rig.trackingSpace ? rig.trackingSpace.position.y : 0f;
             Shape = new RoomShape
             {
-                eye = eye, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance,
+                eye = eye, ahead = ahead, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance,
                 floorY = floorY, ceilingY = float.PositiveInfinity, outline = System.Array.Empty<Vector2>(),
             };
             KeyWallNormal = -ahead;

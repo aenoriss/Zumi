@@ -187,7 +187,7 @@ def audit(ch, ep: Episode) -> Audit:
                         f"effort and frame ids: {'yes' if sent else 'NO'}); they show today's frames (the cell "
                         f"that differs most from today's rendering: {worst:.2f} of 255, under {SHEET_DIFF}); "
                         f"layers and frames hold: {'yes' if up else 'NO'}"),
-              write=lambda: _set(d / "settings.json", "stamp", S.stamp_of(items)))
+              write=lambda d=d, new=S.stamp_of(items): _set(d / "settings.json", "stamp", new))
 
     # ---- places
     clk = clock.load(ep)

@@ -21,8 +21,10 @@ namespace Zumi
     ///          open floor by the same ranking
     ///   table  on a scanned table top, then as near the seat as possible
     ///   shelf  the same on a scanned storage top
-    /// A prop whose kind of surface the room lacks, or has no room on, goes one kind down: shelf, then table, then
-    /// floor. The floor takes it only if it is at least SmallestFloorProp tall; a smaller one is not shown.
+    /// A prop stands only on a surface of its own kind, or on the nearest kind that can stand in for it: a shelf
+    /// prop with no shelf (or no room on one) may stand on a table top. A table or shelf prop never goes to the
+    /// floor, and a floor prop never goes up. A prop with no surface it may stand on is not shown, and the result
+    /// says why. Without a scanned room there is only the floor, so only floor props show.
     /// </summary>
     public static class ZumiPropPlacer
     {
@@ -43,8 +45,6 @@ namespace Zumi
         public const float WallGap = 0.05f;
         /// <summary>Metres between a prop and the edge of the top it stands on.</summary>
         public const float EdgeGap = 0.02f;
-        /// <summary>A table or shelf prop shorter than this is not put on the floor.</summary>
-        public const float SmallestFloorProp = 0.3f;
         /// <summary>What a spot behind the panel costs, in the degrees spots are ranked by: it is taken only when no
         /// spot beside the panel is within that many degrees of bearing (or their worth in distance).</summary>
         public const float BehindPanelCost = 30f;
@@ -96,31 +96,25 @@ namespace Zumi
                 var request = requests[index];
                 var result = results[index] = new Result { name = request.name, radius = request.radius };
                 var tried = new List<string>();
-                for (var kind = request.kind; ; kind--)
+                // its own kind, then (a shelf prop only) a table top; never the floor unless it is a floor prop
+                var lowest = request.kind == SurfaceKind.Floor ? SurfaceKind.Floor : SurfaceKind.Table;
+                for (var kind = request.kind; kind >= lowest && !result.placed; kind--)
                 {
-                    if (kind == SurfaceKind.Floor && request.kind != SurfaceKind.Floor && request.height < SmallestFloorProp)
-                    {
-                        result.reason = Invariant($"no {string.Join(" or ", tried)} with room for it, and at {request.height:F2} m it is too small for the floor");
-                        break;
-                    }
                     tried.Add(kind.ToString().ToLowerInvariant());
-                    if (Best(room, kind, request, seatEye, seat, ahead, standing, out var surface, out var at))
-                    {
-                        result.placed = true;
-                        result.on = kind;
-                        result.surface = surface.name;
-                        result.position = new Vector3(at.x, surface.height, at.y);
-                        var away = at - seat;
-                        result.rotation = Quaternion.LookRotation(new Vector3(away.x, 0f, away.y));
-                        standing.Add(result);
-                        break;
-                    }
-                    if (kind == SurfaceKind.Floor)
-                    {
-                        result.reason = $"no {string.Join(" or ", tried)} with room for it";
-                        break;
-                    }
+                    if (!Best(room, kind, request, seatEye, seat, ahead, standing, out var surface, out var at)) continue;
+                    result.placed = true;
+                    result.on = kind;
+                    result.surface = surface.name;
+                    result.position = new Vector3(at.x, surface.height, at.y);
+                    var away = at - seat;
+                    result.rotation = Quaternion.LookRotation(new Vector3(away.x, 0f, away.y));
+                    standing.Add(result);
                 }
+                if (result.placed) continue;
+                var has = false;
+                foreach (var s in room.Surfaces) has |= s.kind >= lowest && s.kind <= request.kind;
+                result.reason = has ? $"no {string.Join(" or ", tried)} with room for it" : $"the room has no {string.Join(" or ", tried)}";
+                if (request.kind != SurfaceKind.Floor) result.reason += $"; a {request.kind.ToString().ToLowerInvariant()} prop does not stand on the floor";
             }
             return new List<Result>(results);
         }

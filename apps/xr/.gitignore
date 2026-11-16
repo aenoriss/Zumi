@@ -71,3 +71,7 @@ crashlytics-build.properties
 /[Aa]ssets/_Recovery/
 /[Aa]ssets/_Recovery.meta
 /[Aa]ssets/XR/APILayers~/
+
+# Episodes held out of a build (moved here from StreamingAssets/Episodes so they are not packed into the app)
+/EpisodesHeld/
+/.utmp/

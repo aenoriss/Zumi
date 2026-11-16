@@ -52,8 +52,11 @@ namespace Zumi
         public const float BeyondShare = 0.95f;
         /// <summary>The depth factor is worked out on every fifth vertex of the front mesh.</summary>
         public const int ScaleSampleStride = 5;
-        /// <summary>The view is whole out to this share of the way to the edge of its span, then fades.</summary>
-        public const float VignetteFull = 0.35f;
+        /// <summary>Across, the view is whole out to this share of the way to the edge of its span, then fades: its core.</summary>
+        public const float VignetteFull = ZumiPlaceWarp.CoreShare;
+        /// <summary>Up and down, the view is whole until this many degrees of picture from the edge of its span: the fit
+        /// puts that edge on the floor line and on the top of the wall, so the soft edge is short.</summary>
+        public const float VignetteVerticalDegrees = 6f;
         /// <summary>The fade reaches nothing this many degrees inside the measured span: the mesh's rim is ragged.</summary>
         public const float VignetteInsetDegrees = 5f;
         /// <summary>Metres an opening floats off its wall, toward the room.</summary>
@@ -198,7 +201,7 @@ namespace Zumi
         public IReadOnlyList<string> PropLines => open != null ? propLines : None;
         public IReadOnlyList<string> PlacedPropNames => open != null ? placedNames : None;
         public IReadOnlyList<string> UnplacedPropLines => open != null ? unplacedLines : None;
-        /// <summary>Placed props that stand on another kind of surface than the file names (the step-down rule).</summary>
+        /// <summary>Placed props that stand on another kind of surface than the file names (a shelf prop on a table top).</summary>
         public IReadOnlyList<string> PropsOffKind => open != null ? offKind : None;
         /// <summary>Placed props with nothing under them, or on a kind of surface above their own (a floor prop on a
         /// table): the rule allows neither.</summary>
@@ -630,6 +633,8 @@ namespace Zumi
             public Vector2[] front, back;
             /// <summary>Per vertex: where it is shown, in metres, in the place's frame at the seat's eye.</summary>
             public Vector3[] frontPositions, backPositions;
+            /// <summary>Per vertex: degrees from the eye's level up to the wall's top and down to the floor line where it lands.</summary>
+            public Vector2[] frontEdges, backEdges;
         }
 
         async void Fit(Slot slot)
@@ -654,11 +659,13 @@ namespace Zumi
             slot.root.localScale = Vector3.one;
             slot.frontMesh.SetVertices(fit.frontPositions);
             slot.frontMesh.SetUVs(1, fit.front);
+            slot.frontMesh.SetUVs(2, fit.frontEdges);
             slot.frontMesh.RecalculateBounds();
             if (slot.backMesh)
             {
                 slot.backMesh.SetVertices(fit.backPositions);
                 slot.backMesh.SetUVs(1, fit.back);
+                slot.backMesh.SetUVs(2, fit.backEdges);
                 slot.backMesh.RecalculateBounds();
             }
             var window = shape.mode == RoomMode.None && room.Portals.Count > 0;
@@ -684,16 +691,19 @@ namespace Zumi
         static Vector3 ToRoom(RoomShape shape, Vector3 local) => shape.right * local.x + Vector3.up * local.y + shape.forward * local.z;
 
         /// <summary>How much of the view shows in the direction of a point of its mesh (the place's own frame, the
-        /// eye at the origin): all of it out to VignetteFull of the way from the view's centre to the edge of its
-        /// measured span (hDeg by vDeg, less VignetteInsetDegrees), then smoothly less, nothing at that edge.</summary>
+        /// eye at the origin), by its measured span (hDeg by vDeg, less VignetteInsetDegrees). Across: all of it out to
+        /// VignetteFull of the way from the view's centre to the edge, then smoothly less, nothing at the edge. Up and
+        /// down: all of it until VignetteVerticalDegrees from the edge, nothing at the edge.</summary>
         public static float Vignette(Vector3 p, float hDeg, float vDeg)
         {
             var d = p.magnitude;
             if (d < 1e-6f) return 0f;
-            float hMax = Mathf.Max((hDeg / 2f - VignetteInsetDegrees) * Mathf.Deg2Rad, 0.01f), vMax = Mathf.Max((vDeg / 2f - VignetteInsetDegrees) * Mathf.Deg2Rad, 0.01f);
-            var q = new Vector2(Mathf.Atan2(p.x, p.z) / hMax, Mathf.Asin(Mathf.Clamp(p.y / d, -1f, 1f)) / vMax);
-            var u = Mathf.Clamp01((1f - q.magnitude) / (1f - VignetteFull));
-            return u * u * u * (u * (u * 6f - 15f) + 10f);
+            float hMax = Mathf.Max(hDeg / 2f - VignetteInsetDegrees, 0.5f), vMax = Mathf.Max(vDeg / 2f - VignetteInsetDegrees, 0.5f);
+            var across = Mathf.Clamp01((1f - Mathf.Abs(Mathf.Atan2(p.x, p.z)) * Mathf.Rad2Deg / hMax) / (1f - VignetteFull));
+            var upright = Mathf.Clamp01((vMax - Mathf.Abs(Mathf.Asin(Mathf.Clamp(p.y / d, -1f, 1f))) * Mathf.Rad2Deg) / VignetteVerticalDegrees);
+            return Smooth(across) * Smooth(upright);
+
+            static float Smooth(float u) => u * u * u * (u * (u * 6f - 15f) + 10f);
         }
 
         // One layer of a place as it is shown in a room: every vertex sent where the warp puts it.
@@ -704,6 +714,7 @@ namespace Zumi
             public Vector3[] direction;
             public float[] depth, shows, edge;
             public bool[] through;
+            public Vector2[] wallEdges;
 
             public Warped(ZumiGlb glb, ZumiPlaceWarp warp, RoomShape shape, PlaceMesh place)
             {
@@ -713,17 +724,18 @@ namespace Zumi
                 shows = new float[n];
                 edge = new float[n];
                 through = new bool[n];
+                wallEdges = new Vector2[n];
                 for (var i = 0; i < n; i++)
                 {
                     var p = glb.positions[i];
-                    warp.Map(p, out direction[i], out var zoom, out var span);
+                    warp.Map(p, out direction[i], out var zoom, out var span, out wallEdges[i]);
                     depth[i] = p.magnitude / zoom;
                     var world = ToRoom(shape, direction[i]);
                     edge[i] = shape.Distance(world, out var wall);
                     through[i] = wall && shape.Through(world);
-                    // the picture's own soft edge, the end of what the room can show, and only walls: not the floor,
-                    // not the ceiling
-                    shows[i] = wall ? Vignette(p, place.hDeg, place.vDeg) * span : 0f;
+                    // the picture's own soft edge and the end of what the room can show across; the floor and the
+                    // ceiling are cut per pixel by the shader, from wallEdges
+                    shows[i] = Vignette(p, place.hDeg, place.vDeg) * span;
                 }
             }
         }
@@ -757,6 +769,7 @@ namespace Zumi
             var fit = new Fitted { scale = scale, warp = warp.Summary };
             int seen = 0, inside = 0;
             Place(layer, 0f, out fit.frontPositions, out fit.front);
+            fit.frontEdges = layer.wallEdges;
             for (var i = 0; i < fit.front.Length; i++)
             {
                 if (!layer.through[i]) continue;
@@ -765,7 +778,12 @@ namespace Zumi
             }
             fit.clipped = (float)inside / Mathf.Max(seen, 1);
             // the back layer goes through the same warp, so the two stay aligned, and never comes inside the room
-            if (back != null) Place(new Warped(back, warp, shape, place), BackMargin, out fit.backPositions, out fit.back);
+            if (back != null)
+            {
+                var backLayer = new Warped(back, warp, shape, place);
+                Place(backLayer, BackMargin, out fit.backPositions, out fit.back);
+                fit.backEdges = backLayer.wallEdges;
+            }
             return fit;
 
             void Place(Warped l, float keepBeyond, out Vector3[] positions, out Vector2[] shown)
