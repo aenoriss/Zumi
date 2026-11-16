@@ -615,7 +615,15 @@ def split(img: Image.Image, gutter: np.ndarray, lay: Layout | None, letters: np.
         ys, xs = np.nonzero(mk)
         sub = lab_[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
         sub[sub == 0] = k + 1
-    out = [(lab_ == k + 1, flat[k]) for k in range(n) if (lab_ == k + 1).any()]
+    # a frame left with fewer than MIN_FRAME_PX pixels gets no layers (masks.py) yet was still timed as a frame and
+    # drawn greyed: a 38 x 20 px leftover of a panel box on dan-buck p022 (2026-11-16). Its pixels are page.
+    out = []
+    for k in range(n):
+        mk = lab_ == k + 1
+        if mk.sum() >= MIN_FRAME_PX:
+            out.append((mk, flat[k]))
+        elif mk.any():
+            page |= mk
     if (lab_ == n + 1).any():
         out.append((lab_ == n + 1, True))
     return Split([m for m, _ in out], [f for _, f in out], page)
