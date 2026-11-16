@@ -163,10 +163,13 @@ namespace Zumi
         /// onto the ceiling. Its edge is a rounded mask in the place's shader (Zumi/Place), touching the rectangle's
         /// middle of each side.</summary>
         public const float WindowWidthDegrees = 100f, WindowHeightDegrees = 66f;
-        /// <summary>What the window must still show about the panel's direction once cut to the wall: half of each
-        /// to either side (the panel's 27.5 plus 4.5), and up in all (the default's proportion). A wall that cannot
-        /// hold that keeps no window: it stands free VirtualWallDistance ahead of the seat, as without a room.</summary>
+        /// <summary>The free-standing window's least size (no room, or no wall that can hold it): half of each to
+        /// either side of the panel's direction (the panel's 27.5 plus 4.5), and up in all (the default's
+        /// proportion). On a real wall it does not apply (MinWallWindowDegrees).</summary>
         public const float MinWindowWidthDegrees = 64f, MinWindowHeightDegrees = 41.6f;
+        /// <summary>The least a real wall must show, across and up, to hold the window; below it the window stands
+        /// free. The free window's minimum (MinWindow*) no longer applies on a wall.</summary>
+        public const float MinWallWindowDegrees = 12f;
         /// <summary>Metres the window keeps from the key wall's side edges and its top.</summary>
         public const float WindowInset = 0.15f;
         /// <summary>Metres above the floor the window's lower edge never goes below (the window moves up to keep it).</summary>
@@ -175,12 +178,16 @@ namespace Zumi
         /// edges are cut there.</summary>
         const float MaxWindowAzimuth = 80f;
         /// <summary>A key wall nearer than this to the seat's eye cannot hold the window: it stands free.</summary>
-        public const float MinKeyWallDistance = 1.4f;
+        public const float MinKeyWallDistance = 1.2f;  // the panel stands 1.0 m out: a wall just behind it still holds the window
         /// <summary>The window may fold round a corner onto the wall next to the key wall, at most this far along it
         /// and this many degrees past the corner as the seat sees it (the lesser), and only onto a side wall that faces
         /// the seat within MaxBleedFacingDegrees of square (a grazing wall reads as stretched). Never onto the ceiling
         /// or the floor.</summary>
-        public const float BleedMetres = 0.5f, BleedDegrees = 20f, MaxBleedFacingDegrees = 60f;
+        // MaxBleedFacingDegrees was 60: a side wall meeting the key wall at a right angle faces a seat 4.3 m from a
+        // 3.3 m wall at about 69 degrees, so in most rooms the window never folded (owner, on the headset,
+        // 2026-11-16: "it doesn't bleed to nearby walls"). At 80 nearly every real corner folds; the fold stays short
+        // (BleedMetres, BleedDegrees), which keeps the grazing stretch small.
+        public const float BleedMetres = 0.5f, BleedDegrees = 20f, MaxBleedFacingDegrees = 80f;
         /// <summary>Metres a side wall's end may be from the key wall's edge and still be the wall round that corner.</summary>
         const float CornerSlack = 0.25f;
         /// <summary>Metres round the window on the key wall the rim (the broken wall's cracks) may reach.</summary>
@@ -670,10 +677,14 @@ namespace Zumi
             var elLow = Mathf.Max(-WindowHeightDegrees / 2f, Mathf.Atan2(bottomY - eye.y, reach) * Mathf.Rad2Deg);
             var elHigh = Mathf.Min(elLow + WindowHeightDegrees, Mathf.Atan2(topY - eye.y, reach) * Mathf.Rad2Deg);
             float toLeft = panelAt - azLeft, toRight = azRight - panelAt;
-            if (Mathf.Min(toLeft, toRight) < MinWindowWidthDegrees / 2f)
-                return Invariant($"the wall holds {Mathf.Max(Mathf.Min(toLeft, toRight), 0f) * 2f:F0} of {MinWindowWidthDegrees:F0} deg across");
-            if (elHigh - elLow < MinWindowHeightDegrees)
-                return Invariant($"the wall holds {Mathf.Max(elHigh - elLow, 0f):F0} of {MinWindowHeightDegrees:F0} deg up");
+            // On a real wall the window stays on the wall at whatever size the wall holds: the owner's rule is that the
+            // opening's edge sticks to the real wall, and refusing a wall below the free window's minimum sent most
+            // rooms to the free-standing rift, which sticks to nothing (2026-11-16). Only a wall too small to show
+            // anything (MinWallWindowDegrees) is refused.
+            if (onWall ? toLeft + toRight < MinWallWindowDegrees : Mathf.Min(toLeft, toRight) < MinWindowWidthDegrees / 2f)
+                return Invariant($"the wall holds {Mathf.Max(toLeft + toRight, 0f):F0} deg across");
+            if (elHigh - elLow < (onWall ? MinWallWindowDegrees : MinWindowHeightDegrees))
+                return Invariant($"the wall holds {Mathf.Max(elHigh - elLow, 0f):F0} deg up");
 
             WindowOnWall = Shape.onWall = onWall;
             Shape.keyPoint = KeyWallPoint;
