@@ -40,6 +40,7 @@ namespace Zumi
             /// <summary>Distance from the camera plane to the node's middle, in scene units (a window's is 1).</summary>
             public float Depth => -bounds.center.z;
             public Color tint = Color.white;
+            public float blur;
         }
 
         public Transform Root { get; private set; }
@@ -48,6 +49,7 @@ namespace Zumi
         public Vector2 PanelSize { get; private set; }
 
         GltfImport gltf;
+        readonly List<Material> shadowMaterials = new();
         readonly List<Node> nodes = new();
         /// <summary>The frames of one panel the stencil's four bits tell apart (refs 1 to 15); past that two frames
         /// would share a window.</summary>
@@ -56,6 +58,7 @@ namespace Zumi
         static readonly int StencilComp = Shader.PropertyToID("_StencilComp");
         static readonly int ZWrite = Shader.PropertyToID("_ZWrite");
         static readonly int Tint = Shader.PropertyToID("_Tint");
+        static readonly int Blur = Shader.PropertyToID("_Blur");
         // files before 1.1 have no extras: the node's name says its kind and frame
         static readonly Regex FrameInName = new(@"(?:window: frame |\[frame )(\d+)");
 
@@ -63,7 +66,7 @@ namespace Zumi
         /// <param name="eye">Where the scene's camera goes: its position the eye, its +z the view.</param>
         /// <param name="unitMetres">Metres of one scene unit: the distance from the eye to the windows.</param>
         public static async Task<ZumiPanelScene> Load(byte[] glb, Transform eye, float unitMetres, Shader windowShader,
-                                                      Shader cardShader, CancellationToken cancel)
+                                                      Shader cardShader, Shader shadowShader, CancellationToken cancel)
         {
             var json = JObject.Parse(Encoding.UTF8.GetString(glb, 20, BitConverter.ToInt32(glb, 12)));
             var scene = new ZumiPanelScene { Root = new GameObject("scene").transform, gltf = new GltfImport(materialGenerator: NoMaterials.Instance) };
@@ -144,7 +147,39 @@ namespace Zumi
                 }
                 scene.nodes.Add(node);
             }
+            if (shadowShader)
+                foreach (var node in scene.nodes)
+                    if (node.kind == "window") scene.AddShadow(node, shadowShader);
             return scene;
+        }
+
+        /// <summary>A frame's soft shadow: how far it reaches past the frame and how dark it is at the frame's edge, in
+        /// scene units (metres at the reading distance).</summary>
+        public const float ShadowFeather = 0.035f, ShadowStrength = 0.5f;
+
+        // the frame window's quad again, grown about its middle in the panel's plane, with Zumi/FrameShadow
+        void AddShadow(Node window, Shader shadowShader)
+        {
+            for (var i = 0; i < window.renderers.Count; i++)
+            {
+                var mesh = window.renderers[i].GetComponent<MeshFilter>().sharedMesh;
+                var b = mesh.bounds;
+                var size = new Vector2(Mathf.Max(b.size.x, 1e-4f), Mathf.Max(b.size.y, 1e-4f));
+                var grow = new Vector2((size.x + 2.4f * ShadowFeather) / size.x, (size.y + 2.4f * ShadowFeather) / size.y);
+                var m = new Material(shadowShader) { name = $"{window.materials[i].name} shadow", mainTexture = window.materials[i].mainTexture };
+                m.SetVector("_Grow", grow);
+                m.SetVector("_Radius", new Vector4(ShadowFeather / size.x, ShadowFeather / size.y, 0f, 0f));
+                m.SetFloat("_Strength", ShadowStrength);
+                shadowMaterials.Add(m);
+                var go = new GameObject($"{window.renderers[i].name} shadow", typeof(MeshFilter), typeof(MeshRenderer));
+                go.transform.SetParent(Root, false);
+                go.transform.SetLocalPositionAndRotation(new Vector3(b.center.x * (1f - grow.x), b.center.y * (1f - grow.y), 0f), Quaternion.identity);
+                go.transform.localScale = new Vector3(grow.x, grow.y, 1f);
+                go.GetComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = go.GetComponent<MeshRenderer>();
+                renderer.sharedMaterial = m;
+                renderer.shadowCastingMode = ShadowCastingMode.Off;
+            }
         }
 
         // A node's art, by the file's own indices (node -> mesh -> primitive -> material -> baseColorTexture -> texture),
@@ -168,12 +203,18 @@ namespace Zumi
             public void SetLogger(GLTFast.Logging.ICodeLogger logger) { }
         }
 
-        /// <summary>A layer's colour: its art times rgb, drawn at alpha (0 is not drawn at all).</summary>
-        public void SetTint(Node node, Color tint)
+        /// <summary>A layer's look: its art times rgb, drawn at alpha (0 is not drawn at all), blurred by that many
+        /// texels (0 sharp).</summary>
+        public void SetLook(Node node, Color tint, float blur)
         {
-            if (node.tint == tint) return;
+            if (node.tint == tint && node.blur == blur) return;
             node.tint = tint;
-            foreach (var m in node.materials) m.SetColor(Tint, tint);
+            node.blur = blur;
+            foreach (var m in node.materials)
+            {
+                m.SetColor(Tint, tint);
+                m.SetFloat(Blur, blur);
+            }
             foreach (var r in node.renderers) r.enabled = tint.a > 0f;
         }
 
@@ -184,6 +225,8 @@ namespace Zumi
             foreach (var node in nodes)
                 foreach (var m in node.materials) UnityEngine.Object.Destroy(m);
             nodes.Clear();
+            foreach (var m in shadowMaterials) UnityEngine.Object.Destroy(m);
+            shadowMaterials.Clear();
             gltf?.Dispose();
             gltf = null;
         }

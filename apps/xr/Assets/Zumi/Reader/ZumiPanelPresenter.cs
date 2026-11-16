@@ -36,6 +36,8 @@ namespace Zumi
         [SerializeField] Shader windowShader;
         [Tooltip("Zumi/Card: each layer of a panel's scene")]
         [SerializeField] Shader cardShader;
+        [Tooltip("Zumi/FrameShadow: a soft shadow round each frame, so the frames float in front of what is behind; none: no shadow")]
+        [SerializeField] Shader frameShadowShader;
         [Tooltip("A frame the clock has not reached yet is drawn grey (as the browser viewer does); off: every frame is in its colours from the panel's start")]
         [SerializeField] bool greyFramesAhead = true;
         [Tooltip("The pipeline's accents (pop, cut, impact) play; off: nothing moves")]
@@ -119,6 +121,7 @@ namespace Zumi
         /// <summary>The middle of every panel: ReadingDistance straight ahead of the seat.</summary>
         public Vector3 PanelCentre => transform.TransformPoint(0f, 0f, ReadingDistance);
         public IReadOnlyList<string> VisibleBubbleIds => shownSlot?.stage.VisibleBubbleIds ?? None;
+        public IReadOnlyList<string> LitBubbleIds => shownSlot?.stage.LitBubbleIds ?? None;
         public IReadOnlyList<string> FrameStates => shownSlot?.stage.FrameStates ?? None;
         public IReadOnlyList<string> ActiveTrackIds => shownSlot?.stage.ActiveTrackIds ?? None;
         public IReadOnlyList<string> FinishedTrackIds => shownSlot?.stage.FinishedTrackIds ?? None;
@@ -226,7 +229,7 @@ namespace Zumi
                 var glb = string.IsNullOrEmpty(panel.scene) ? null : await source.Read(panel.scene, cancel);
                 if (glb == null && !string.IsNullOrEmpty(panel.scene)) why = $"{panel.scene} is not in the episode";
                 if (glb != null && this && !cancel.IsCancellationRequested)
-                    scene = await ZumiPanelScene.Load(glb, slot.root, ReadingDistance, windowShader, cardShader, cancel);
+                    scene = await ZumiPanelScene.Load(glb, slot.root, ReadingDistance, windowShader, cardShader, frameShadowShader, cancel);
             }
             catch (OperationCanceledException) { }
             catch (Exception e)

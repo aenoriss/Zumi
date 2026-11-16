@@ -24,13 +24,14 @@ namespace Zumi
     /// timeline alone decides. A change fades the open place out over places.fade seconds from the change, then the
     /// next one in over the same time; the first place, and one after a gap, fades in from its start.
     ///
-    /// A place is seen through one window (ZumiRoom.Portals): a rectangle of a default angular size centred on the
-    /// panel's direction, on the key wall behind the panel (without a scanned room, on a virtual wall). It marks the
-    /// stencil, the place's two meshes draw where it is marked, fading out toward its edges: no render target, one
-    /// rectangle and two draws. The meshes are placed as the format rules, direction-true: their origin at the seat's
-    /// eye, -z to the key wall, every point in its own direction, scaled by one factor that puts 95 % of what shows in
-    /// the window beyond the wall, the back layer kept beyond it, what is still inside the room not drawn. Scanned
-    /// furniture hides the place behind it, as boxes.
+    /// A place is seen through one window (ZumiRoom.Portals): one continuous opening of a fixed angular size centred
+    /// on the panel's direction, on the key wall's plane behind the panel (without a scanned room, or with a key wall
+    /// that cannot hold it, standing free ahead of the seat). It marks the stencil, the place's two meshes draw where
+    /// it is marked, masked per pixel to a rounded outline: a soft fade, or with BrokenWall a jagged hole in the wall
+    /// with its rim drawn around it (Zumi/Breach), opening from the middle as the place fades in. No render target,
+    /// one rectangle, two draws and the rim. The meshes are placed as the format rules, direction-true: their origin
+    /// at the seat's eye, -z to the key wall, every point in its own direction, scaled by one factor that puts 95 % of
+    /// what shows in the window beyond the wall, the back layer kept beyond it.
     ///
     /// When the clock has ended the last place closes over places.fade, on the time since the end
     /// (IEpisodeClock.EndedFor). A place or a prop that does not load is left out and nothing else changes
@@ -58,8 +59,16 @@ namespace Zumi
         public const float VignetteInsetDegrees = 5f;
         /// <summary>Metres an opening floats off its wall, toward the room.</summary>
         public const float OpeningInset = 0.004f;
-        /// <summary>Metres over which the place fades toward the window's edges, on all four sides.</summary>
-        public const float WindowEdge = 0.25f;
+        /// <summary>Metres of wall the broken hole goes through: its inner side shows, in perspective, near the edge.</summary>
+        public const float WallThickness = 0.15f;
+        /// <summary>Where the window folds onto a side wall: how much of the broken wall (cracks, rim, the hole's
+        /// jagged cut) it keeps there, 0 none (the plain soft fade), reached this many metres past the corner.</summary>
+        public const float SideWallBreak = 0f, CornerFadeMetres = 0.15f;
+        /// <summary>The focus scrim: an ellipse about the seat's forward, its half spans in degrees (1.3 times the
+        /// panel's 55 by about 44); whole within ScrimEaseFrom of them, gone at ScrimEnd (a long, edgeless ease); there
+        /// the place is brought to ScrimBrightness, ScrimSaturation of its colour and blurred over ScrimBlurTexels.</summary>
+        public static readonly Vector2 ScrimHalfDegrees = new(36f, 29f);
+        public const float ScrimEaseFrom = 0.6f, ScrimEnd = 1.5f, ScrimBrightness = 0.42f, ScrimSaturation = 0.35f, ScrimBlurTexels = 5f;
         /// <summary>Places that exist at once: the open one and the next.</summary>
         public const int MaxLoaded = 2;
         /// <summary>A prop's contact shadow at its darkest, for an occlusion of 0 and of 1.</summary>
@@ -70,6 +79,11 @@ namespace Zumi
         [SerializeField] Shader placeShader;
         [SerializeField] Shader propShader;
         [SerializeField] Shader shadowShader;
+        [SerializeField] Shader breachShader;
+        [Tooltip("On: the window is a hole broken in the wall, with a cracked rim, opening as the place fades in. Off: a plain soft round fade")]
+        [SerializeField] bool brokenWall = true;
+        [Tooltip("On: behind and around the panel the place is darkened, desaturated and blurred, so the frames stand out. Off: the place is the same everywhere")]
+        [SerializeField] bool focusScrim = true;
         [Tooltip("Full: the place, its props and its light on the real room. NoGrade: the real room keeps its own colours. Off: no props either; only the place beyond the wall stays")]
         [SerializeField] RoomEffects roomEffects = RoomEffects.Full;
 
@@ -105,6 +119,10 @@ namespace Zumi
         }
 
         static readonly int Opacity = Shader.PropertyToID("_Opacity");
+        static readonly int Open = Shader.PropertyToID("_Open");
+        static readonly int Broken = Shader.PropertyToID("_Broken");
+        static readonly int Rift = Shader.PropertyToID("_Rift");
+        static readonly int SeatForward = Shader.PropertyToID("_SeatFwd");
         static readonly int Strength = Shader.PropertyToID("_Strength");
         static readonly IReadOnlyList<string> None = Array.Empty<string>();
 
@@ -121,7 +139,9 @@ namespace Zumi
         Slot open, described;
         int describedSerial = -1;
         Transform stage, openings;
-        Material openingMaterial, farMaterial, occluderMaterial;
+        Material openingMaterial, farMaterial, clearMaterial, breachMaterial;
+        readonly List<GameObject> rims = new();
+        bool rimsShown;
         Mesh quad;
         int openingsSerial = -1;
         string lastOpenId;
@@ -144,7 +164,8 @@ namespace Zumi
         public IReadOnlyList<string> FailedPropNames => failedProps;
         /// <summary>The factor the open place's meshes are scaled by (one, in every direction); 0 while none is drawn.</summary>
         public float Scale => open?.scale ?? 0f;
-        /// <summary>The share of the open place's front vertices that fall inside the room and are not drawn.</summary>
+        /// <summary>The share of the open place's front vertices seen through the window that fall inside the room
+        /// (still drawn, unless nearer than the panel).</summary>
         public float ClippedShare => open?.clipped ?? 0f;
         /// <summary>How many of the room's openings are drawn now.</summary>
         public int OpeningsShown => openings && openings.gameObject.activeSelf ? room.PortalCount : 0;
@@ -154,6 +175,24 @@ namespace Zumi
             set => roomEffects = value;
         }
         public string RoomEffectsName => roomEffects.ToString();
+        /// <summary>A window cut into a real wall as a hole broken in it (on) or a plain soft round fade (off). A window
+        /// standing free (no room, or a wall that cannot hold it) is always a rift.</summary>
+        public bool BrokenWall
+        {
+            get => brokenWall;
+            set => brokenWall = value;
+        }
+        /// <summary>The window's edge now: "broken" (in a real wall, BrokenWall on), "soft" (in a real wall, off), or
+        /// "rift" (standing free: the soft fade with a faint shimmering rim, no cracks, no wall).</summary>
+        public string EdgeMode => !room.WindowOnWall ? "rift" : brokenWall ? "broken" : "soft";
+        /// <summary>The focus scrim behind the panel, on or off.</summary>
+        public bool FocusScrim
+        {
+            get => focusScrim;
+            set => focusScrim = value;
+        }
+        /// <summary>How far the window is open: the place's fade, eased; 1 while one is on show.</summary>
+        public float OpenShare { get; private set; }
         /// <summary>The open place's light; null while none is drawn or the file gives none.</summary>
         public PlaceLight OpenLight => open?.place.light;
 
@@ -168,8 +207,8 @@ namespace Zumi
                 return n;
             }
         }
-        /// <summary>Draws the open place adds: its two meshes, two for the window, one per furniture box, two per prop.</summary>
-        public int DrawCalls => open == null ? 0 : 2 + 2 * room.PortalCount + room.Boxes.Count + 2 * PropsShown;
+        /// <summary>Draws the open place adds: its two meshes, two for the window, one for the broken wall, two per prop.</summary>
+        public int DrawCalls => open == null ? 0 : 2 + 3 * room.PortalCount + (EdgeMode != "soft" ? room.Rims.Count : 0) + 2 * PropsShown;
         /// <summary>Bytes of the open place's two textures, and of its props' textures.</summary>
         public long PlaceTextureBytes => open == null ? 0 : Profiler.GetRuntimeMemorySizeLong(open.frontTexture) + (open.backTexture ? Profiler.GetRuntimeMemorySizeLong(open.backTexture) : 0);
         /// <summary>The open place's front texture as it is held: "2160x1072 RGB24, 6.9 MB on the GPU" (width times
@@ -198,10 +237,10 @@ namespace Zumi
         public IReadOnlyList<string> PropLines => open != null ? propLines : None;
         public IReadOnlyList<string> PlacedPropNames => open != null ? placedNames : None;
         public IReadOnlyList<string> UnplacedPropLines => open != null ? unplacedLines : None;
-        /// <summary>Placed props that stand on another kind of surface than the file names (a shelf prop on a table top).</summary>
+        /// <summary>Placed props that stand on another kind of surface than the file names (switched: the room had no
+        /// room for them on their own kind).</summary>
         public IReadOnlyList<string> PropsOffKind => open != null ? offKind : None;
-        /// <summary>Placed props with nothing under them, or on a kind of surface above their own (a floor prop on a
-        /// table): the rule allows neither.</summary>
+        /// <summary>Placed props with nothing under them: the rule allows none.</summary>
         public IReadOnlyList<string> PropsUnsupported => open != null ? unsupported : None;
         /// <summary>How many props are drawn now.</summary>
         public int PropsShown
@@ -243,10 +282,13 @@ namespace Zumi
             quad.SetVertices(new[] { new Vector3(-0.5f, -0.5f), new Vector3(0.5f, -0.5f), new Vector3(-0.5f, 0.5f), new Vector3(0.5f, 0.5f) });
             quad.SetUVs(0, new[] { new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 1f), new Vector2(1f, 1f) });
             quad.SetTriangles(new[] { 0, 2, 1, 2, 3, 1 }, 0);
-            // the stencil's bits: 6 furniture, 7 the openings (the panel's frames keep 0 to 3)
-            occluderMaterial = Marker("occluder", 2890, 64, 255, 64, CompareFunction.Always, StencilOp.Replace, CompareFunction.LessEqual, false, CullMode.Back, false);
-            openingMaterial = Marker("opening", 2900, 128, 64, 128, CompareFunction.Equal, StencilOp.Replace, CompareFunction.LessEqual, false, CullMode.Off, false);
+            // the stencil's bit 7 is the opening's (the panel's frames keep 0 to 3)
+            openingMaterial = Marker("opening", 2900, 128, 0, 128, CompareFunction.Always, StencilOp.Replace, CompareFunction.LessEqual, false, CullMode.Off, false);
             farMaterial = Marker("far", 2901, 128, 128, 0, CompareFunction.Equal, StencilOp.Keep, CompareFunction.Always, true, CullMode.Off, true);
+            // and again once the place and its rim are drawn: the panel's layers lie 1 to 3 m out, and the place's
+            // depth must never hide one of its frames
+            clearMaterial = Marker("clear", 2906, 128, 128, 0, CompareFunction.Equal, StencilOp.Keep, CompareFunction.Always, true, CullMode.Off, true);
+            breachMaterial = new Material(breachShader) { name = "breach", renderQueue = 2904 };
         }
 
         Material Marker(string name, int queue, int reference, int read, int write, CompareFunction comp, StencilOp pass, CompareFunction depth, bool depthWrite, CullMode cull, bool far)
@@ -375,13 +417,30 @@ namespace Zumi
                 if (slot.root.gameObject.activeSelf != visible) slot.root.gameObject.SetActive(visible);
                 if (!visible) continue;
                 open = slot;
-                slot.frontMaterial.SetFloat(Opacity, opacity);
-                if (slot.backMaterial) slot.backMaterial.SetFloat(Opacity, opacity);
+                foreach (var material in new[] { slot.frontMaterial, slot.backMaterial })
+                {
+                    if (!material) continue;
+                    material.SetFloat(Opacity, opacity);
+                    material.SetFloat(Open, 1f - Mathf.Pow(1f - opacity, 3f));
+                    material.SetFloat(Broken, EdgeMode == "broken" ? 1f : 0f);
+                    var ahead = Vector3.ProjectOnPlane(seat.Forward, Vector3.up).normalized;
+                    material.SetVector(SeatForward, new Vector4(ahead.x, 0f, ahead.z, focusScrim ? 1f : 0f));
+                }
             }
             Fade = open != null ? opacity : 0f;
+            OpenShare = 1f - Mathf.Pow(1f - Fade, 3f);
 
             if (openingsSerial != room.Serial) BuildOpenings();
             if (openings.gameObject.activeSelf != (open != null)) openings.gameObject.SetActive(open != null);
+            var rim = EdgeMode != "soft";
+            if (rimsShown != rim)
+            {
+                rimsShown = rim;
+                foreach (var go in rims) go.SetActive(rim);
+            }
+            breachMaterial.SetFloat(Rift, EdgeMode == "rift" ? 1f : 0f);
+            breachMaterial.SetFloat(Opacity, Fade);
+            breachMaterial.SetFloat(Open, OpenShare);
 
             PropOpacity = open != null && roomEffects != RoomEffects.Off ? Fade : 0f;
             foreach (var slot in slots)
@@ -657,20 +716,35 @@ namespace Zumi
                 slot.backMesh.SetUVs(1, fit.back);
                 slot.backMesh.RecalculateBounds();
             }
-            var w = room.Portals[0];
             foreach (var material in new[] { slot.frontMaterial, slot.backMaterial })
             {
                 if (!material) continue;
-                material.SetVector("_WindowCentre", w.centre);
-                material.SetVector("_WindowRight", w.right);
-                material.SetVector("_WindowUp", w.up);
-                material.SetVector("_WindowSize", new Vector4(w.size.x / 2f, w.size.y / 2f, WindowEdge, 0f));
+                SetWindow(material, shape);
+                material.SetVector("_Scrim", new Vector4(ScrimHalfDegrees.x * Mathf.Deg2Rad, ScrimHalfDegrees.y * Mathf.Deg2Rad, ScrimEaseFrom, ScrimEnd));
+                material.SetVector("_ScrimLook", new Vector4(ScrimBrightness, ScrimSaturation, ScrimBlurTexels, 0f));
             }
             slot.scale = fit.scale;
             slot.clipped = fit.clipped;
             slot.fitSerial = shape.serial;
             Stand(slot);
-            Debug.Log(Invariant($"[Zumi] places: {place.setting} behind the panel ({shape.mode}): window {w.size.x:F2} x {w.size.y:F2} m ({room.WindowSpan.x:F0} x {room.WindowSpan.y:F0} deg), scale {fit.scale:F2}, {fit.clipped:P1} of the view in the window inside the room and not drawn"));
+            Debug.Log(Invariant($"[Zumi] places: {place.setting} behind the panel ({shape.mode}): window {room.WindowSpan.x:F0} x {room.WindowSpan.y:F0} deg, folds {room.BleedLine}, scale {fit.scale:F2}, {fit.clipped:P1} of the view in the window inside the room, key wall {room.KeyWallName}, edge {EdgeMode}"));
+        }
+
+        // the window's planes and outline, as Zumi/Place and Zumi/Breach read them (ZumiOpening.hlsl)
+        static void SetWindow(Material material, RoomShape shape)
+        {
+            material.SetVector("_Seat", shape.eye);
+            material.SetVector("_Key", shape.keyPoint);
+            material.SetVector("_KeyN", shape.keyNormal);
+            material.SetVector("_KeyR", shape.right);
+            Vector3 l = shape.sidePoint[0], r = shape.sidePoint[1];
+            material.SetVector("_SideL", new Vector4(l.x, l.y, l.z, shape.sideOk[0] ? 1f : 0f));
+            material.SetVector("_SideLN", shape.sideNormal[0]);
+            material.SetVector("_SideR", new Vector4(r.x, r.y, r.z, shape.sideOk[1] ? 1f : 0f));
+            material.SetVector("_SideRN", shape.sideNormal[1]);
+            material.SetVector("_Rect", shape.rect);
+            material.SetVector("_Round", new Vector4(shape.corner, shape.softEdge, 0f, 0f));
+            material.SetVector("_Edge", new Vector4(0f, WallThickness, SideWallBreak, CornerFadeMetres));
         }
 
         // a point or direction of the place's own frame (x right, y up, z to the key wall) in the room's
@@ -769,20 +843,25 @@ namespace Zumi
             for (var i = openings.childCount - 1; i >= 0; i--) Destroy(openings.GetChild(i).gameObject);
             foreach (var q in room.Portals)
             {
-                foreach (var material in new[] { openingMaterial, farMaterial })
+                foreach (var material in new[] { openingMaterial, farMaterial, clearMaterial })
                 {
                     var go = Marked($"{material.name} {q.name}", quad, material);
                     go.transform.SetPositionAndRotation(q.centre + q.normal * OpeningInset, Quaternion.LookRotation(-q.normal, q.up));
                     go.transform.localScale = new Vector3(q.size.x, q.size.y, 1f);
                 }
             }
-            var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
-            foreach (var box in room.Boxes)
+            // the edge around the window, on each wall it lies on, a little nearer the room than the opening
+            rims.Clear();
+            rimsShown = EdgeMode != "soft";
+            foreach (var q in room.Rims)
             {
-                var go = Marked($"occluder {box.label}", cube, occluderMaterial);
-                go.transform.SetPositionAndRotation(box.centre, box.rotation);
-                go.transform.localScale = box.size;
+                var go = Marked($"rim {q.name}", quad, breachMaterial);
+                go.transform.SetPositionAndRotation(q.centre + q.normal * 2f * OpeningInset, Quaternion.LookRotation(-q.normal, q.up));
+                go.transform.localScale = new Vector3(q.size.x, q.size.y, 1f);
+                go.SetActive(rimsShown);
+                rims.Add(go);
             }
+            if (room.Shape != null) SetWindow(breachMaterial, room.Shape);
         }
 
         GameObject Marked(string name, Mesh mesh, Material material)
@@ -894,7 +973,7 @@ namespace Zumi
                 placedNames.Add(prop.data.name);
                 var support = room.SupportAt(p.position + Vector3.up * 0.01f);
                 if (support == null || support.kind != Kind(prop.data.surface)) offKind.Add(prop.data.name);
-                if (support == null || support.kind > Kind(prop.data.surface)) unsupported.Add(prop.data.name);
+                if (support == null) unsupported.Add(prop.data.name);
                 propLines.Add(Invariant($"{prop.data.name} ({prop.data.surface}, {prop.data.heightM:F2} m): on {prop.on ?? "nothing"} at ({p.position.x:F2}, {p.position.y:F2}, {p.position.z:F2}), base {prop.baseError:+0.000;-0.000} m, {prop.panelClearance:F2} m from the panel, {prop.seatClearance:F2} m from the seat"));
                 PropBaseErrorMax = Mathf.Max(PropBaseErrorMax, Mathf.Abs(prop.baseError));
                 PropOutsideMax = Mathf.Max(PropOutsideMax, prop.outside);
@@ -911,7 +990,7 @@ namespace Zumi
         {
             foreach (var slot in slots.ToArray()) Drop(slot);
             if (stage) Destroy(stage.gameObject);
-            foreach (var o in new UnityEngine.Object[] { quad, openingMaterial, farMaterial, occluderMaterial })
+            foreach (var o in new UnityEngine.Object[] { quad, openingMaterial, farMaterial, clearMaterial, breachMaterial })
                 if (o) Destroy(o);
         }
     }

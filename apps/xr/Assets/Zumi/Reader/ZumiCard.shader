@@ -1,5 +1,5 @@
 // One layer of a scene3d panel (a backdrop, a card, lettering): its texture, unlit (the art is already lit), alpha
-// blended, tinted by _Tint. A frame's layers show only where that frame's window
+// blended, tinted by _Tint, blurred by _Blur texels while it is ahead of the clock. A frame's layers show only where that frame's window
 // marked the stencil (Comp Equal, on its low four bits: the others are the place's, Zumi/Portal); lettering is never
 // clipped (Comp Always). Backdrops write depth: where a relief
 // folds over itself at a head move the nearer surface must win (the browser viewer's comb, pin 261026-045502).
@@ -10,6 +10,7 @@ Shader "Zumi/Card"
     {
         _MainTex ("Texture", 2D) = "white" {}
         _Tint ("Tint", Color) = (1, 1, 1, 1)
+        _Blur ("Blur (texels)", Float) = 0
         _Stencil ("Stencil ref", Range(0, 15)) = 1
         [Enum(UnityEngine.Rendering.CompareFunction)] _StencilComp ("Stencil comparison", Float) = 3
         [Toggle] _ZWrite ("Depth write", Float) = 0
@@ -33,7 +34,9 @@ Shader "Zumi/Card"
             SAMPLER(sampler_MainTex);
             CBUFFER_START(UnityPerMaterial)
                 float4 _MainTex_ST;
+                float4 _MainTex_TexelSize;
                 half4 _Tint;
+                float _Blur;
             CBUFFER_END
             struct A { float4 pos : POSITION; float2 uv : TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
             struct V { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; UNITY_VERTEX_OUTPUT_STEREO };
@@ -46,7 +49,22 @@ Shader "Zumi/Card"
                 o.uv = TRANSFORM_TEX(i.uv, _MainTex);
                 return o;
             }
-            half4 frag(V i) : SV_Target { return SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * _Tint; }
+            half4 frag(V i) : SV_Target
+            {
+                half4 c = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv);
+                // ahead of the clock: a 3 x 3 tent of bilinear taps _Blur texels apart (the viewer's canvas blur)
+                UNITY_BRANCH
+                if (_Blur > 0.01)
+                {
+                    float2 d = _MainTex_TexelSize.xy * _Blur;
+                    half4 edges = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(d.x, 0)) + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - float2(d.x, 0))
+                                + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(0, d.y)) + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - float2(0, d.y));
+                    half4 corners = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + d) + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - d)
+                                  + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(d.x, -d.y)) + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(-d.x, d.y));
+                    c = (4 * c + 2 * edges + corners) / 16;
+                }
+                return c * _Tint;
+            }
             ENDHLSL
         }
     }

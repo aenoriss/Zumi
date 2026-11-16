@@ -353,6 +353,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Zumi.ZumiPanelPresenter
   windowShader: {fileID: 4800000, guid: 9636da11c069c9544996b75f3ebae662, type: 3}
   cardShader: {fileID: 4800000, guid: dddfdd5dc5e56174989f99f40dcc4126, type: 3}
+  frameShadowShader: {fileID: 4800000, guid: 7c59348486ad7c449a8126dec8f4e737, type: 3}
   greyFramesAhead: 1
   motionEnabled: 1
 --- !u!114 &422204914
@@ -408,6 +409,9 @@ MonoBehaviour:
   placeShader: {fileID: 4800000, guid: 7c55d697367bf6a43952c0149c6c6ff8, type: 3}
   propShader: {fileID: 4800000, guid: beea7b6165e1b1a43862ba6537358320, type: 3}
   shadowShader: {fileID: 4800000, guid: 2f91f8b421478d94cb33a1341334b320, type: 3}
+  breachShader: {fileID: 4800000, guid: 9e7f844e30ea5994b9455a57b88d048b, type: 3}
+  brokenWall: 1
+  focusScrim: 1
   roomEffects: 0
 --- !u!1 &600126556
 GameObject:

@@ -7,18 +7,27 @@ using static System.FormattableString;
 namespace Zumi
 {
     /// <summary>
-    /// What a panel's scene shows at a time on the episode clock: each balloon from its bubble's startTime, each
-    /// frame greyed until the clock reaches it, and the pipeline's accents (the panel's animation tracks). Show(t)
-    /// states all of it from t alone, so a pause holds it and a seek lands on what straight play would show.
+    /// What a panel's scene shows at a time on the episode clock, as the browser viewer's play mode does: every balloon
+    /// is there from the panel's start, greyed and blurred until its bubble's startTime (mid grey in a lit frame, near
+    /// black in a frame still ahead), then in full and staying so; each frame greyed and blurred until the clock
+    /// reaches it; and the pipeline's accents (the panel's animation tracks). A frame lights at the earlier of its own
+    /// start and the first start of a balloon drawn in it, so a lit balloon never sits on a grey frame. Show(t) states
+    /// all of it from t alone, so a pause holds it and a seek lands on what straight play would show.
     /// </summary>
     public sealed class ZumiPanelStage
     {
-        /// <summary>Seconds a balloon takes to appear. Its alpha only: lettering is never moved or scaled.</summary>
-        public const float BalloonFadeSeconds = 0.12f;
+        /// <summary>Seconds a balloon takes from waiting to full. Its colour and blur only: lettering is never moved
+        /// or scaled.</summary>
+        public const float BalloonFadeSeconds = 0.16f;
         /// <summary>Seconds a frame takes from grey to its colours when the clock reaches it.</summary>
         public const float FrameFadeSeconds = 0.12f;
         /// <summary>What a frame ahead of the clock is multiplied by (the browser viewer's #282828).</summary>
         public static readonly Color AheadTint = new(40f / 255f, 40f / 255f, 40f / 255f, 1f);
+        /// <summary>A balloon not yet read: in a lit frame (#707070), and in a frame still ahead (#101010).</summary>
+        public static readonly Color WaitingTint = new(112f / 255f, 112f / 255f, 112f / 255f, 1f), WaitingAheadTint = new(16f / 255f, 16f / 255f, 16f / 255f, 1f);
+        /// <summary>Blur in texels: anything ahead of the clock, and a balloon waiting in a lit frame (the viewer's
+        /// 1.5 and 0.8 px at full size).</summary>
+        public const float BlurAhead = 1.5f, BlurWaiting = 0.8f;
 
         sealed class Track
         {
@@ -41,12 +50,20 @@ namespace Zumi
         readonly double panelStart;
         readonly Dictionary<string, double> bubbleStart = new();
         readonly Dictionary<int, double> frameStart = new();
+        /// <summary>Each lettering node's frame by where it is drawn: the window holding its middle (the smallest
+        /// when several do), else the nearest, as the viewer's frameOfBubble.</summary>
+        readonly Dictionary<ZumiPanelScene.Node, int> drawnIn = new();
         readonly List<Track> tracks = new();
         readonly HashSet<ZumiPanelScene.Node> moved = new();
-        readonly List<string> visibleBubbles = new(), frameStates = new(), activeTracks = new(), finishedTracks = new();
+        readonly List<string> visibleBubbles = new(), litBubbles = new(), frameStates = new(), activeTracks = new(), finishedTracks = new();
 
-        /// <summary>The bubbles whose balloon is drawn now, at any alpha above 0.</summary>
+        /// <summary>The bubbles whose balloon is drawn now: all of the panel's, from its start.</summary>
         public IReadOnlyList<string> VisibleBubbleIds => visibleBubbles;
+        /// <summary>The bubbles whose balloon is in full now (its startTime reached).</summary>
+        public IReadOnlyList<string> LitBubbleIds => litBubbles;
+        /// <summary>Frames that light before their own start because a balloon drawn in them starts earlier:
+        /// "frame n at t (own start s, bubble b)".</summary>
+        public readonly List<string> EarlyFrames = new();
         /// <summary>Each timed frame as "n:lit" or "n:ahead" (ahead: drawn grey).</summary>
         public IReadOnlyList<string> FrameStates => frameStates;
         public IReadOnlyList<string> ActiveTrackIds => activeTracks;
@@ -63,6 +80,7 @@ namespace Zumi
             panelId = panel.id;
             foreach (var b in panel.bubbles) bubbleStart[b.id] = b.startTime ?? panelStart + b.startOffset;
             foreach (var f in panel.frames) frameStart[f.index] = panelStart + f.startOffset;
+            LightFramesByBalloons(panel);
             foreach (var a in panel.animations)
             {
                 if (a.track != AnimationTrack.scale && a.track != AnimationTrack.shake)
@@ -102,12 +120,61 @@ namespace Zumi
             }
         }
 
+        // A frame lights at the earlier of its own start and the first start of a balloon in it: the frame the
+        // bubble names, and the one it is drawn in (they differ where a balloon overlaps an inset frame)
+        void LightFramesByBalloons(Panel panel)
+        {
+            var windows = new List<(int frame, Rect seen)>();
+            foreach (var node in scene.Nodes)
+                if (node.kind == "window" && node.frame.HasValue) windows.Add((node.frame.Value, Seen(node)));
+            foreach (var node in scene.Nodes)
+            {
+                if (node.kind != "lettering" || windows.Count == 0) continue;
+                var c = Seen(node).center;
+                int best = -1;
+                var bestArea = float.MaxValue;
+                var bestDistance = float.MaxValue;
+                foreach (var (frame, seen) in windows)
+                {
+                    var d = Mathf.Max(seen.xMin - c.x, 0f, c.x - seen.xMax) + Mathf.Max(seen.yMin - c.y, 0f, c.y - seen.yMax);
+                    var area = seen.width * seen.height;
+                    if (d < bestDistance || (d == 0f && bestDistance == 0f && area < bestArea))
+                    {
+                        best = frame;
+                        bestDistance = d;
+                        bestArea = area;
+                    }
+                }
+                drawnIn[node] = best;
+            }
+
+            void Earlier(int frame, string bubble)
+            {
+                if (!frameStart.TryGetValue(frame, out var own) || !bubbleStart.TryGetValue(bubble, out var said) || said >= own) return;
+                frameStart[frame] = said;
+                EarlyFrames.Add(Invariant($"frame {frame} at {said:F2} (own start {own:F2}, bubble {bubble})"));
+            }
+            foreach (var b in panel.bubbles)
+                if (b.frame.HasValue) Earlier(b.frame.Value, b.id);
+            foreach (var (node, frame) in drawnIn)
+                if (node.bubble != null) Earlier(frame, node.bubble);
+            foreach (var line in EarlyFrames) Debug.Log($"[Zumi] frames: {panelId} {line}");
+        }
+
+        // a node's box as the camera sees it, at distance 1
+        static Rect Seen(ZumiPanelScene.Node node)
+        {
+            var d = Mathf.Max(node.Depth, 1e-4f);
+            return Rect.MinMaxRect(node.bounds.min.x / d, node.bounds.min.y / d, node.bounds.max.x / d, node.bounds.max.y / d);
+        }
+
         /// <summary>Puts the scene in the state it has at t seconds on the episode clock.</summary>
         /// <param name="motion">False: no track plays and every layer rests.</param>
         /// <param name="greyAhead">False: every frame is in its colours from the panel's start.</param>
         public void Show(double t, bool motion, bool greyAhead)
         {
             visibleBubbles.Clear();
+            litBubbles.Clear();
             frameStates.Clear();
             foreach (var f in frameStart)
                 frameStates.Add(Invariant($"{f.Key}:{(greyAhead && t < f.Value ? "ahead" : "lit")}"));
@@ -116,15 +183,23 @@ namespace Zumi
                 if (node.kind == "window") continue;
                 if (node.kind == "lettering")
                 {
-                    var alpha = node.bubble != null && bubbleStart.TryGetValue(node.bubble, out var from)
+                    // waiting: mid grey and soft in a lit frame, near black and softer in a frame still ahead
+                    var frameLit = drawnIn.TryGetValue(node, out var f) ? FrameLit(f, t, greyAhead) : 1f;
+                    var waiting = Color.Lerp(WaitingAheadTint, WaitingTint, frameLit);
+                    var waitingBlur = Mathf.Lerp(BlurAhead, BlurWaiting, frameLit);
+                    var said = node.bubble != null && bubbleStart.TryGetValue(node.bubble, out var from)
                         ? Mathf.Clamp01((float)(t - from) / BalloonFadeSeconds) : 1f;
-                    scene.SetTint(node, new Color(1f, 1f, 1f, alpha));
-                    if (alpha > 0f && node.bubble != null && !visibleBubbles.Contains(node.bubble)) visibleBubbles.Add(node.bubble);
+                    said = said * said * (3f - 2f * said);
+                    scene.SetLook(node, Color.Lerp(waiting, Color.white, said), Mathf.Lerp(waitingBlur, 0f, said));
+                    if (node.bubble == null) continue;
+                    if (!visibleBubbles.Contains(node.bubble)) visibleBubbles.Add(node.bubble);
+                    if (said >= 1f && !litBubbles.Contains(node.bubble)) litBubbles.Add(node.bubble);
                 }
-                // a frame that starts with its panel is never grey: only the ones the clock still has to reach
-                else if (node.frame.HasValue && frameStart.TryGetValue(node.frame.Value, out var reached))
-                    scene.SetTint(node, greyAhead && reached > panelStart
-                        ? Color.Lerp(AheadTint, Color.white, Mathf.Clamp01((float)(t - reached) / FrameFadeSeconds)) : Color.white);
+                else if (node.frame.HasValue && frameStart.ContainsKey(node.frame.Value))
+                {
+                    var lit = FrameLit(node.frame.Value, t, greyAhead);
+                    scene.SetLook(node, Color.Lerp(AheadTint, Color.white, lit), Mathf.Lerp(BlurAhead, 0f, lit));
+                }
             }
 
             // rest first: a track adds to it, and one that is over or ahead leaves it
@@ -159,6 +234,14 @@ namespace Zumi
                 }
                 track.active = active;
             }
+        }
+
+        // 0 grey ahead to 1 in its colours. A frame that starts with its panel is never grey: only the ones the clock
+        // still has to reach
+        float FrameLit(int frame, double t, bool greyAhead)
+        {
+            if (!greyAhead || !frameStart.TryGetValue(frame, out var reached) || reached <= panelStart) return 1f;
+            return Mathf.Clamp01((float)(t - reached) / FrameFadeSeconds);
         }
 
         void Play(Track track, float seconds, float u)

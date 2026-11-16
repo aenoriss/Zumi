@@ -14,17 +14,19 @@ namespace Zumi
     /// touches none of: the scanned furniture on that surface, another prop, the seat (SeatRadius around it), the
     /// reader's way from the seat to the panel (PathHalfWidth to either side), and the panel's view: the cone from the
     /// seat's eye PanelClearDegrees around its forward out to PanelDepth, unless the prop's top stays below that cone.
-    /// It must also be in view, within MaxYawDegrees of the seat's forward. Of the spots left, the one whose bearing
-    /// from the seat is nearest the edge of the panel's view (PanelClearDegrees) wins, so props flank the panel:
+    /// It must be in view: within MaxYawDegrees of the seat's forward and MaxPitchDegrees below the eye, and in the
+    /// space the reader looks through, ahead of the seat and short of the window's plane: between the reader and the
+    /// frames or between the frames and the place, never beyond the window or out at the sides. Of the spots left, the
+    /// one whose bearing from the seat is nearest the edge of the panel's view (PanelClearDegrees) wins, so props flank
+    /// the panel:
     ///   floor  at the foot of a wall (without a room: of the wall plane the place stands on, under the window's
     ///          sides), then as near the key wall as possible; in a scanned room whose walls are all taken, on the
     ///          open floor by the same ranking
     ///   table  on a scanned table top, then as near the seat as possible
     ///   shelf  the same on a scanned storage top
-    /// A prop stands only on a surface of its own kind, or on the nearest kind that can stand in for it: a shelf
-    /// prop with no shelf (or no room on one) may stand on a table top. A table or shelf prop never goes to the
-    /// floor, and a floor prop never goes up. A prop with no surface it may stand on is not shown, and the result
-    /// says why. Without a scanned room there is only the floor, so only floor props show.
+    /// A prop stands on a surface of its own kind when one has room for it, and otherwise switches to another kind:
+    /// a shelf prop to a table top then the floor, a table prop to a shelf top then the floor, a floor prop to a table
+    /// top then a shelf top. A prop with no surface it may stand on is not shown, and the result says why.
     /// </summary>
     public static class ZumiPropPlacer
     {
@@ -37,8 +39,9 @@ namespace Zumi
         /// <summary>Metres from the seat that cone is kept clear to: the panel's layers lie 1 to 3 m away. Farther off a
         /// prop may stand behind the panel, which then covers part of it as it covers the place.</summary>
         public const float PanelDepth = 3f;
-        /// <summary>A prop stands within this many degrees of the seat's forward.</summary>
-        public const float MaxYawDegrees = 75f;
+        /// <summary>A prop stands within this many degrees of the seat's forward (inside the headset's view looking at
+        /// the panel), with its middle no more than MaxPitchDegrees below the eye.</summary>
+        public const float MaxYawDegrees = 50f, MaxPitchDegrees = 45f;
         /// <summary>Metres between two props, and between a prop and furniture.</summary>
         public const float PropGap = 0.05f;
         /// <summary>Metres between a floor prop and the wall it stands by.</summary>
@@ -96,10 +99,10 @@ namespace Zumi
                 var request = requests[index];
                 var result = results[index] = new Result { name = request.name, radius = request.radius };
                 var tried = new List<string>();
-                // its own kind, then (a shelf prop only) a table top; never the floor unless it is a floor prop
-                var lowest = request.kind == SurfaceKind.Floor ? SurfaceKind.Floor : SurfaceKind.Table;
-                for (var kind = request.kind; kind >= lowest && !result.placed; kind--)
+                // its own kind, then the others
+                foreach (var kind in Kinds(request.kind))
                 {
+                    if (result.placed) break;
                     tried.Add(kind.ToString().ToLowerInvariant());
                     if (!Best(room, kind, request, seatEye, seat, ahead, standing, out var surface, out var at)) continue;
                     result.placed = true;
@@ -111,13 +114,17 @@ namespace Zumi
                     standing.Add(result);
                 }
                 if (result.placed) continue;
-                var has = false;
-                foreach (var s in room.Surfaces) has |= s.kind >= lowest && s.kind <= request.kind;
-                result.reason = has ? $"no {string.Join(" or ", tried)} with room for it" : $"the room has no {string.Join(" or ", tried)}";
-                if (request.kind != SurfaceKind.Floor) result.reason += $"; a {request.kind.ToString().ToLowerInvariant()} prop does not stand on the floor";
+                result.reason = $"no {string.Join(" or ", tried)} in view with room for it";
             }
             return new List<Result>(results);
         }
+
+        static SurfaceKind[] Kinds(SurfaceKind own) => own switch
+        {
+            SurfaceKind.Shelf => new[] { SurfaceKind.Shelf, SurfaceKind.Table, SurfaceKind.Floor },
+            SurfaceKind.Table => new[] { SurfaceKind.Table, SurfaceKind.Shelf, SurfaceKind.Floor },
+            _ => new[] { SurfaceKind.Floor, SurfaceKind.Table, SurfaceKind.Shelf },
+        };
 
         static bool Best(ZumiRoom room, SurfaceKind kind, Request request, Vector3 eye, Vector2 seat, Vector2 ahead,
                          List<Result> standing, out RoomSurface on, out Vector2 at)
@@ -217,6 +224,11 @@ namespace Zumi
             if ((seat + (panel - seat) * onPath - p).magnitude < PathHalfWidth + radius) return false;
             yaw = Vector2.Angle(from, ahead);
             if (yaw > MaxYawDegrees) return false;
+            // ahead of the seat and short of the window's plane, with its box
+            var shape = room.Shape;
+            if (Vector2.Dot(from, ahead) < SeatRadius) return false;
+            if (Vector2.Dot(p - ZumiRoom.Flat(shape.eye), ZumiRoom.Flat(shape.forward)) > shape.wallDistance - radius - WallGap) return false;
+            if (Mathf.Atan2(surface.height + request.height / 2f - eye.y, distance) * Mathf.Rad2Deg < -MaxPitchDegrees) return false;
             var edgeYaw = yaw - Mathf.Asin(Mathf.Min(1f, radius / distance)) * Mathf.Rad2Deg;
             var topPitch = Mathf.Atan2(surface.height + request.height - eye.y, Mathf.Max(distance - radius, 0.05f)) * Mathf.Rad2Deg;
             behindPanel = edgeYaw < PanelClearDegrees && topPitch > -PanelClearDegrees;
