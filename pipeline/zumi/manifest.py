@@ -132,6 +132,7 @@ class Prop(Model):
     model: str = Field(pattern=r"^episode/places/[a-z0-9_-]+/props/[a-z0-9_-]+\.glb$")
     heightM: float = Field(gt=0)
     surface: Literal["floor", "table", "shelf"]
+    furniture: bool = False  # only furniture stands on the room's floor
     bounds: PropBounds | None = None
 
 

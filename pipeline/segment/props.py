@@ -121,11 +121,13 @@ Reply with ONE JSON object:
 ```json
 {{"props": [{{"name": "short-id-with-hyphens", "what": "the kind of thing and its material, a few words",
              "noun": "one word", "box": [x0, y0, x1, y1], "height_m": 0.9, "surface": "floor",
-             "why": "one sentence"}}],
+             "furniture": false, "why": "one sentence"}}],
  "notes": "anything uncertain"}}
 ```
 
 `surface`: floor, table or shelf.
+`furniture`: true only for furniture people sit at, sit on or keep things in (a chair, stool, table, bench,
+cabinet); false for everything else, a plant or a lamp included. Only furniture is stood on the reader's floor.
 """
 
 
@@ -272,7 +274,8 @@ def pick(ep: Episode, sid: str, seconds: float, frame_setting: dict[str, str]) -
         seen.append({"name": name, "image": 1, "box": [x0, y0, x1, y1]})
         props.append({"name": name, "what": p.get("what"), "noun": p.get("noun"),
                       "box": [round(v * full) for v in (x0, y0, x1, y1)],
-                      "height_m": p.get("height_m"), "surface": p.get("surface"), "why": p.get("why")})
+                      "height_m": p.get("height_m"), "surface": p.get("surface"),
+                      "furniture": p.get("furniture") is True, "why": p.get("why")})
     data = {"stamp": stamp, "setting": sid, "seconds": round(seconds, 1), "max": n,
             "images": [src for src, _ in imgs], "props": props, "notes": reply.get("notes"), "cost": cost}
     f_json.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -448,7 +451,7 @@ def _finish(d: Path, sid: str, p: dict, todo: list[str], made, last: dict) -> di
         out.write_bytes(fin)
         made("glb")
     return {"name": name, "what": p["what"], "height_m": p.get("height_m"), "surface": p.get("surface"),
-            "model": out.name, "plate": bool(is_plate), "plate_ratio": ratio, "loose_dropped": dropped,
+            "furniture": p.get("furniture") is True, "model": out.name, "plate": bool(is_plate), "plate_ratio": ratio, "loose_dropped": dropped,
             "lifts": lifts}
 
 
@@ -578,7 +581,8 @@ def into(man: dict, ep: Episode, added: dict[str, bytes]) -> None:
             path = f"episode/places/{sid}/props/{p['name']}.glb"
             added[path] = glb
             out.append({"name": p["name"], "description": p.get("what") or "", "model": path,
-                        "heightM": float(p["height_m"]), "surface": p["surface"], "bounds": {"min": lo, "max": hi}})
+                        "heightM": float(p["height_m"]), "surface": p["surface"], "furniture": p.get("furniture") is True,
+                        "bounds": {"min": lo, "max": hi}})
             if p["name"] in picked and saved.get(p["name"]) not in [stamps_of(v, picked[p["name"]]) for v in views]:
                 old.append(p["name"])
         if out:

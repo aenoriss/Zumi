@@ -149,14 +149,18 @@ float ZumiKeyShare(float2 p)
     return lerp(_Edge.z, 1.0, 1.0 - smoothstep(0.0, max(_Edge.w, 1e-4), past));
 }
 
+// metres over the sill within which the notches ease in: the sill stays straight, a flat ledge things can rest on
+#define ZUMI_SILL_EASE 0.3
+
 // the outline with the broken wall's notches (as much of them as `notched`), the whole figure grown from the middle
-// by open
+// by open; none along the sill
 float ZumiBroken(float2 p, float open, float notched)
 {
     float2 c = float2(_Rect.x + _Rect.y, _Rect.z + _Rect.w) * 0.5;
     float u;
-    float d = ZumiOutline(c + (p - c) / max(open, 1e-3), u);
-    return d + ZumiNotch(u) * notched * ZumiKeyShare(p);
+    float2 q = c + (p - c) / max(open, 1e-3);
+    float d = ZumiOutline(q, u);
+    return d + ZumiNotch(u) * notched * ZumiKeyShare(p) * saturate((q.y - _Rect.z) / ZUMI_SILL_EASE);
 }
 
 // the point of the outline (notched by `notched`, grown by open) at u around it, on the walls laid flat: u is the

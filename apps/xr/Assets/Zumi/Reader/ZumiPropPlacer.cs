@@ -24,9 +24,14 @@ namespace Zumi
     ///          open floor by the same ranking
     ///   table  on a scanned table top, then as near the seat as possible
     ///   shelf  the same on a scanned storage top
-    /// A prop stands on a surface of its own kind when one has room for it, and otherwise switches to another kind:
-    /// a shelf prop to a table top then the floor, a table prop to a shelf top then the floor, a floor prop to a table
-    /// top then a shelf top. A prop with no surface it may stand on is not shown, and the result says why.
+    /// Only furniture stands on the reader's floor (owner, 2026-11-16). Furniture stands on a surface of its own kind
+    /// when one has room for it, and otherwise switches to another kind: a floor piece to a table top then a shelf top.
+    /// Anything else rests on a real table or shelf top (its own kind first, then the other; a floor prop that is not
+    /// furniture, a potted plant, tries a table then a shelf), and failing both on the window's ledge (ZumiRoom.Ledge,
+    /// only on a real wall): along the sill, side by side by their boxes with PropGap between, the row centred on it,
+    /// each prop's middle on the ledge's middle line (a prop deeper than the ledge overhangs it), facing the seat; a
+    /// prop the ledge has no length left for is skipped. A prop with nowhere to rest is not shown, and the result says
+    /// why.
     /// </summary>
     public static class ZumiPropPlacer
     {
@@ -57,6 +62,8 @@ namespace Zumi
         {
             public string name;
             public SurfaceKind kind;
+            /// <summary>Only furniture may stand on the floor.</summary>
+            public bool furniture;
             /// <summary>Metres: its footprint circle's radius, and its height.</summary>
             public float radius, height;
             /// <summary>Metres: half its box across and half front to back.</summary>
@@ -93,6 +100,7 @@ namespace Zumi
 
             var results = new Result[requests.Count];
             var standing = new List<Result>();
+            var forLedge = new List<int>();
             Vector2 seat = ZumiRoom.Flat(seatEye), ahead = ZumiRoom.Flat(seatForward).normalized;
             foreach (var index in order)
             {
@@ -100,7 +108,7 @@ namespace Zumi
                 var result = results[index] = new Result { name = request.name, radius = request.radius };
                 var tried = new List<string>();
                 // its own kind, then the others
-                foreach (var kind in Kinds(request.kind))
+                foreach (var kind in request.furniture ? Kinds(request.kind) : Tops(request.kind))
                 {
                     if (result.placed) break;
                     tried.Add(kind.ToString().ToLowerInvariant());
@@ -115,9 +123,57 @@ namespace Zumi
                 }
                 if (result.placed) continue;
                 result.reason = $"no {string.Join(" or ", tried)} in view with room for it";
+                if (!request.furniture) forLedge.Add(index);
             }
+            OnLedge(room.Ledge, seat, requests, results, forLedge);
             return new List<Result>(results);
         }
+
+        // the props no top took, along the window's ledge in their order (the larger first), the row centred on it
+        static void OnLedge(RoomSurface ledge, Vector2 seat, IReadOnlyList<Request> requests, Result[] results, List<int> waiting)
+        {
+            if (waiting.Count == 0) return;
+            if (ledge == null)
+            {
+                foreach (var i in waiting) results[i].reason += ", and the window has no ledge (not on a real wall)";
+                return;
+            }
+            var room = 2f * (ledge.half.x - EdgeGap);
+            var taken = new List<int>();
+            var used = 0f;
+            foreach (var i in waiting)
+            {
+                var width = 2f * requests[i].half.x;
+                var need = used + (taken.Count > 0 ? PropGap : 0f) + width;
+                if (need > room)
+                {
+                    results[i].reason += Invariant($", and the ledge has {Mathf.Max(room - used - (taken.Count > 0 ? PropGap : 0f), 0f):F2} m left for its {width:F2} m");
+                    continue;
+                }
+                used = need;
+                taken.Add(i);
+            }
+            var u = -used / 2f;
+            foreach (var i in taken)
+            {
+                var width = 2f * requests[i].half.x;
+                var at = ledge.centre + ledge.axis * (u + width / 2f);
+                u += width + PropGap;
+                var result = results[i];
+                result.placed = true;
+                result.reason = null;
+                result.on = SurfaceKind.Ledge;
+                result.surface = ledge.name;
+                result.position = new Vector3(at.x, ledge.height, at.y);
+                var away = at - seat;
+                result.rotation = Quaternion.LookRotation(new Vector3(away.x, 0f, away.y));
+            }
+        }
+
+        // what is not furniture rests on a top: its own kind first, then the other
+        static SurfaceKind[] Tops(SurfaceKind own) => own == SurfaceKind.Shelf
+            ? new[] { SurfaceKind.Shelf, SurfaceKind.Table }
+            : new[] { SurfaceKind.Table, SurfaceKind.Shelf };
 
         static SurfaceKind[] Kinds(SurfaceKind own) => own switch
         {

@@ -60,7 +60,15 @@ namespace Zumi
         /// <summary>Metres the reveal (Zumi/Reveal) goes back into the wall from the window's outline on its surface:
         /// the broken wall's thickness, seen in perspective inside the hole. The opening, the reveal's mouth and the
         /// cracks lie exactly on the wall's plane: nothing is pushed off it.</summary>
-        public const float RevealDepth = 0.15f;
+        public const float RevealDepth = ZumiRoom.WallThickness;
+        /// <summary>Degrees the window keeps inside the place's full-strength view on either side (hDeg / 2 less
+        /// VignetteInsetDegrees and VignetteDegrees), about the place's own centre: the scene always reaches past the
+        /// hole's edge (owner, 2026-11-16: "make the hole a bit smaller in width compared to 3d scene").</summary>
+        public const float WindowMarginDegrees = 8f;
+        /// <summary>Render queue of a prop on the window's ledge: after the opening's depth is cleared (2906), so the
+        /// place drawn in the hole never covers the half of it that stands inside the wall's thickness; before the
+        /// panel's frames, which still hide it by depth.</summary>
+        public const int LedgePropQueue = 2907;
         /// <summary>Segments of the reveal round the outline.</summary>
         public const int RevealSegments = 1024;
         /// <summary>Where the window folds onto a side wall: how much of the broken wall's notches and cracks it keeps
@@ -246,8 +254,8 @@ namespace Zumi
         public IReadOnlyList<string> UnplacedPropLines => open != null ? unplacedLines : None;
         /// <summary>Placed props that stand on another kind of surface than the file names (a shelf prop on a table top).</summary>
         public IReadOnlyList<string> PropsOffKind => open != null ? offKind : None;
-        /// <summary>Placed props with nothing under them, or on a kind of surface above their own (a floor prop on a
-        /// table): the rule allows neither.</summary>
+        /// <summary>Placed props with nothing under them, furniture on a kind of surface above its own, or anything
+        /// that is not furniture on the floor: the rule allows none of them.</summary>
         public IReadOnlyList<string> PropsUnsupported => open != null ? unsupported : None;
         /// <summary>How many props are drawn now.</summary>
         public int PropsShown
@@ -280,11 +288,12 @@ namespace Zumi
             seat = GetComponent<ZumiSeat>();
             if (places == null) return;
             foreach (var mesh in places.meshes) known[mesh.setting] = mesh;
-            // the window is no wider or taller than what every place fills at full strength (inside its vignette)
+            // the window is no wider than what every place fills at full strength (inside its vignette) less
+            // WindowMarginDegrees on each side, nor taller than that full-strength span
             var span = new Vector2(float.MaxValue, float.MaxValue);
             foreach (var mesh in places.meshes)
             {
-                span.x = Mathf.Min(span.x, mesh.hDeg - 2f * (VignetteInsetDegrees + VignetteDegrees));
+                span.x = Mathf.Min(span.x, mesh.hDeg - 2f * (VignetteInsetDegrees + VignetteDegrees + WindowMarginDegrees));
                 span.y = Mathf.Min(span.y, mesh.vDeg - 2f * (VignetteInsetDegrees + VignetteDegrees));
             }
             if (span.x < float.MaxValue) room.LimitToContent(Vector2.Max(span, new Vector2(20f, 20f)));
@@ -943,7 +952,7 @@ namespace Zumi
             foreach (var prop in slot.props)
                 requests.Add(new ZumiPropPlacer.Request
                 {
-                    name = prop.data.name, kind = Kind(prop.data.surface), radius = prop.radius, height = prop.data.heightM,
+                    name = prop.data.name, kind = Kind(prop.data.surface), furniture = prop.data.furniture, radius = prop.radius, height = prop.data.heightM,
                     half = new Vector2(prop.glb.bounds.extents.x, prop.glb.bounds.extents.z) * prop.scale,
                 });
             var results = ZumiPropPlacer.Place(room, seat.Position, seat.Forward, requests);
@@ -952,6 +961,9 @@ namespace Zumi
                 var prop = slot.props[i];
                 prop.placement = results[i];
                 if (!results[i].placed) continue;
+                var ledge = results[i].on == SurfaceKind.Ledge;
+                prop.material.renderQueue = ledge ? LedgePropQueue : -1;
+                prop.shadowMaterial.renderQueue = ledge ? LedgePropQueue + 1 : -1;
                 var box = prop.glb.bounds;
                 // the point under its middle rests on the surface
                 var rest = new Vector3(box.center.x, box.min.y, box.center.z) * prop.scale;
@@ -1032,7 +1044,8 @@ namespace Zumi
                 placedNames.Add(prop.data.name);
                 var support = room.SupportAt(p.position + Vector3.up * 0.01f);
                 if (support == null || support.kind != Kind(prop.data.surface)) offKind.Add(prop.data.name);
-                if (support == null || support.kind > Kind(prop.data.surface)) unsupported.Add(prop.data.name);
+                // furniture: never on a kind above its own; anything else: never on the floor
+                if (support == null || (prop.data.furniture ? support.kind > Kind(prop.data.surface) : support.kind == SurfaceKind.Floor)) unsupported.Add(prop.data.name);
                 propLines.Add(Invariant($"{prop.data.name} ({prop.data.surface}, {prop.data.heightM:F2} m): on {prop.on ?? "nothing"} at ({p.position.x:F2}, {p.position.y:F2}, {p.position.z:F2}), base {prop.baseError:+0.000;-0.000} m, {prop.panelClearance:F2} m from the panel, {prop.seatClearance:F2} m from the seat"));
                 PropBaseErrorMax = Mathf.Max(PropBaseErrorMax, Mathf.Abs(prop.baseError));
                 PropOutsideMax = Mathf.Max(PropOutsideMax, prop.outside);
