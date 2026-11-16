@@ -86,6 +86,10 @@ namespace Zumi
         public Vector3 eye;
         /// <summary>Level, from the eye to the key wall and square to it; right is to the right of someone facing it.</summary>
         public Vector3 forward, right;
+        /// <summary>Level: the place's own forward and right, centred on the window (the panel's direction), not on
+        /// the wall's square. Facing the wall at an angle put the place's middle off the hole's middle, so the place
+        /// ended inside the hole on one side (owner, 2026-11-16: "the hole is wider than the scene").</summary>
+        public Vector3 placeForward, placeRight;
         /// <summary>Metres from the eye to the key wall along forward.</summary>
         public float wallDistance;
         public float floorY;
@@ -472,7 +476,8 @@ namespace Zumi
                 return false;
             }
             Bounds = room.GetRoomBounds();
-            Shape = new RoomShape { eye = eye, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY };
+            Shape = new RoomShape { eye = eye, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY,
+                                    placeForward = -normal, placeRight = Vector3.Cross(Vector3.up, -normal) };
             KeyWallNormal = normal;
             KeyWallPlane = keyPlane;
             KeyWallPoint = eye - normal * distance;
@@ -589,7 +594,8 @@ namespace Zumi
         // scanned one cannot hold the window. Its window is the default one; its edge is a rift
         void Free(Vector3 eye, Vector3 ahead, float floorY, string name)
         {
-            Shape = new RoomShape { eye = eye, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance, floorY = floorY };
+            Shape = new RoomShape { eye = eye, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance, floorY = floorY,
+                                    placeForward = ahead, placeRight = Vector3.Cross(Vector3.up, ahead) };
             KeyWallNormal = KeyWallPlane = -ahead;
             KeyWallPoint = eye + ahead * VirtualWallDistance;
             KeyWallName = name;
@@ -689,10 +695,8 @@ namespace Zumi
             azRight = Mathf.Min(azRight, panelAt + width / 2f, MaxWindowAzimuth);
             var reach = d / Mathf.Cos(Mathf.Clamp(panelAt, -MaxWindowAzimuth, MaxWindowAzimuth) * Mathf.Deg2Rad);
             var bottomY = Shape.floorY + WindowSill;
-            // up: the place is drawn about the eye's level, so the window keeps within ContentSpan.y of it both ways
-            var height = Mathf.Min(WindowHeightDegrees, ContentSpan.y);
-            var elLow = Mathf.Max(-height / 2f, Mathf.Atan2(bottomY - eye.y, reach) * Mathf.Rad2Deg);
-            var elHigh = Mathf.Min(Mathf.Min(elLow + height, height / 2f), Mathf.Atan2(topY - eye.y, reach) * Mathf.Rad2Deg);
+            var elLow = Mathf.Max(-WindowHeightDegrees / 2f, Mathf.Atan2(bottomY - eye.y, reach) * Mathf.Rad2Deg);
+            var elHigh = Mathf.Min(elLow + WindowHeightDegrees, Mathf.Atan2(topY - eye.y, reach) * Mathf.Rad2Deg);
             float toLeft = panelAt - azLeft, toRight = azRight - panelAt;
             // On a real wall the window stays on the wall at whatever size the wall holds: the owner's rule is that the
             // opening's edge sticks to the real wall, and refusing a wall below the free window's minimum sent most
@@ -704,6 +708,10 @@ namespace Zumi
                 return Invariant($"the wall holds {Mathf.Max(elHigh - elLow, 0f):F0} deg up");
 
             WindowOnWall = Shape.onWall = onWall;
+            // the place is centred on the window's middle, so it reaches as far to either side of the hole
+            var centre = Quaternion.AngleAxis((azLeft + azRight) / 2f, Vector3.up);
+            Shape.placeForward = centre * Shape.forward;
+            Shape.placeRight = Vector3.Cross(Vector3.up, Shape.placeForward);
             Shape.keyPoint = KeyWallPoint;
             Shape.keyNormal = KeyWallPlane;
             WindowSpan = new Vector2(azRight - azLeft, elHigh - elLow);

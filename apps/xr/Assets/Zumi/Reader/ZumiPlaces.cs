@@ -747,7 +747,7 @@ namespace Zumi
             slot.fitting = false;
             // gone meanwhile, or the room changed again: the next frame fits it to the room as it is now
             if (!this || !slot.root || slot.dropped || fit == null || shape.serial != room.Serial) return;
-            slot.root.SetPositionAndRotation(shape.eye, Quaternion.LookRotation(shape.forward));
+            slot.root.SetPositionAndRotation(shape.eye, Quaternion.LookRotation(shape.placeForward));
             slot.root.localScale = Vector3.one * fit.scale;
             slot.frontMesh.SetUVs(1, fit.front);
             if (slot.backMesh)
@@ -794,7 +794,7 @@ namespace Zumi
         }
 
         // a point or direction of the place's own frame (x right, y up, z to the key wall) in the room's
-        static Vector3 ToRoom(RoomShape shape, Vector3 local) => shape.right * local.x + Vector3.up * local.y + shape.forward * local.z;
+        static Vector3 ToRoom(RoomShape shape, Vector3 local) => shape.placeRight * local.x + Vector3.up * local.y + shape.placeForward * local.z;
 
         /// <summary>How much of the view shows in the direction of a point of its mesh (the place's own frame, the
         /// eye at the origin), by its measured span (hDeg by vDeg, less VignetteInsetDegrees): all of it until
