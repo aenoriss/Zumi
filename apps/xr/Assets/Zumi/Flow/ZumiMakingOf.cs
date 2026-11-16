@@ -404,14 +404,7 @@ namespace Zumi
             barFill.SetParent(header, false);
             barFill.localPosition = new Vector3(-BarWidth / 2f, -0.036f, -0.002f);
             ZumiDraw.Shape(flat, headerParts, "Fill", barFill, 0f, ZumiDraw.Hover, 2, ZumiDraw.Box(0f, -0.005f, BarWidth, 0.01f));
-            // this is a sped-up playback: say so
-            const float pillCap = 0.016f;
-            var pillWidth = ZumiDraw.Width(TimeNote, pillCap) + 0.04f;
-            ZumiDraw.Shape(flat, headerParts, "Time pill", header, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(pillWidth, pillCap * 2.5f, pillCap * 1.25f).MovedBy(new Vector2(0f, -0.087f)));
-            ZumiDraw.Text(flat, headerParts, "Time note", header, new Vector3(0f, -0.087f, -0.002f), pillCap, ZumiDraw.SoftInk, 2, TimeNote);
         }
-
-        public const string TimeNote = "Sped up: the real pipeline takes about 30 min";
 
         // ---- the stages --------------------------------------------------------------------------------------
 

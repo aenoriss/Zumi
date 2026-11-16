@@ -9,7 +9,7 @@ namespace Zumi
     ///   logo      the Zumi logo moment (ZumiMenu.LogoSeconds)
     ///   menu      the cream card with Explore and Load, the shelf of books beside it
     ///   explore   the card goes; the books on the shelf wait for a hand
-    ///   scanner   Load: the page guide on the desk, a pinch per page onto the stack, then Done (ZumiScanner)
+    ///   scanner   Load: the page guide on the desk, each page taken when it lies still, then Done (ZumiScanner)
     ///   pipeline  the mocked pipeline playback (ZumiMakingOf), which fades out at its end; a pinch or the hand menu
     ///             skips it; then the menu again, the shelf with its one book
     ///   opening   a book was brought close and opens (ZumiBook)
