@@ -11,7 +11,7 @@ namespace Zumi
 {
     /// <summary>
     /// A 3D book (Book/ZumiBook.glb: BackCover, Spine, PageBlock, FrontCover and Page_01.. hinged on the spine). It
-    /// stands on the menu's shelf; a hand takes it (Interaction SDK HandGrab, pinch or palm). Brought within
+    /// floats in the Explore carousel (ZumiCarousel places it, "shelf"); a hand takes it (Interaction SDK HandGrab, pinch or palm). Brought within
     /// OpenDistance of the head it opens by itself: it leaves the hand and floats there, the front cover swings open
     /// about the spine, the pages fan, and the first panel rises out of it toward where it is read (Opened fires as it
     /// starts to rise: the reader takes its seat then). Then the book fades away.
@@ -140,6 +140,7 @@ namespace Zumi
                 }
             }
             Size = bounds.size;
+            centreOffset = bounds.center;
             // the cover opens away from the pages: toward the book's front (+z, where its art faces)
             if (cover) hingeSign = OpensForward(+1f) >= OpensForward(-1f) ? 1f : -1f;
             grabbable = ZumiGrabbableProp.MakeGrabbable(gameObject, bounds);
@@ -148,7 +149,7 @@ namespace Zumi
             return true;
         }
 
-        static Color BaseColourFactor(JObject json, int node, int primitive)
+        internal static Color BaseColourFactor(JObject json, int node, int primitive)
         {
             var mesh = json["nodes"]?[node]?["mesh"];
             if (mesh == null || json["meshes"]?[(int)mesh]?["primitives"] is not JArray prims || prims.Count == 0) return Color.white;
@@ -170,21 +171,59 @@ namespace Zumi
             return after - before;
         }
 
-        /// <summary>Stands the book with its foot's middle at the pose (its cover toward -z of the pose's frame turned to
-        /// face the reader).</summary>
-        public void Stand(Pose foot)
-        {
-            var rot = foot.rotation * Quaternion.Euler(0f, 180f, 0f);
-            transform.SetPositionAndRotation(foot.position + rot * Vector3.up * (Size.y / 2f), rot);
-            transform.localScale = Vector3.one;
-            gameObject.SetActive(true);
-            State = "shelf";
-            SetGrabbable(true);
-        }
-
         public void SetGrabbable(bool on)
         {
-            if (grab) grab.enabled = on;
+            if (!grab || grab.enabled == on) return;
+            grab.enabled = on;
+            // the SDK's transformer holds a grabbed object at the scale it had when it woke (relative 1..1); the
+            // carousel scales its books, so it is told the scale the book has now each time it becomes takeable
+            if (on && grabbable && GetComponent<GrabFreeTransformer>() is { } transformer) transformer.Initialize(grabbable);
+        }
+
+        /// <summary>Waiting in the carousel ("shelf"), shown, not yet grabbable.</summary>
+        public void Shelve()
+        {
+            gameObject.SetActive(true);
+            State = "shelf";
+            SetGrabbable(false);
+        }
+
+        /// <summary>Places a waiting book (not one in a hand or opening): its middle, its rotation (cover toward its
+        /// +z) and its scale.</summary>
+        public void Place(Vector3 centre, Quaternion rotation, float scale)
+        {
+            if (State != "shelf" || Grabbed) return;
+            transform.SetPositionAndRotation(centre - rotation * (centreOffset * scale), rotation);
+            transform.localScale = Vector3.one * scale;
+        }
+
+        /// <summary>The book's colours times brightness, at that alpha (the carousel dims its ends).</summary>
+        public void SetShade(float brightness, float alpha)
+        {
+            if (State is "opening" or "gone") return;
+            for (var i = 0; i < materials.Count; i++)
+                ZumiFlowKit.SetTint(materials[i], new Color(tints[i].r * brightness, tints[i].g * brightness, tints[i].b * brightness, tints[i].a * alpha));
+        }
+
+        /// <summary>Pencil: the whole book in graphite on cream (1) or in colour (0), with the line of a colour sweep:
+        /// beyond the plane (world axis xyz, place w) it is still pencil.</summary>
+        public void SetGraphite(float amount, Vector4 sweepPlane)
+        {
+            foreach (var m in materials)
+            {
+                m.SetFloat(GraphiteId, amount);
+                m.SetVector(SweepId, sweepPlane);
+            }
+        }
+
+        static readonly int GraphiteId = Shader.PropertyToID("_Graphite"), SweepId = Shader.PropertyToID("_SweepPlane");
+        Vector3 centreOffset;
+
+        /// <summary>Opens the book where it is, as bringing it close does (a ray pinch on the carousel's middle book).</summary>
+        public void Open()
+        {
+            if (State is not ("shelf" or "held")) return;
+            BeginOpen();
         }
 
         /// <summary>Coloured comic pages printed on the book's leaves, in reading order: Page_01's front, its back,

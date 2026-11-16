@@ -23,6 +23,70 @@ namespace Zumi
         public static Shader WarpShader => warp ? warp : warp = Resources.Load<Shader>("ZumiWarp");
         static Shader glowShader;
         public static Shader GlowShader => glowShader ? glowShader : glowShader = Resources.Load<Shader>("ZumiGlow");
+        static Shader rimShader;
+        public static Shader RimShader => rimShader ? rimShader : rimShader = Resources.Load<Shader>("ZumiRim");
+
+        /// <summary>The band round a rounded rectangle (its outer size, corner radius, the band's width), facing -z,
+        /// with uv the point's place in the outer square (for Zumi/Rim's turning colours).</summary>
+        public static Mesh RoundedBand(Vector2 size, float radius, float width, int cornerSteps = 8)
+        {
+            var outer = new List<Vector2>();
+            var hw = size.x / 2f - radius;
+            var hh = size.y / 2f - radius;
+            foreach (var (cx, cy, from) in new[] { (hw, hh, 0f), (-hw, hh, 90f), (-hw, -hh, 180f), (hw, -hh, 270f) })
+                for (var s = 0; s <= cornerSteps; s++)
+                {
+                    var a = (from + 90f * s / cornerSteps) * Mathf.Deg2Rad;
+                    outer.Add(new Vector2(cx + Mathf.Cos(a) * radius, cy + Mathf.Sin(a) * radius));
+                }
+            var vertices = new List<Vector3>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
+            var n = outer.Count;
+            for (var i = 0; i < n; i++)
+            {
+                var p = outer[i];
+                var c = new Vector2(Mathf.Clamp(p.x, -hw, hw), Mathf.Clamp(p.y, -hh, hh));
+                var inner = c + (p - c).normalized * Mathf.Max(radius - width, 0f);
+                foreach (var q in new[] { p, inner })
+                {
+                    vertices.Add(q);
+                    uvs.Add(new Vector2(q.x / size.x + 0.5f, q.y / size.y + 0.5f));
+                }
+                int a0 = 2 * i, a1 = 2 * i + 1, b0 = 2 * ((i + 1) % n), b1 = b0 + 1;
+                tris.AddRange(new[] { a0, b0, a1, a1, b0, b1 });
+            }
+            var mesh = new Mesh { name = "rounded band" };
+            mesh.SetVertices(vertices);
+            mesh.SetUVs(0, uvs);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        static Texture2D softDisc;
+
+        /// <summary>A white disc whose alpha falls off softly to its edge (a shadow under a floating card).</summary>
+        public static Texture2D SoftDisc
+        {
+            get
+            {
+                if (softDisc) return softDisc;
+                const int n = 64;
+                softDisc = new Texture2D(n, n, TextureFormat.RGBA32, false) { name = "soft disc", wrapMode = TextureWrapMode.Clamp };
+                var px = new Color32[n * n];
+                for (var y = 0; y < n; y++)
+                for (var x = 0; x < n; x++)
+                {
+                    var r = new Vector2((x + 0.5f) / n * 2f - 1f, (y + 0.5f) / n * 2f - 1f).magnitude;
+                    var a = 1f - Smooth(r);
+                    px[y * n + x] = new Color32(255, 255, 255, (byte)(255 * a * a));
+                }
+                softDisc.SetPixels32(px);
+                softDisc.Apply();
+                return softDisc;
+            }
+        }
 
         public static Material Picture(Texture texture, Color tint, int queue = 3000, bool depth = false)
         {
@@ -78,14 +142,15 @@ namespace Zumi
             return path.Contains("://") ? path : "file:///" + path.TrimStart('/');
         }
 
-        public static async Task<byte[]> Bytes(string relative)
+        /// <summary>A file's bytes; null when it cannot be read (quiet: without a warning, for a file that may not exist).</summary>
+        public static async Task<byte[]> Bytes(string relative, bool quiet = false)
         {
             using var request = UnityWebRequest.Get(Url(relative));
             var sent = request.SendWebRequest();
             while (!sent.isDone) await Task.Yield();
             if (request.result != UnityWebRequest.Result.Success)
             {
-                Debug.LogWarning($"[Zumi] flow: {relative} cannot be read: {request.error}");
+                if (!quiet) Debug.LogWarning($"[Zumi] flow: {relative} cannot be read: {request.error}");
                 return null;
             }
             return request.downloadHandler.data;
@@ -200,6 +265,15 @@ namespace Zumi
                 was[h] = now;
             }
             return any;
+        }
+
+        /// <summary>The index fingertip of every tracked hand that is open (not pinching with index or middle).</summary>
+        public IEnumerable<Vector3> OpenTips()
+        {
+            Find();
+            foreach (var h in hands)
+                if (h && h.isActiveAndEnabled && h.IsTrackedDataValid && !h.GetIndexFingerIsPinching() && !h.GetFingerIsPinching(HandFinger.Middle)
+                    && h.GetJointPose(HandJointId.HandIndexTip, out var tip)) yield return tip.position;
         }
 
         /// <summary>Every tracked hand's index fingertip.</summary>

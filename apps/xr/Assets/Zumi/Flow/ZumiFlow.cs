@@ -7,19 +7,22 @@ namespace Zumi
     /// The demo's creation flow, as a state machine over the reader. The episode no longer plays at launch: it opens,
     /// held (ZumiReader.HoldForBook), and reading starts only when a book is opened.
     ///   logo      the Zumi logo moment (ZumiMenu.LogoSeconds)
-    ///   menu      the cream card with Explore and Load, the shelf of books beside it
-    ///   explore   the card goes; the books on the shelf wait for a hand
-    ///   scanner   Load: the page guide on the desk, each page taken when it lies still, then Done (ZumiScanner)
+    ///   home      the carousel (ZumiCarousel): the comics made so far and "New comic"
+    ///   scanner   New comic: the carousel folds away, the reader touches the table, the page guide lies there, each
+    ///             page is taken when it lies still, then Done (ZumiScanner)
     ///   pipeline  the mocked pipeline playback (ZumiMakingOf), which fades out at its end; a pinch or the hand menu
-    ///             skips it; then the menu again, the shelf with its one book
-    ///   opening   a book was brought close and opens (ZumiBook)
+    ///             skips it; then home again, and the new comic (Dan &amp; Buck) arrives out of the last glow
+    ///   opening   the middle comic was brought close or ray-pinched and opens (ZumiBook)
     ///   reading   the reader has the episode, from its start; the hand menu is the reader's again
-    /// While the menu, the scanner or a book own the hands, the hand menu stays shut.
+    /// Whether Dan &amp; Buck was made is kept across launches (CreatedKey); the hand menu's "Reset demo" forgets it.
+    /// While the carousel, the scanner or a book own the hands, the hand menu stays shut.
     /// </summary>
     [RequireComponent(typeof(ZumiReader))]
     public class ZumiFlow : MonoBehaviour
     {
         public const float ProcessDelaySeconds = 1.2f;
+        public const string CreatedKey = "zumi.demo.created";
+        public const string ComicTitle = "Dan & Buck", ComicLine = "Episode 1 · 28 panels · voiced";
 
         [Tooltip("Off: the reader plays the episode at launch, as before")]
         [SerializeField] bool flowEnabled = true;
@@ -31,21 +34,19 @@ namespace Zumi
         [SerializeField] bool readingCaption;
 
         // ---- read-only state for tests and tools -------------------------------------------------------------
-        /// <summary>"logo", "menu", "explore", "scanner", "pipeline", "opening", "reading"; null with the flow off.</summary>
+        /// <summary>"logo", "home", "scanner", "pipeline", "opening", "reading"; null with the flow off.</summary>
         public string FlowStage { get; private set; }
         public int PagesCaptured => scanner ? scanner.PagesCaptured : 0;
         public string ScannerState => scanner ? scanner.State : null;
         public string PlaybackStage => makingOf ? makingOf.PlaybackStage : null;
-        public int BooksOnShelf
-        {
-            get
-            {
-                var n = 0;
-                foreach (var b in books) if (b && b.State is "shelf" or "held") n++;
-                return n;
-            }
-        }
-        public string BookState => books.Count > 0 && books[^1] ? books[^1].State : null;
+        /// <summary>Dan &amp; Buck has been made (kept across launches).</summary>
+        public bool ComicCreated => PlayerPrefs.GetInt(CreatedKey, 0) == 1;
+        public ZumiCarousel Carousel => carousel;
+        public ZumiScanner Scanner => scanner;
+        public string CarouselState => carousel ? carousel.State : null;
+        public string CarouselCentre => carousel ? carousel.CentreTitle : null;
+        public string GuideSource => scanner ? scanner.GuideSource : null;
+        public string BookState => comic ? comic.State : null;
         public string CaptionLine => caption ? caption.Line : null;
         public bool CaptionsOn
         {
@@ -63,7 +64,8 @@ namespace Zumi
         ZumiScanner scanner;
         ZumiMakingOf makingOf;
         ZumiCaption caption;
-        readonly List<ZumiBook> books = new();
+        ZumiCarousel carousel;
+        ZumiBook comic;
 
         void Awake()
         {
@@ -72,6 +74,7 @@ namespace Zumi
             reader.HoldForBook();
             handMenu = GetComponent<ZumiHandMenu>();
             handMenu.Suppressed = true;
+            handMenu.ResetDemo = ResetDemo;
             var flat = handMenu.FlatShader;
             caption = gameObject.AddComponent<ZumiCaption>();
             caption.Init(flat, mascot);
@@ -82,9 +85,10 @@ namespace Zumi
             scanner.Init(flat, caption);
             makingOf = gameObject.AddComponent<ZumiMakingOf>();
             makingOf.Init(flat, caption, reader);
-            menu.LogoDone += OnLogoDone;
-            menu.ExplorePressed += Explore;
-            menu.LoadPressed += Load;
+            carousel = gameObject.AddComponent<ZumiCarousel>();
+            carousel.Init(flat, mascot);
+            carousel.CreatePressed += Create;
+            menu.LogoDone += ShowHome;
             scanner.Finished += () => Invoke(nameof(Process), ProcessDelaySeconds);
             makingOf.Finished += OnPipelineDone;
         }
@@ -102,19 +106,13 @@ namespace Zumi
             }
             Enter("logo");
             menu.StartLogo();
-            // the bundle and the books load while the logo shows
+            carousel.AddNewComic();
+            // the bundle and the book load while the logo shows
             _ = ZumiMakingOfData.Get();
-            var first = await ZumiBook.Create("Book dan-buck");
-            if (!this) return;
-            if (first) AddBook(first, 0);
-        }
-
-        void AddBook(ZumiBook book, int slot)
-        {
-            books.Add(book);
-            book.Opened += () => OnBookOpened(book);
-            if (FlowStage is "menu" or "explore") book.Stand(menu.ShelfSlot(slot));
-            else if (FlowStage != "logo") book.gameObject.SetActive(false);
+            comic = await ZumiBook.Create("Book dan-buck");
+            if (!this || !comic) return;
+            comic.Opened += () => OnBookOpened(comic);
+            if (ComicCreated) carousel.AddComic(comic, ComicTitle, ComicLine);
         }
 
         void Enter(string stage)
@@ -123,34 +121,20 @@ namespace Zumi
             Debug.Log($"[Zumi] flow: {stage}");
         }
 
-        void OnLogoDone() => ShowMenu();
-
-        void ShowMenu()
+        void ShowHome()
         {
-            Enter("menu");
+            Enter("home");
             handMenu.Suppressed = true;
             handMenu.Intercept = null;
-            menu.ShowMenu(true);
-            for (var i = 0; i < books.Count; i++)
-                if (books[i] && books[i].State is "loading" or "shelf") books[i].Stand(menu.ShelfSlot(i));
+            carousel.Show();
         }
 
-        /// <summary>Explore: the card goes, the shelf stays: a book is taken from it.</summary>
-        public void Explore()
+        /// <summary>New comic: the carousel folds away, then the scanner asks for a touch on the table.</summary>
+        public void Create()
         {
-            if (FlowStage != "menu") return;
-            Enter("explore");
-            menu.ShowMenu(false);
-        }
-
-        /// <summary>Load: the scanner.</summary>
-        public void Load()
-        {
-            if (FlowStage != "menu") return;
+            if (FlowStage != "home") return;
             Enter("scanner");
-            menu.ShowMenu(false);
-            foreach (var b in books) if (b) b.SetGrabbable(false);
-            scanner.Begin();
+            carousel.Fold(scanner.Begin);
         }
 
         /// <summary>Takes every page left (tools, tests, and a rehearsal of the video).</summary>
@@ -174,8 +158,29 @@ namespace Zumi
         /// <summary>Skips the pipeline playback to its end (as a pinch does).</summary>
         public void SkipPlayback() => makingOf.Skip();
 
-        // the playback faded out: back at the menu, the shelf with its one book
-        void OnPipelineDone() => ShowMenu();
+        // the playback faded out: home, and the comic just made flies in out of the glow, the first time
+        void OnPipelineDone()
+        {
+            Enter("home");
+            handMenu.Suppressed = true;
+            handMenu.Intercept = null;
+            if (comic && !carousel.Has(comic))
+            {
+                PlayerPrefs.SetInt(CreatedKey, 1);
+                PlayerPrefs.Save();
+                carousel.Arrive(comic, ComicTitle, ComicLine, makingOf.EndPoint);
+            }
+            else carousel.Show();
+        }
+
+        /// <summary>Forgets that the comic was made (the hand menu's "Reset demo"): the next home has only New comic.</summary>
+        public void ResetDemo()
+        {
+            PlayerPrefs.DeleteKey(CreatedKey);
+            PlayerPrefs.Save();
+            if (comic) carousel.RemoveComic(comic);
+            Debug.Log("[Zumi] flow: demo reset, no comic made yet");
+        }
 
         static void SetRising(ZumiBook book, ZumiMakingOfData data)
         {
@@ -189,22 +194,17 @@ namespace Zumi
         void Update()
         {
             if (!flowEnabled) return;
-            // a book taken from the shelf: the others wait, and the first one brought close opens
-            if (FlowStage is "menu" or "explore")
-                foreach (var b in books)
-                    if (b && b.State == "opening")
-                    {
-                        Enter("opening");
-                        menu.ShowMenu(false);
-                        foreach (var other in books) if (other && other != b) other.gameObject.SetActive(false);
-                        break;
-                    }
+            // the comic opening (brought close, or a ray pinch on the carousel's middle): the carousel goes
+            if (FlowStage == "home" && comic && comic.State == "opening")
+            {
+                Enter("opening");
+                carousel.Hide();
+            }
         }
 
         void OnBookOpened(ZumiBook book)
         {
             Enter("reading");
-            menu.HideAll();
             reader.Begin();
             handMenu.Suppressed = false;
             handMenu.Intercept = null;
@@ -213,21 +213,17 @@ namespace Zumi
 
         void LateUpdate()
         {
-            // the first book's rising picture, once the bundle is read
-            if (!flowEnabled) return;
-            foreach (var b in books)
-                if (b && !risingSet.Contains(b))
-                {
-                    var data = ZumiMakingOfData.Get();
-                    if (!data.IsCompleted || data.Result == null) return;
-                    SetRising(b, data.Result);
-                    var colour = new List<Texture>();
-                    foreach (var p in data.Result.pages) colour.Add(p.colourTexture);
-                    b.SetPagePictures(colour);
-                    risingSet.Add(b);
-                }
+            // the comic's rising picture and printed pages, once the bundle is read
+            if (!flowEnabled || !comic || risingSet) return;
+            var data = ZumiMakingOfData.Get();
+            if (!data.IsCompleted || data.Result == null) return;
+            SetRising(comic, data.Result);
+            var colour = new List<Texture>();
+            foreach (var p in data.Result.pages) colour.Add(p.colourTexture);
+            comic.SetPagePictures(colour);
+            risingSet = true;
         }
 
-        readonly HashSet<ZumiBook> risingSet = new();
+        bool risingSet;
     }
 }

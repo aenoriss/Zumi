@@ -407,7 +407,26 @@ namespace Zumi
             Lit(reseat, null, mark.ToArray());
             // it has no setting to show: it says that it was done, for a moment
             Label(reseat, () => reseatedAt >= 0f && Time.unscaledTime - reseatedAt < ReseatedSeconds ? "Re-seat\ndone" : "Re-seat\nhere");
+
+            // Reset demo (the creation flow forgets the comic it made, so the demo can be filmed again): a small disc
+            // beside the petal, on the settings face only
+            var reset = Add(true, "Reset", new Vector2(Pitch, -PetalDrop), PetalRadius, () =>
+            {
+                ResetDemo?.Invoke();
+                resetAt = Time.unscaledTime;
+                return "reset_demo";
+            });
+            Icon(reset, new List<Vector2[]>(ZumiDraw.Arc(0.0052f, 0.0013f, 40f, 320f, 14))
+            {
+                new[] { new Vector2(0.0058f, 0.0016f), new Vector2(0.0032f, 0.0052f), new Vector2(0.0072f, 0.0058f) },
+            }.ToArray());
+            reset.state = () => resetAt >= 0f && Time.unscaledTime - resetAt < ReseatedSeconds ? "Demo\nreset" : "Reset\ndemo";
+            reset.label = ZumiDraw.Text(flatShader, parts, "Reset label", menu, reset.button.transform.localPosition + new Vector3(0f, -PetalRadius - 0.0105f, -0.001f), LabelCap, ZumiDraw.SoftInk, 3, reset.state());
         }
+
+        /// <summary>The settings face's "Reset demo" (set by the creation flow); null: the button does nothing.</summary>
+        public Action ResetDemo { get; set; }
+        float resetAt = -1f;
 
         GameObject mainPlate, settingsPlate;
 

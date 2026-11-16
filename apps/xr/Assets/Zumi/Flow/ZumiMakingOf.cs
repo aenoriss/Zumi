@@ -942,6 +942,9 @@ namespace Zumi
             glowMaterial.SetColor("_Color", new Color(1f, 1f, 1f, 0.9f * Mathf.Min(bloom, a)));
         }
 
+        /// <summary>Where the pages merge and the last glow blooms (the new comic flies out of it).</summary>
+        public Vector3 EndPoint => anchor.position + anchor.rotation * new Vector3(0f, -GridDrop, GridDistance - 0.03f);
+
         /// <summary>The outro: the pages merge, the glow blooms and holds, then everything fades.</summary>
         public const float MergeSeconds = 1.3f, GlowSize = 0.75f, FadeSeconds = 0.8f;
         Transform glow;

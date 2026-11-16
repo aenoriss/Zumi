@@ -10,6 +10,8 @@ Shader "Zumi/Picture"
         _Color ("Tint", Color) = (1, 1, 1, 1)
         [Toggle] _ZWrite ("Depth write", Float) = 0
         _Dissolve ("Dissolve", Range(0, 1)) = 0
+        _Graphite ("Graphite (pencil on cream) where not yet swept", Range(0, 1)) = 0
+        _SweepPlane ("Sweep: world axis xyz, the line's place along it w; graphite beyond it", Vector) = (1, 0, 0, -1000)
     }
     SubShader
     {
@@ -34,6 +36,8 @@ Shader "Zumi/Picture"
                 half _Mix;
                 half4 _Color;
                 half _Dissolve;
+                half _Graphite;
+                float4 _SweepPlane;
             CBUFFER_END
             struct A { float4 pos : POSITION; float2 uv : TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
             struct V { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 world : TEXCOORD1; UNITY_VERTEX_OUTPUT_STEREO };
@@ -71,6 +75,17 @@ Shader "Zumi/Picture"
                 half4 a = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv);
                 half4 b = SAMPLE_TEXTURE2D(_SecondTex, sampler_SecondTex, i.uv);
                 half4 c = lerp(a, b, _Mix) * _Color;
+                if (_Graphite > 0.0)
+                {
+                    // pencil: the picture's lightness, a little more contrast, from ink to cream paper; the part the
+                    // sweep has passed is in colour, with a thin line of the Zumi hues at the sweep
+                    float d = dot(i.world, _SweepPlane.xyz) - _SweepPlane.w;
+                    half l = saturate((dot(c.rgb, half3(0.299, 0.587, 0.114)) - 0.5) * 1.3 + 0.5);
+                    half3 pencil = lerp(half3(0.165, 0.129, 0.106), half3(0.961, 0.929, 0.863), l);
+                    c.rgb = lerp(c.rgb, pencil, _Graphite * step(0.0, d));
+                    half edge = (1.0 - smoothstep(0.0, 0.006, abs(d))) * _Graphite;
+                    c.rgb = lerp(c.rgb, Zumi(frac(i.world.y * 4.0 + _Time.y * 0.3) * 6.0) * 1.1, edge);
+                }
                 if (_Dissolve > 0.0)
                 {
                     float n = Noise(i.world * 70.0) * 0.65 + Noise(i.world * 160.0) * 0.35;

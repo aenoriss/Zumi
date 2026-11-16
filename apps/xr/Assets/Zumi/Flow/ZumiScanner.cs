@@ -11,8 +11,11 @@ using UnityEngine.Android;
 namespace Zumi
 {
     /// <summary>
-    /// Load: the page scanner. A page-shaped guide (A4) lies on the desk: on the scanned table nearest the reader, by
-    /// its edge nearest them; without a table the reader taps the desk once with a fingertip and the guide lies there.
+    /// Load: the page scanner. First the reader touches the surface they will scan on (a hint with a fingertip coming
+    /// down asks for it): an index fingertip coming down onto a level surface of the scanned room (a table's or any
+    /// furniture's top), or, without one, a fingertip that came down and holds still for TouchStillSeconds below the
+    /// chest (its height is the desk's). A ripple spreads where it touched, and a page-shaped guide (A4) lies centred
+    /// there: square to the surface's edge nearest the reader when the surface is known, else facing the reader.
     /// The reader lays a pencil page in it and the scanner takes it by itself: a few times a second the guide's area
     /// of the passthrough camera image is straightened into a small sample (each corner of the guide projected into
     /// the image with the camera's pose and intrinsics, then a homography drawn by ZumiWarp) and read back without
@@ -30,12 +33,17 @@ namespace Zumi
         public const float DoneRadius = 0.03f;
         /// <summary>A4, metres.</summary>
         public static readonly Vector2 Guide = new(0.21f, 0.297f);
-        /// <summary>The guide's near edge is this far in from the table's edge.</summary>
-        public const float EdgeInset = 0.06f;
-        /// <summary>A table farther than this from the head (on the floor's plane) is not the reader's desk.</summary>
-        public const float MaxTableDistance = 1.6f;
-        /// <summary>Seconds to wait for a tap before the guide lies where a desk would be.</summary>
-        public const float TapWaitSeconds = 8f;
+        /// <summary>The touch on a known surface: the fingertip within this of its top (above it, or pressed through
+        /// it, as tracking allows), having been at least TouchDrop above it within TouchWindow seconds; the footprint
+        /// is widened by TouchMargin.</summary>
+        public const float TouchAbove = 0.015f, TouchBelow = 0.08f, TouchDrop = 0.03f, TouchWindow = 0.8f, TouchMargin = 0.02f;
+        /// <summary>A surface counts when its top is between these heights above the floor.</summary>
+        public const float SurfaceMin = 0.25f, SurfaceMax = 1.4f;
+        /// <summary>Without a known surface: a fingertip that came down at least StillDrop and then held within
+        /// StillRadius for TouchStillSeconds, at least BelowEye under the eyes.</summary>
+        public const float TouchStillSeconds = 0.4f, StillRadius = 0.008f, StillDrop = 0.04f, BelowEye = 0.35f;
+        /// <summary>The ripple: seconds, and its radius from start to end.</summary>
+        public const float RippleSeconds = 0.8f, RippleFrom = 0.008f, RippleTo = 0.07f;
         public const float FlySeconds = 0.9f;
         /// <summary>The capture: the guide's outline brightens and a light sweeps it once, far edge to near.</summary>
         public const float SweepSeconds = 0.4f;
@@ -99,8 +107,12 @@ namespace Zumi
         /// <summary>"auto" or "manual": how the last page was taken.</summary>
         public string LastCaptureTrigger { get; private set; }
         public int PagesCaptured => captures.Count;
-        /// <summary>"table TABLE", "tap", "virtual": where the guide was laid.</summary>
+        /// <summary>Where the guide was laid: "touch TABLE" (a known surface, its label), "touch still" (no surface known),
+        /// "tool".</summary>
         public string GuideSource { get; private set; }
+        /// <summary>The level surfaces of the scanned room a touch may land on.</summary>
+        public int TouchSurfaces => surfaces.Count;
+        public Vector3 TouchPoint { get; private set; }
         public Vector3 GuideCentre => guide ? guide.position : default;
         /// <summary>"camera" when the passthrough camera gave the last page, "fallback" when a pencil page stood in.</summary>
         public string LastCaptureSource { get; private set; }
@@ -137,8 +149,6 @@ namespace Zumi
         Transform sweep;
         readonly Transform[] progress = new Transform[4];
         Pose head;
-        // a fingertip's height, to find a tap
-        readonly Queue<(float t, Vector3 p)> tip = new();
         Capture flying, removing;
         Pose flyFrom;
         Vector3 flyFromScale;
@@ -160,14 +170,11 @@ namespace Zumi
             caption.Show("Upload your sketches", 0.05f);
             StartCamera();
             BuildStack();
+            FindSurfaces();
+            tips.Clear();
+            ShowTouchHint();
+            Debug.Log($"[Zumi] scanner: waiting for a touch on the desk ({surfaces.Count} level surfaces known)");
             data = await ZumiMakingOfData.Get();
-            if (!this) return;
-            if (!LayOnTable())
-            {
-                GuideSource = "tap";
-                Debug.Log("[Zumi] scanner: no table near the reader; waiting for a tap on the desk");
-                ShowTapHint();
-            }
         }
 
         void StartCamera()
@@ -189,40 +196,147 @@ namespace Zumi
 
         // ---- the guide on the desk -------------------------------------------------------------------------------
 
-        bool LayOnTable()
+        /// <summary>A level surface of the scanned room: its footprint on the ground plan and its top.</summary>
+        struct Surface
         {
+            public string label;
+            public Vector2 centre, axis, half;
+            public float top;
+
+            public bool Over(Vector2 p, float margin)
+            {
+                var d = p - centre;
+                return Mathf.Abs(Vector2.Dot(d, axis)) <= half.x + margin && Mathf.Abs(Vector2.Dot(d, ZumiRoom.Perp(axis))) <= half.y + margin;
+            }
+
+            /// <summary>Level, pointing into the surface from its edge nearest the eye.</summary>
+            public Vector3 Inward(Vector2 eye)
+            {
+                var rel = eye - centre;
+                var perp = ZumiRoom.Perp(axis);
+                Vector2 best = default;
+                var beyond = float.MinValue;
+                foreach (var (n, h) in new[] { (axis, half.x), (-axis, half.x), (perp, half.y), (-perp, half.y) })
+                {
+                    var b = Vector2.Dot(rel, n) - h;
+                    if (b > beyond)
+                    {
+                        beyond = b;
+                        best = n;
+                    }
+                }
+                return new Vector3(-best.x, 0f, -best.y);
+            }
+        }
+
+        readonly List<Surface> surfaces = new();
+
+        // the tops of the room's furniture (volumes) and its level plane anchors, within reach of a seated hand
+        void FindSurfaces()
+        {
+            surfaces.Clear();
             var mruk = MRUK.Instance;
             var room = mruk && mruk.IsInitialized && mruk.Rooms.Count > 0 ? mruk.GetCurrentRoom() : null;
-            if (!room) return false;
-            RoomBox best = default;
-            var found = false;
-            var bestDistance = float.MaxValue;
-            var eye = ZumiRoom.Flat(head.position);
+            if (!room) return;
+            var floor = room.FloorAnchors.Count > 0 ? room.FloorAnchors[0].transform.position.y : head.position.y - 1.2f;
             foreach (var anchor in room.Anchors)
             {
-                if (!anchor.VolumeBounds.HasValue || !anchor.Label.ToString().Contains("TABLE")) continue;
-                var box = ZumiRoom.Box(anchor);
-                var d = box.Distance(eye);
-                if (d < bestDistance && d < MaxTableDistance && box.top < head.position.y - 0.15f)
+                var label = anchor.Label.ToString();
+                if (label.Contains("FLOOR") || label.Contains("CEILING") || label.Contains("WALL")) continue;
+                Surface s;
+                if (anchor.VolumeBounds.HasValue)
                 {
-                    best = box;
-                    bestDistance = d;
-                    found = true;
+                    var box = ZumiRoom.Box(anchor);
+                    s = new Surface { label = label, centre = box.footCentre, axis = box.footAxis, half = box.footHalf, top = box.top };
                 }
+                else if (anchor.PlaneRect.HasValue && anchor.transform.forward.y > 0.9f)
+                {
+                    var rect = anchor.PlaneRect.Value;
+                    var t = anchor.transform;
+                    s = new Surface { label = label, centre = ZumiRoom.Flat(t.TransformPoint(rect.center)), axis = ZumiRoom.Flat(t.right).normalized, half = rect.size / 2f, top = t.position.y };
+                }
+                else continue;
+                if (s.top - floor < SurfaceMin || s.top - floor > SurfaceMax) continue;
+                surfaces.Add(s);
             }
-            if (!found) return false;
-            // the point of the table's top nearest the reader, then in by the guide's half length and a margin
-            var axis = best.footAxis;
-            var perp = ZumiRoom.Perp(axis);
-            var rel = eye - best.footCentre;
-            var near = best.footCentre + axis * Mathf.Clamp(Vector2.Dot(rel, axis), -best.footHalf.x, best.footHalf.x)
-                       + perp * Mathf.Clamp(Vector2.Dot(rel, perp), -best.footHalf.y, best.footHalf.y);
-            var inward = (best.footCentre - near).sqrMagnitude > 1e-6f ? (best.footCentre - near).normalized : -(eye - near).normalized;
-            var centre = near + inward * (Guide.y / 2f + EdgeInset);
-            // the page's top points away from the reader
-            var away = centre - eye;
-            Lay(new Vector3(centre.x, best.top + 0.002f, centre.y), new Vector3(away.x, 0f, away.y), "table " + best.label);
-            return true;
+        }
+
+        // ---- the touch -----------------------------------------------------------------------------------------
+
+        sealed class TipTrack
+        {
+            public readonly Queue<(float t, Vector3 p)> history = new();
+            public Vector3 stillAt;
+            public float stillSince;
+        }
+
+        readonly List<TipTrack> tips = new();
+
+        // an index fingertip coming down onto a known surface, or (none known) coming down and holding still
+        bool Touched(out Vector3 at, out Vector3 away, out string source)
+        {
+            at = away = default;
+            source = null;
+            var now = Time.time;
+            var eye = ZumiRoom.Flat(head.position);
+            var i = 0;
+            foreach (var p in pinch.Tips())
+            {
+                if (tips.Count <= i) tips.Add(new TipTrack { stillAt = p, stillSince = now });
+                var track = tips[i++];
+                track.history.Enqueue((now, p));
+                while (track.history.Count > 0 && now - track.history.Peek().t > TouchWindow + TouchStillSeconds) track.history.Dequeue();
+                var flat = ZumiRoom.Flat(p);
+                if (surfaces.Count > 0)
+                {
+                    foreach (var s in surfaces)
+                    {
+                        if (!s.Over(flat, TouchMargin) || p.y > s.top + TouchAbove || p.y < s.top - TouchBelow) continue;
+                        var cameDown = false;
+                        foreach (var (t, q) in track.history)
+                            if (now - t <= TouchWindow && q.y >= s.top + TouchDrop) cameDown = true;
+                        if (!cameDown) continue;
+                        at = new Vector3(p.x, s.top, p.z);
+                        away = s.Inward(eye);
+                        source = "touch " + s.label;
+                        return true;
+                    }
+                    continue;
+                }
+                if ((p - track.stillAt).magnitude > StillRadius)
+                {
+                    track.stillAt = p;
+                    track.stillSince = now;
+                    continue;
+                }
+                if (now - track.stillSince < TouchStillSeconds || p.y > head.position.y - BelowEye) continue;
+                var high = float.MinValue;
+                foreach (var (t, q) in track.history)
+                    if (t < track.stillSince) high = Mathf.Max(high, q.y);
+                if (high - track.stillAt.y < StillDrop) continue;
+                at = track.stillAt;
+                away = Vector3.ProjectOnPlane(at - head.position, Vector3.up);
+                source = "touch still";
+                return true;
+            }
+            return false;
+        }
+
+        void Place(Vector3 at, Vector3 away, string source)
+        {
+            TouchPoint = at;
+            HideTouchHint();
+            Ripple(at, away);
+            Debug.Log($"[Zumi] scanner: touched at {at:F3} ({source})");
+            // centred on the touch, a breath above the surface
+            Lay(at + Vector3.up * 0.002f, away, source);
+        }
+
+        /// <summary>Lays the guide as a touch there would (tools and tests).</summary>
+        public void TouchAt(Vector3 at)
+        {
+            if (State != "waiting_desk") return;
+            Place(at, Vector3.ProjectOnPlane(at - head.position, Vector3.up), "tool");
         }
 
         void Lay(Vector3 at, Vector3 away, string source)
@@ -308,51 +422,92 @@ namespace Zumi
             return parts.ToArray();
         }
 
-        Transform tapHint;
+        // ---- the hint and the ripple ----------------------------------------------------------------------------
+
+        public const string TouchHint = "Touch the table you'll scan on";
+        Transform touchHint, finger, fingerRing, ripple;
+        Material fingerRingMaterial;
         readonly ZumiDraw.Parts hintParts = new() { blended = true, queue = 3200 };
+        readonly ZumiDraw.Parts rippleParts = new() { blended = true, queue = 3210 };
+        float rippleSince = -10f;
 
-        void ShowTapHint()
+        // a small cream plate below the eyes: a fingertip coming down onto a line, a ring where it lands, and the words
+        void ShowTouchHint()
         {
-            tapHint = new GameObject("Tap hint").transform;
+            HideTouchHint();
+            touchHint = new GameObject("Touch hint").transform;
             var at = head.position + head.rotation * new Vector3(0f, -0.2f, 0.6f);
-            tapHint.SetPositionAndRotation(at, ZumiFlowKit.Facing(at, head.position));
-            const string text = "Tap your desk once with a fingertip";
-            ZumiDraw.Shape(flat, hintParts, "Plate", tapHint, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(ZumiDraw.Width(text, 0.014f) + 0.05f, 0.05f, 0.025f));
-            ZumiDraw.Text(flat, hintParts, "Line", tapHint, new Vector3(0f, 0f, -0.002f), 0.014f, ZumiDraw.Ink, 2, text);
+            touchHint.SetPositionAndRotation(at, ZumiFlowKit.Facing(at, head.position));
+            const float cap = 0.014f, icon = 0.05f;
+            var width = ZumiDraw.Width(TouchHint, cap) + icon + 0.05f;
+            ZumiDraw.Shape(flat, hintParts, "Plate", touchHint, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(width, 0.06f, 0.03f));
+            var ix = -width / 2f + 0.025f + icon / 2f;
+            ZumiDraw.Text(flat, hintParts, "Line", touchHint, new Vector3(ix + icon / 2f + 0.01f + ZumiDraw.Width(TouchHint, cap) / 2f, 0f, -0.002f), cap, ZumiDraw.Ink, 2, TouchHint);
+            // the surface: a short line; the fingertip: a rounded bar with a nail
+            ZumiDraw.Shape(flat, hintParts, "Surface", touchHint, -0.002f, ZumiDraw.SoftInk, 1, ZumiDraw.Box(ix - 0.018f, -0.016f, 0.036f, 0.0018f));
+            finger = new GameObject("Finger").transform;
+            finger.SetParent(touchHint, false);
+            ZumiDraw.Shape(flat, hintParts, "Tip", finger, -0.003f, ZumiDraw.SoftInk, 2, ZumiDraw.Rounded(0.011f, 0.03f, 0.0055f));
+            ZumiDraw.Shape(flat, hintParts, "Nail", finger, -0.004f, ZumiDraw.Plate, 3, ZumiDraw.Moved(ZumiDraw.Rounded(0.006f, 0.007f, 0.003f), new Vector2(0f, -0.006f)));
+            fingerRing = ZumiDraw.Shape(flat, hintParts, "Ring", touchHint, -0.002f, ZumiDraw.Hover, 1, ZumiDraw.Arc(1f, 0.12f, 0f, 360f, 36));
+            fingerRingMaterial = fingerRing.GetComponent<MeshRenderer>().sharedMaterial;
+            fingerRing.localPosition = new Vector3(ix, -0.015f, -0.002f);
+            finger.localPosition = new Vector3(ix, 0f, 0f);
+            hintX = ix;
         }
 
-        void HideTapHint()
+        float hintX;
+
+        // down in 0.45 s, a beat on the line (the ring spreads), back up
+        void AnimateHint()
         {
-            if (tapHint) Destroy(tapHint.gameObject);
+            if (!touchHint) return;
+            var c = Time.time % 1.6f / 1.6f;
+            var down = c < 0.35f ? ZumiFlowKit.Smooth(c / 0.35f) : c < 0.6f ? 1f : 1f - ZumiFlowKit.Smooth((c - 0.6f) / 0.4f);
+            finger.localPosition = new Vector3(hintX, 0.002f + 0.012f * (1f - down), 0f);
+            var r = c is >= 0.35f and < 0.75f ? (c - 0.35f) / 0.4f : 1f;
+            fingerRing.localScale = new Vector3(0.004f + 0.012f * r, 0.004f + 0.012f * r, 1f);
+            fingerRing.localRotation = Quaternion.identity;
+            ZumiFlowKit.SetTint(fingerRingMaterial, new Color(ZumiDraw.Hover.r, ZumiDraw.Hover.g, ZumiDraw.Hover.b, c is >= 0.35f and < 0.75f ? 1f - r : 0f));
+        }
+
+        void HideTouchHint()
+        {
+            if (touchHint) Destroy(touchHint.gameObject);
             hintParts.Destroy();
+            touchHint = null;
         }
 
-        // a fingertip that came down fast and stopped, well below the eyes
-        bool Tapped(out Vector3 at)
+        // an amber ring spreading flat from the touch, fading
+        void Ripple(Vector3 at, Vector3 away)
         {
-            at = default;
-            var now = Time.time;
-            Vector3? lowest = null;
-            foreach (var p in pinch.Tips())
-                if (lowest == null || p.y < lowest.Value.y) lowest = p;
-            if (lowest == null) return false;
-            tip.Enqueue((now, lowest.Value));
-            while (tip.Count > 0 && now - tip.Peek().t > 0.4f) tip.Dequeue();
-            if (tip.Count < 4) return false;
-            var first = tip.Peek();
-            var drop = first.p.y - lowest.Value.y;
-            var still = true;
-            var arr = tip.ToArray();
-            for (var i = arr.Length - 1; i >= 0 && now - arr[i].t < 0.08f; i--)
-                if (Mathf.Abs(arr[i].p.y - lowest.Value.y) > 0.004f) still = false;
-            if (drop > 0.04f && still && lowest.Value.y < head.position.y - 0.3f)
-            {
-                at = lowest.Value;
-                tip.Clear();
-                return true;
-            }
-            return false;
+            if (ripple) Destroy(ripple.gameObject);
+            rippleParts.Destroy();
+            ripple = new GameObject("Touch ripple").transform;
+            ripple.SetPositionAndRotation(at + Vector3.up * 0.003f, Quaternion.LookRotation(Vector3.down, away.sqrMagnitude > 1e-6f ? away.normalized : Vector3.forward));
+            ZumiDraw.Shape(flat, rippleParts, "Ring", ripple, 0f, ZumiDraw.Hover, 0, ZumiDraw.Arc(1f, 0.08f, 0f, 360f, 48));
+            ZumiDraw.Shape(flat, rippleParts, "Dot", ripple, 0f, ZumiDraw.Hover, 1, ZumiDraw.Disc(0.12f, 24));
+            rippleSince = Time.time;
+            AnimateRipple();
         }
+
+        void AnimateRipple()
+        {
+            if (!ripple) return;
+            var t = (Time.time - rippleSince) / RippleSeconds;
+            if (t >= 1f)
+            {
+                Destroy(ripple.gameObject);
+                rippleParts.Destroy();
+                ripple = null;
+                return;
+            }
+            ripple.localScale = Vector3.one * Mathf.Lerp(RippleFrom, RippleTo, 1f - (1f - t) * (1f - t));
+            rippleParts.SetAlpha(1f - t);
+        }
+
+        /// <summary>The ripple shows (for screenshots and tests).</summary>
+        public bool RippleShown => ripple;
 
         // ---- the stack -----------------------------------------------------------------------------------------
 
@@ -421,24 +576,14 @@ namespace Zumi
 
         void Update()
         {
+            AnimateRipple();
             if (State == "off" || State == "done") return;
             switch (State)
             {
                 case "waiting_desk":
+                    AnimateHint();
                     if (data == null) break;
-                    if (Tapped(out var at))
-                    {
-                        HideTapHint();
-                        var away = Vector3.ProjectOnPlane(at - head.position, Vector3.up);
-                        // the tap is the guide's near edge
-                        Lay(at + away.normalized * (Guide.y / 2f) + Vector3.up * 0.002f, away, "tap");
-                    }
-                    else if (Time.time - stateSince > TapWaitSeconds)
-                    {
-                        HideTapHint();
-                        var desk = head.position + head.rotation * new Vector3(0f, -0.55f, 0.45f);
-                        Lay(desk, head.rotation * Vector3.forward, "virtual");
-                    }
+                    if (Touched(out var at, out var away, out var source)) Place(at, away, source);
                     break;
                 case "ready":
                     Watch();
@@ -894,7 +1039,9 @@ namespace Zumi
             ClearSimSheet();
             if (guide) Destroy(guide.gameObject);
             guideParts.Destroy();
-            HideTapHint();
+            HideTouchHint();
+            if (ripple) Destroy(ripple.gameObject);
+            rippleParts.Destroy();
             if (stack) Destroy(stack.gameObject);
             stackParts.Destroy();
             doneParts.Destroy();
