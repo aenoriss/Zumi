@@ -148,13 +148,12 @@ and `pin`; the easing curves are now stated. What the pipeline writes, the reade
 view's centre down -z), the span of the view (`hDeg`, `vDeg`) and how far the place is in the meshes' own units
 (`nearM`, `medianM`, `farM`: the 5th, 50th and 95th percentile of the distance from the eye). The meshes are in the
 depth model's metres, not the room's. The reader puts the origin at the seat's eye, turns -z to the key wall and
-shows the place direction-true (every point in its own direction from the eye, both meshes scaled by one factor)
-through one window: a rectangle on the key wall (the nearest wall behind the panel; without a scanned room a virtual
-wall 2 m ahead) centred on the panel's direction, 100 by 56 degrees as seen from the seat, its lower edge never below
-0.2 m above the floor, cut to the wall's extent, with a soft edge on all four sides. Nothing shows on the side walls,
-the ceiling or the floor. The factor puts 95 % of what shows in the window beyond the wall. The schema states the
-whole rule (`$defs.place`), and what `light.key.yaw` is measured from. (On 2026-11-15 a warp fitted the place to the
-whole room instead; it read as stretched and was dropped.)
+fits the place to its room: the picture's core (its central 60 %) is zoomed by one factor, between 0.5 and 1, so it
+fits the key wall, equally across and up; outside the core the zoom follows the walls so each metre of wall gets a
+like amount of picture; nothing shows on the floor, the ceiling, or a wall seen at a grazing angle. Depth is then
+set so 95 % of what shows lies beyond the room's edge. The schema states the whole rule (`$defs.place`), and what
+`light.key.yaw` is measured from. (Until 2026-11-16 the place was scaled by one factor with every direction kept:
+in a narrow room most of it fell on the side walls, stretched along them.)
 
 `props[]` lists the objects of the place that stand in the room while it is open: the model's path, its real
 `heightM`, the `surface` it rests on (`floor`, `table`, `shelf`) and its `bounds`. No positions: placing them is the

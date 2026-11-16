@@ -16,6 +16,10 @@ namespace Zumi
     /// again from there, at the sample the clock is on. So nothing here knows what a seek is.
     /// A line said by a card of another panel, or by someone off-panel, has no card here: it comes from the panel's
     /// middle.
+    /// A sound effect (a bubble of kind sfx with audio) is scheduled the same way but is not a voice: it comes from the
+    /// middle of its frame's window (the panel's middle without one), at the level the file gives it, rings on past
+    /// its endTime to the end of its clip, pauses and resumes with the clock, and stops for good on a seek that leaves
+    /// its time or a change of panel. It is never in the voices' lists or counts (PlayingSfxIds, SfxLog).
     /// </summary>
     public class ZumiVoices : MonoBehaviour
     {
@@ -31,7 +35,9 @@ namespace Zumi
         sealed class Voice
         {
             public string key, panelId, card;
-            public double start;
+            public double start, end;
+            public bool sfx;
+            public int? frame;
             public AudioClip clip;
             public AudioSource source;
             // the audio-engine time its first sample was scheduled for, and the one it really starts at (later than
@@ -57,7 +63,7 @@ namespace Zumi
         Transform holder;
         bool metaSpatializer;
         readonly List<PanelVoices> panels = new();
-        readonly List<string> playing = new(), startLog = new(), failed = new();
+        readonly List<string> playing = new(), startLog = new(), failed = new(), playingSfx = new(), sfxLog = new();
 
         // ---- read-only state for tests and tools ----------------------------------------------------------------
 
@@ -83,6 +89,11 @@ namespace Zumi
         /// opened: each is shown as timed text only.</summary>
         public IReadOnlyList<string> FailedBubbleIds => failed;
         public int LoadedClipCount { get; private set; }
+        /// <summary>The sound effects heard now, as "panel/bubble"; every sound effect started so far (the last 64):
+        /// "panel/bubble at clock_s from frame N" (or "from the panel's middle"); sound effects' clips held now.</summary>
+        public IReadOnlyList<string> PlayingSfxIds => playingSfx;
+        public IReadOnlyList<string> SfxLog => sfxLog;
+        public int LoadedSfxCount { get; private set; }
         /// <summary>Bytes of decoded samples held now (32-bit floats).</summary>
         public long LoadedClipBytes { get; private set; }
         /// <summary>"Meta XR Audio" when its spatializer renders the voices; "Unity" for Unity's own 3D panning.</summary>
@@ -113,22 +124,29 @@ namespace Zumi
             var lead = (double)LeadBuffers * buffer / AudioSettings.outputSampleRate;
             var now = AudioSettings.dspTime;
             playing.Clear();
+            playingSfx.Clear();
             foreach (var panel in panels)
                 foreach (var voice in panel.voices)
-                    if (voice.clip) Tick(voice, now, lead);
+                    // a sound effect belongs to its panel: another panel on the clock stops it
+                    if (voice.clip) Tick(voice, now, lead, !voice.sfx || panel.index == current);
         }
 
-        void Tick(Voice voice, double now, double lead)
+        void Tick(Voice voice, double now, double lead, bool onPanel)
         {
             var at = presenter.PanelCentre;
-            voice.atCard = voice.card != null && presenter.TryCardCentre(voice.panelId, voice.card, out at);
+            if (voice.sfx) voice.atCard = voice.frame.HasValue && presenter.TryFrameCentre(voice.panelId, voice.frame.Value, out at);
+            else voice.atCard = voice.card != null && presenter.TryCardCentre(voice.panelId, voice.card, out at);
             voice.source.transform.position = voice.atCard ? at : presenter.PanelCentre;
 
             var rate = voice.clip.frequency;
             var length = (double)voice.clip.samples / rate;
             // the audio-engine time of the line's first sample, as the clock has it now
             var zero = clock.DspTimeAt(voice.start);
-            var wanted = clock.Playing && now < zero + length - MinTailSeconds && zero - now < ScheduleAheadSeconds;
+            var wanted = onPanel && clock.Playing && now < zero + length - MinTailSeconds && zero - now < ScheduleAheadSeconds;
+            // a sound effect is started only within its written time (it rings past it only once started), unless it
+            // is going on after a pause from where it stopped
+            if (wanted && voice.sfx && (!voice.armed || Math.Abs(voice.armedZero - zero) > 0.0005) && clock.Time > voice.end
+                && !(voice.pausedSample >= 0 && Math.Abs(clock.Time - voice.pausedClock) < 1e-3)) wanted = false;
             if (!wanted)
             {
                 if (!voice.armed) return;
@@ -151,7 +169,7 @@ namespace Zumi
                 if (voice.pausedSample >= 0 && Math.Abs(clock.Time - voice.pausedClock) < 1e-3)
                 {
                     voice.startSample = voice.pausedSample;
-                    Resumes++;
+                    if (!voice.sfx) Resumes++;
                 }
                 voice.source.timeSamples = voice.startSample;
                 voice.source.PlayScheduled(voice.startDsp);
@@ -162,6 +180,17 @@ namespace Zumi
                 return;
             }
             if (now < voice.startDsp || !voice.source.isPlaying) return;
+            if (voice.sfx)
+            {
+                playingSfx.Add(voice.key);
+                if (voice.measured || voice.source.timeSamples <= voice.startSample) return;
+                voice.measured = true;
+                var from = voice.atCard ? $"frame {voice.frame}" : "the panel's middle";
+                if (sfxLog.Count >= StartLogLength) sfxLog.RemoveAt(0);
+                sfxLog.Add(Invariant($"{voice.key} at {clock.Time:F2} s from {from}"));
+                Debug.Log(Invariant($"[Zumi] sfx: {voice.key} at {clock.Time:F2} s (written {voice.start:F2}), from {from}"));
+                return;
+            }
             playing.Add(voice.key);
             PlayingPosition = voice.source.transform.position;
             PlayingAtCard = voice.atCard;
@@ -183,14 +212,18 @@ namespace Zumi
             foreach (var bubble in panel.bubbles)
             {
                 if (string.IsNullOrEmpty(bubble.audio)) continue;
+                var start = bubble.startTime ?? timeline.Panels[index].start + bubble.startOffset;
                 var voice = new Voice
                 {
                     key = $"{panel.id}/{bubble.id}",
                     panelId = panel.id,
-                    start = bubble.startTime ?? timeline.Panels[index].start + bubble.startOffset,
+                    start = start,
+                    end = bubble.endTime ?? start + bubble.durationHint,
+                    sfx = bubble.kind == BubbleKind.sfx,
+                    frame = bubble.frame,
                 };
-                // only a card of this very panel has a place here
-                if (bubble.TrySpeakerCard(panel.id, out var cardPanel, out var card) && cardPanel == panel.id) voice.card = card;
+                // only a card of this very panel has a place here; a sound effect never has a speaker
+                if (!voice.sfx && bubble.TrySpeakerCard(panel.id, out var cardPanel, out var card) && cardPanel == panel.id) voice.card = card;
                 loaded.voices.Add(voice);
                 Read(loaded, voice, bubble.audio);
             }
@@ -207,7 +240,7 @@ namespace Zumi
                 if (!this || cancel.IsCancellationRequested) return;
                 voice.clip = AudioClip.Create(voice.key, wav.frames, 1, wav.sampleRate, false);
                 voice.clip.SetData(wav.samples[0], 0);
-                var go = new GameObject($"Voice {voice.key}");
+                var go = new GameObject($"{(voice.sfx ? "Sfx" : "Voice")} {voice.key}");
                 go.transform.SetParent(holder, false);
                 voice.source = go.AddComponent<AudioSource>();
                 voice.source.clip = voice.clip;
@@ -223,7 +256,10 @@ namespace Zumi
                     voice.source.spatialize = true;
                     go.AddComponent<MetaXRAudioSource>();
                 }
-                LoadedClipCount++;
+                // at the level the file gives it: no gain, no duck
+                voice.source.volume = 1f;
+                if (voice.sfx) LoadedSfxCount++;
+                else LoadedClipCount++;
                 LoadedClipBytes += (long)wav.frames * sizeof(float);
             }
             catch (OperationCanceledException) { }
@@ -231,7 +267,7 @@ namespace Zumi
             {
                 // the line is then what an unvoiced line is: its balloon, at its time
                 if (!failed.Contains(voice.key)) failed.Add(voice.key);
-                Debug.LogWarning($"[Zumi] voice: {voice.key} has no sound ({e.Message}); the line is shown as timed text only");
+                Debug.LogWarning($"[Zumi] {(voice.sfx ? "sfx" : "voice")}: {voice.key} has no sound ({e.Message}); the bubble is shown as timed text only");
             }
         }
 
@@ -242,7 +278,8 @@ namespace Zumi
             foreach (var voice in panel.voices)
             {
                 if (!voice.clip) continue;
-                LoadedClipCount--;
+                if (voice.sfx) LoadedSfxCount--;
+                else LoadedClipCount--;
                 LoadedClipBytes -= (long)voice.clip.samples * sizeof(float);
                 if (voice.source) Destroy(voice.source.gameObject);
                 Destroy(voice.clip);

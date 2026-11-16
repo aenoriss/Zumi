@@ -325,5 +325,18 @@ namespace Zumi
             world = default;
             return false;
         }
+
+        /// <summary>The middle of a frame's window in world space; false when the scene has no window for it.</summary>
+        public bool TryFrameCentre(int frame, out Vector3 world)
+        {
+            foreach (var node in scene.Nodes)
+                if (node.kind == "window" && node.frame == frame)
+                {
+                    world = scene.Root.TransformPoint(node.bounds.center);
+                    return true;
+                }
+            world = default;
+            return false;
+        }
     }
 }

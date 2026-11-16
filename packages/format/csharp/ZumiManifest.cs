@@ -331,7 +331,8 @@ namespace Zumi.Format
 
     public enum RenderMode { panel, panorama, scene3d }
     public enum DepthBand { background, mid, foreground }
-    /// <summary>sfx: a sound no character voices, lettered on the art; never has audio or a speaker.</summary>
+    /// <summary>sfx: a sound no character voices, lettered on the art; never a speaker. It may have audio: the sound
+    /// effect itself (panels/&lt;id&gt;/sfx/b&lt;n&gt;.wav), levelled in the file, played from its frame's window.</summary>
     public enum BubbleKind { speech, thought, shout, caption, sfx }
     public enum AnimationTrack { translate, rotate, scale, opacity, sway, shake, spriteCycle }
     /// <summary>Applied to each segment between two keyframes, on its share v of the way: linear v; @in v^3; @out

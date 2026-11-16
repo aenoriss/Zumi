@@ -173,6 +173,16 @@ namespace Zumi
             return false;
         }
 
+        /// <summary>Where a frame's window of a loaded panel is, in world space; false when that panel has no scene
+        /// here or no window for that frame.</summary>
+        public bool TryFrameCentre(string panelId, int frame, out Vector3 world)
+        {
+            foreach (var slot in slots)
+                if (slot.id == panelId && slot.stage != null) return slot.stage.TryFrameCentre(frame, out world);
+            world = default;
+            return false;
+        }
+
         void Update()
         {
             if (clock == null) return;
