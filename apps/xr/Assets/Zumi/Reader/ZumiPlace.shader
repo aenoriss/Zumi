@@ -5,12 +5,14 @@
 // along the walls so it runs on unbroken where it folds onto a side wall:
 //   plain   whole inside, fading smoothly to nothing over _Round.y metres up to its outline;
 //   broken  (_Broken) the broken wall's notched edge, grown from the middle by _Open while the place fades in, cut where
-//           the line of sight meets the hole's inner side in a wall _Edge.y metres thick (Zumi/Breach shades it). Past
-//           the key wall's corner it eases, within _Edge.w metres along the side wall, to _Edge.z of itself and the
-//           rest the plain fade.
+//           the line of sight meets the reveal, the hole's sides _Edge.y metres into the wall (Zumi/Reveal draws them):
+//           whole where it clears the reveal's far end, darkening toward that end's edge into the reveal's own tone,
+//           so the wall around the hole is never faded or darkened. Past the key wall's corner the notches ease,
+//           within _Edge.w metres along the side wall, to _Edge.z of themselves.
 // The focus scrim (_SeatFwd.w): behind and around the panel, an ellipse about the seat's forward (_Scrim: half spans
-// in radians, then where it starts to ease off and where it ends, as shares of them), the place is darkened,
-// desaturated and blurred (_ScrimLook), so the frames stand out against a calm version of it; beyond, untouched.
+// in radians, then where it starts to ease off and where it ends, as shares of them), the place is blurred, and
+// darkened and desaturated as far as _ScrimLook says (ZumiPlaces: blur only), so the frames stand out against a calm
+// version of it; beyond, untouched.
 // What comes nearer than the panel is not drawn: it would hide the panel in the depth buffer. Front before back, both
 // writing depth, so each pixel takes the nearest surface once.
 Shader "Zumi/Place"
@@ -29,9 +31,13 @@ Shader "Zumi/Place"
         _SideLN ("Left side wall normal", Vector) = (1, 0, 0, 0)
         _SideR ("Right side wall point (w: folds)", Vector) = (0, 0, 0, 0)
         _SideRN ("Right side wall normal", Vector) = (-1, 0, 0, 0)
+        _CornerL ("Left corner point (w: metres along the walls)", Vector) = (0, 0, 0, 0)
+        _CornerR ("Right corner point (w: metres along the walls)", Vector) = (0, 0, 0, 0)
+        _SideLA ("Along the left side wall into the room", Vector) = (0, 0, -1, 0)
+        _SideRA ("Along the right side wall into the room", Vector) = (0, 0, -1, 0)
         _Rect ("Window along the walls (from, to) and up (bottom, top), metres", Vector) = (-2, 2, 0.2, 2.4)
         _Round ("Corner radius, soft edge width (metres)", Vector) = (0.45, 0.4, 0, 0)
-        _Edge ("-, wall thickness, side-wall break, corner fade", Vector) = (0, 0.15, 0, 0.15)
+        _Edge ("-, reveal depth, side-wall break, corner fade", Vector) = (0, 0.15, 0, 0.15)
         _SeatFwd ("Seat forward (w: scrim on)", Vector) = (0, 0, 1, 1)
         _Scrim ("Scrim half spans (radians), ease from, end", Vector) = (0.63, 0.5, 0.45, 1.3)
         _ScrimLook ("Scrim brightness, saturation, blur (texels)", Vector) = (0.42, 0.35, 5, 0)
@@ -59,7 +65,7 @@ Shader "Zumi/Place"
                 half _Opacity;
                 float _Open;
                 float _Broken;
-                float4 _Seat, _Key, _KeyN, _KeyR, _SideL, _SideLN, _SideR, _SideRN, _Rect, _Round, _Edge;
+                float4 _Seat, _Key, _KeyN, _KeyR, _SideL, _SideLN, _SideR, _SideRN, _CornerL, _CornerR, _SideLA, _SideRA, _Rect, _Round, _Edge;
                 float4 _SeatFwd, _Scrim, _ScrimLook;
             CBUFFER_END
             #include "ZumiOpening.hlsl"
@@ -99,14 +105,15 @@ Shader "Zumi/Place"
                 float2 p0 = ZumiFlat(w0);
                 float u;
                 float mask = _Opacity * (1.0 - smoothstep(-_Round.y, 0.0, ZumiOutline(p0, u)));
+                float toBack = 0.0;
                 UNITY_BRANCH
                 if (_Broken > 0.5)
                 {
-                    // through the hole only where the line of sight also clears the wall's back face
-                    float s = max(ZumiBroken(p0, _Open), ZumiBroken(ZumiFlat(ZumiExit(eye, ray, _Edge.y)), _Open));
-                    float broken = 1.0 - smoothstep(-1.5 * fwidth(s), 0.0, s);
-                    float key = lerp(_Edge.z, 1.0, 1.0 - smoothstep(0.0, _Edge.w, ZumiPast(w0)));
-                    mask = lerp(mask, broken, key);
+                    // through the hole only where the line of sight also clears the reveal's far end
+                    float m1 = ZumiBroken(ZumiFlat(ZumiExit(eye, ray, _Edge.y)), _Open, 1.0);
+                    float s = max(ZumiBroken(p0, _Open, 1.0), m1);
+                    mask = 1.0 - smoothstep(-1.5 * fwidth(s), 0.0, s);
+                    toBack = smoothstep(-ZUMI_REVEAL_BLEND, 0.0, m1);
                 }
 
                 half3 colour = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv).rgb;
@@ -125,6 +132,10 @@ Shader "Zumi/Place"
                     half3 quiet = lerp(grey.xxx, soft, _ScrimLook.y) * _ScrimLook.x;
                     colour = lerp(colour, quiet, calm);
                 }
+                colour = lerp(colour, ZumiLinear(ZUMI_REVEAL_BACK), toBack * 0.85);
+                // nothing where nothing shows: no depth either, so a part of the place inside the room never hides the
+                // reveal or the cracks behind it
+                clip(i.fit.x * mask - 0.002);
                 return half4(colour, i.fit.x * mask);
             }
             ENDHLSL

@@ -57,18 +57,22 @@ namespace Zumi
         public const float VignetteDegrees = 6f;
         /// <summary>The fade reaches nothing this many degrees inside the measured span: the mesh's rim is ragged.</summary>
         public const float VignetteInsetDegrees = 5f;
-        /// <summary>Metres an opening floats off its wall, toward the room.</summary>
-        public const float OpeningInset = 0.004f;
-        /// <summary>Metres of wall the broken hole goes through: its inner side shows, in perspective, near the edge.</summary>
-        public const float WallThickness = 0.15f;
-        /// <summary>Where the window folds onto a side wall: how much of the broken wall (cracks, rim, the hole's
-        /// jagged cut) it keeps there, 0 none (the plain soft fade), reached this many metres past the corner.</summary>
+        /// <summary>Metres the reveal (Zumi/Reveal) goes back into the wall from the window's outline on its surface:
+        /// the broken wall's thickness, seen in perspective inside the hole. The opening, the reveal's mouth and the
+        /// cracks lie exactly on the wall's plane: nothing is pushed off it.</summary>
+        public const float RevealDepth = 0.15f;
+        /// <summary>Segments of the reveal round the outline.</summary>
+        public const int RevealSegments = 1024;
+        /// <summary>Where the window folds onto a side wall: how much of the broken wall's notches and cracks it keeps
+        /// there, 0 none (a plain rounded edge, the reveal still following it), reached this many metres past the
+        /// corner.</summary>
         public const float SideWallBreak = 0f, CornerFadeMetres = 0.15f;
         /// <summary>The focus scrim: an ellipse about the seat's forward, its half spans in degrees (1.3 times the
         /// panel's 55 by about 44); whole within ScrimEaseFrom of them, gone at ScrimEnd (a long, edgeless ease); there
-        /// the place is brought to ScrimBrightness, ScrimSaturation of its colour and blurred over ScrimBlurTexels.</summary>
+        /// the place is blurred over ScrimBlurTexels, nothing more: ScrimBrightness and ScrimSaturation are 1, it is
+        /// never darkened or greyed.</summary>
         public static readonly Vector2 ScrimHalfDegrees = new(36f, 29f);
-        public const float ScrimEaseFrom = 0.6f, ScrimEnd = 1.5f, ScrimBrightness = 0.42f, ScrimSaturation = 0.35f, ScrimBlurTexels = 5f;
+        public const float ScrimEaseFrom = 0.6f, ScrimEnd = 1.5f, ScrimBrightness = 1f, ScrimSaturation = 1f, ScrimBlurTexels = 2.5f;
         /// <summary>Places that exist at once: the open one and the next.</summary>
         public const int MaxLoaded = 2;
         /// <summary>A prop's contact shadow at its darkest, for an occlusion of 0 and of 1.</summary>
@@ -80,6 +84,7 @@ namespace Zumi
         [SerializeField] Shader propShader;
         [SerializeField] Shader shadowShader;
         [SerializeField] Shader breachShader;
+        [SerializeField] Shader revealShader;
         [Tooltip("On: the window is a hole broken in the wall, with a cracked rim, opening as the place fades in. Off: a plain soft round fade")]
         [SerializeField] bool brokenWall = true;
         [Tooltip("On: behind and around the panel the place is darkened, desaturated and blurred, so the frames stand out. Off: the place is the same everywhere")]
@@ -139,10 +144,11 @@ namespace Zumi
         Slot open, described;
         int describedSerial = -1;
         Transform stage, openings;
-        Material openingMaterial, farMaterial, clearMaterial, breachMaterial;
+        Material openingMaterial, farMaterial, clearMaterial, breachMaterial, revealMaterial;
         readonly List<GameObject> rims = new();
         bool rimsShown;
-        Mesh quad;
+        GameObject reveal;
+        Mesh quad, revealMesh;
         int openingsSerial = -1;
         string lastOpenId;
 
@@ -207,8 +213,9 @@ namespace Zumi
                 return n;
             }
         }
-        /// <summary>Draws the open place adds: its two meshes, two for the window, one for the broken wall, two per prop.</summary>
-        public int DrawCalls => open == null ? 0 : 2 + 3 * room.PortalCount + (EdgeMode != "soft" ? room.Rims.Count : 0) + 2 * PropsShown;
+        /// <summary>Draws the open place adds: its two meshes, three per window quad, one per rim quad (broken wall or
+        /// rift), one for the reveal (broken wall), two per prop.</summary>
+        public int DrawCalls => open == null ? 0 : 2 + 3 * room.PortalCount + (EdgeMode != "soft" ? room.Rims.Count : 0) + (EdgeMode == "broken" ? 1 : 0) + 2 * PropsShown;
         /// <summary>Bytes of the open place's two textures, and of its props' textures.</summary>
         public long PlaceTextureBytes => open == null ? 0 : Profiler.GetRuntimeMemorySizeLong(open.frontTexture) + (open.backTexture ? Profiler.GetRuntimeMemorySizeLong(open.backTexture) : 0);
         /// <summary>The open place's front texture as it is held: "2160x1072 RGB24, 6.9 MB on the GPU" (width times
@@ -288,7 +295,28 @@ namespace Zumi
             // and again once the place and its rim are drawn: the panel's layers lie 1 to 3 m out, and the place's
             // depth must never hide one of its frames
             clearMaterial = Marker("clear", 2906, 128, 128, 0, CompareFunction.Equal, StencilOp.Keep, CompareFunction.Always, true, CullMode.Off, true);
-            breachMaterial = new Material(breachShader) { name = "breach", renderQueue = 2904 };
+            // the reveal after the place (it hides the place where the wall's thickness is in the way), the cracks after
+            breachMaterial = new Material(breachShader) { name = "breach", renderQueue = 2905 };
+            revealMaterial = new Material(revealShader) { name = "reveal", renderQueue = 2904 };
+            // per vertex only u round the outline and 0 at the wall's face, 1 at the far end: Zumi/Reveal puts it on the walls
+            revealMesh = new Mesh { name = "reveal" };
+            var vertices = new Vector3[2 * (RevealSegments + 1)];
+            var uvs = new Vector2[vertices.Length];
+            var triangles = new int[6 * RevealSegments];
+            for (var k = 0; k <= RevealSegments; k++)
+            {
+                uvs[2 * k] = new Vector2((float)k / RevealSegments, 0f);
+                uvs[2 * k + 1] = new Vector2((float)k / RevealSegments, 1f);
+            }
+            for (var k = 0; k < RevealSegments; k++)
+            {
+                int a = 2 * k, t = 6 * k;
+                triangles[t] = a; triangles[t + 1] = a + 1; triangles[t + 2] = a + 2;
+                triangles[t + 3] = a + 2; triangles[t + 4] = a + 1; triangles[t + 5] = a + 3;
+            }
+            revealMesh.SetVertices(vertices);
+            revealMesh.SetUVs(0, uvs);
+            revealMesh.SetTriangles(triangles, 0);
         }
 
         Material Marker(string name, int queue, int reference, int read, int write, CompareFunction comp, StencilOp pass, CompareFunction depth, bool depthWrite, CullMode cull, bool far)
@@ -441,6 +469,10 @@ namespace Zumi
             breachMaterial.SetFloat(Rift, EdgeMode == "rift" ? 1f : 0f);
             breachMaterial.SetFloat(Opacity, Fade);
             breachMaterial.SetFloat(Open, OpenShare);
+            var revealed = EdgeMode == "broken";
+            if (reveal && reveal.activeSelf != revealed) reveal.SetActive(revealed);
+            revealMaterial.SetFloat(Opacity, Fade);
+            revealMaterial.SetFloat(Open, OpenShare);
 
             PropOpacity = open != null && roomEffects != RoomEffects.Off ? Fade : 0f;
             foreach (var slot in slots)
@@ -742,9 +774,15 @@ namespace Zumi
             material.SetVector("_SideLN", shape.sideNormal[0]);
             material.SetVector("_SideR", new Vector4(r.x, r.y, r.z, shape.sideOk[1] ? 1f : 0f));
             material.SetVector("_SideRN", shape.sideNormal[1]);
+            for (var s = 0; s < 2; s++)
+            {
+                var c = shape.cornerPoint[s];
+                material.SetVector(s == 0 ? "_CornerL" : "_CornerR", new Vector4(c.x, c.y, c.z, shape.cornerAlong[s]));
+                material.SetVector(s == 0 ? "_SideLA" : "_SideRA", shape.sideAlong[s]);
+            }
             material.SetVector("_Rect", shape.rect);
             material.SetVector("_Round", new Vector4(shape.corner, shape.softEdge, 0f, 0f));
-            material.SetVector("_Edge", new Vector4(0f, WallThickness, SideWallBreak, CornerFadeMetres));
+            material.SetVector("_Edge", new Vector4(0f, RevealDepth, SideWallBreak, CornerFadeMetres));
         }
 
         // a point or direction of the place's own frame (x right, y up, z to the key wall) in the room's
@@ -846,22 +884,35 @@ namespace Zumi
                 foreach (var material in new[] { openingMaterial, farMaterial, clearMaterial })
                 {
                     var go = Marked($"{material.name} {q.name}", quad, material);
-                    go.transform.SetPositionAndRotation(q.centre + q.normal * OpeningInset, Quaternion.LookRotation(-q.normal, q.up));
+                    go.transform.SetPositionAndRotation(q.centre, Quaternion.LookRotation(-q.normal, q.up));
                     go.transform.localScale = new Vector3(q.size.x, q.size.y, 1f);
                 }
             }
-            // the edge around the window, on each wall it lies on, a little nearer the room than the opening
+            // the cracks round the window, on each wall it lies on, on the wall's plane as the opening is: neither
+            // writes depth, so they never fight
             rims.Clear();
             rimsShown = EdgeMode != "soft";
             foreach (var q in room.Rims)
             {
                 var go = Marked($"rim {q.name}", quad, breachMaterial);
-                go.transform.SetPositionAndRotation(q.centre + q.normal * 2f * OpeningInset, Quaternion.LookRotation(-q.normal, q.up));
+                go.transform.SetPositionAndRotation(q.centre, Quaternion.LookRotation(-q.normal, q.up));
                 go.transform.localScale = new Vector3(q.size.x, q.size.y, 1f);
                 go.SetActive(rimsShown);
                 rims.Add(go);
             }
-            if (room.Shape != null) SetWindow(breachMaterial, room.Shape);
+            // the reveal: placed on the walls by its shader; its bounds cover the window and the depth behind it
+            reveal = Marked("reveal", revealMesh, revealMaterial);
+            if (room.Shape != null)
+            {
+                var b = new Bounds(room.KeyWallPoint, Vector3.zero);
+                foreach (var q in room.Portals)
+                    b.Encapsulate(new Bounds(q.centre, new Vector3(q.size.x, q.size.y, q.size.x) + Vector3.one * (2f * RevealDepth + 0.5f)));
+                revealMesh.bounds = b;
+                SetWindow(breachMaterial, room.Shape);
+                SetWindow(revealMaterial, room.Shape);
+                revealMaterial.SetFloat("_Notched", 1f);
+            }
+            reveal.SetActive(EdgeMode == "broken");
         }
 
         GameObject Marked(string name, Mesh mesh, Material material)

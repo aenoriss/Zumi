@@ -10,8 +10,9 @@ namespace Zumi
     /// What a panel's scene shows at a time on the episode clock, as the browser viewer's play mode does: every balloon
     /// is there from the panel's start, greyed and blurred until its bubble's startTime (mid grey in a lit frame, near
     /// black in a frame still ahead), then in full and staying so; each frame greyed and blurred until the clock
-    /// reaches it; and the pipeline's accents (the panel's animation tracks). A frame lights at the earlier of its own
-    /// start and the first start of a balloon drawn in it, so a lit balloon never sits on a grey frame. Show(t) states
+    /// reaches it; and the pipeline's accents (the panel's animation tracks). A frame lights at the earliest of its own
+    /// start, the first start of a balloon filed under it or drawn in it, and the first start of a balloon said by a
+    /// card of this panel drawn in it, so a lit balloon never sits on a grey frame nor its speaker in one. Show(t) states
     /// all of it from t alone, so a pause holds it and a seek lands on what straight play would show.
     /// </summary>
     public sealed class ZumiPanelStage
@@ -120,8 +121,9 @@ namespace Zumi
             }
         }
 
-        // A frame lights at the earlier of its own start and the first start of a balloon in it: the frame the
-        // bubble names, and the one it is drawn in (they differ where a balloon overlaps an inset frame)
+        // A frame lights at the earliest of its own start and the first start of a balloon in it: the frame the
+        // bubble names, the one it is drawn in (they differ where a balloon overlaps an inset frame), and the one its
+        // speaking card is in
         void LightFramesByBalloons(Panel panel)
         {
             var windows = new List<(int frame, Rect seen)>();
@@ -158,6 +160,14 @@ namespace Zumi
                 if (b.frame.HasValue) Earlier(b.frame.Value, b.id);
             foreach (var (node, frame) in drawnIn)
                 if (node.bubble != null) Earlier(frame, node.bubble);
+            // and the frame of the card that says it, when that card is in this panel (one in another panel, or a
+            // speaker off the panel, lights nothing more)
+            foreach (var b in panel.bubbles)
+            {
+                if (!b.TrySpeakerCard(panel.id, out var inPanel, out var card) || inPanel != panel.id) continue;
+                foreach (var node in scene.Nodes)
+                    if (node.card == card && node.frame.HasValue) Earlier(node.frame.Value, b.id);
+            }
             foreach (var line in EarlyFrames) Debug.Log($"[Zumi] frames: {panelId} {line}");
         }
 

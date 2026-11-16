@@ -410,6 +410,7 @@ MonoBehaviour:
   propShader: {fileID: 4800000, guid: beea7b6165e1b1a43862ba6537358320, type: 3}
   shadowShader: {fileID: 4800000, guid: 2f91f8b421478d94cb33a1341334b320, type: 3}
   breachShader: {fileID: 4800000, guid: 9e7f844e30ea5994b9455a57b88d048b, type: 3}
+  revealShader: {fileID: 4800000, guid: 958d7fc49bb5f7044b3bcc62187b3764, type: 3}
   brokenWall: 1
   focusScrim: 1
   roomEffects: 0

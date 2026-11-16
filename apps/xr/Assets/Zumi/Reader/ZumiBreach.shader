@@ -1,11 +1,11 @@
-// The edge around a place's window, one quad per wall the window lies on (ZumiPlaces), on the outline the place is cut
-// to (ZumiOpening.hlsl): a rounded rectangle following the wall, unbroken across a fold onto a side wall. Kept subtle.
-//   broken wall (in a real wall): it only darkens (black at a low alpha), so it reads on a wall of any colour seen
-//     through passthrough. The hole's inner side: the wall is _Edge.y metres thick; where the line of sight enters the
-//     hole but meets the wall's back face outside it, it sees the inner side, a little darker the deeper, worked out
-//     per pixel from the eye so it moves with the head as a real hole's would. On the wall a faint line along the
-//     notched edge, a faint contact shadow and a few hairline cracks. At full strength on the key wall only: past the
-//     corner it eases, within _Edge.w metres along the side wall, to _Edge.z of itself (0: none on a side wall).
+// The edge around a place's window, one quad per wall the window lies on (ZumiPlaces), exactly on the wall's plane, on
+// the outline the place is cut to (ZumiOpening.hlsl): a rounded rectangle following the wall, unbroken across a fold
+// onto a side wall. Kept subtle.
+//   broken wall (in a real wall): only a few hairline cracks running out from the notched edge over the wall's face,
+//     black at a low alpha so they read on a wall of any colour seen through passthrough. Nothing else is drawn on
+//     the wall: no line, no shadow, no fade round the hole; its edge is where the reveal (Zumi/Reveal) meets the real
+//     wall. At full strength on the key wall only: past the corner they ease, within _Edge.w metres along the side
+//     wall, to _Edge.z of themselves (0: none on a side wall).
 //   rift (_Rift: standing free, no wall): only a faint pale rim, shimmering slowly, where the place's soft edge ends.
 // The whole figure grows from the middle by _Open while the place fades in. No stencil: it is on the wall.
 Shader "Zumi/Breach"
@@ -22,9 +22,13 @@ Shader "Zumi/Breach"
         _SideLN ("Left side wall normal", Vector) = (1, 0, 0, 0)
         _SideR ("Right side wall point (w: folds)", Vector) = (0, 0, 0, 0)
         _SideRN ("Right side wall normal", Vector) = (-1, 0, 0, 0)
+        _CornerL ("Left corner point (w: metres along the walls)", Vector) = (0, 0, 0, 0)
+        _CornerR ("Right corner point (w: metres along the walls)", Vector) = (0, 0, 0, 0)
+        _SideLA ("Along the left side wall into the room", Vector) = (0, 0, -1, 0)
+        _SideRA ("Along the right side wall into the room", Vector) = (0, 0, -1, 0)
         _Rect ("Window along the walls (from, to) and up (bottom, top), metres", Vector) = (-2, 2, 0.2, 2.4)
         _Round ("Corner radius, soft edge width (metres)", Vector) = (0.45, 0.4, 0, 0)
-        _Edge ("-, wall thickness, side-wall break, corner fade", Vector) = (0, 0.15, 0, 0.15)
+        _Edge ("-, reveal depth, side-wall break, corner fade", Vector) = (0, 0.15, 0, 0.15)
     }
     SubShader
     {
@@ -45,7 +49,7 @@ Shader "Zumi/Breach"
                 float _Opacity;
                 float _Open;
                 float _Rift;
-                float4 _Key, _KeyN, _KeyR, _SideL, _SideLN, _SideR, _SideRN, _Rect, _Round, _Edge;
+                float4 _Key, _KeyN, _KeyR, _SideL, _SideLN, _SideR, _SideRN, _CornerL, _CornerR, _SideLA, _SideRA, _Rect, _Round, _Edge;
             CBUFFER_END
             #include "ZumiOpening.hlsl"
             struct A { float4 pos : POSITION; UNITY_VERTEX_INPUT_INSTANCE_ID };
@@ -80,21 +84,8 @@ Shader "Zumi/Breach"
                     return half4(0.82, 0.92, 1.0, saturate(0.15 * ring * shimmer) * saturate(_Opacity * 1.5));
                 }
 
-                float m0 = ZumiBroken(p0, open);
-                float m1 = ZumiBroken(ZumiFlat(ZumiExit(eye, ray, _Edge.y)), open);
-                float aa = max(fwidth(m0), 1e-4);
+                float m0 = ZumiBroken(p0, open, 1.0);
                 float alpha = 0.0;
-
-                // the hole's inner side: entered at the front, blocked at the back
-                float inside = 1.0 - smoothstep(-aa, 0.0, m0);
-                float blocked = smoothstep(-1.5 * max(fwidth(m1), 1e-4), 0.0, m1);
-                float deep = saturate(m0 / min(m0 - m1, -1e-4));
-                alpha = max(alpha, inside * blocked * lerp(0.05, 0.28, deep));
-
-                // on the wall: a faint line along the edge, a faint contact shadow
-                float onWall = smoothstep(-aa, 0.0, m0);
-                alpha = max(alpha, onWall * (1.0 - smoothstep(0.004, 0.004 + aa, m0)) * 0.22);
-                alpha = max(alpha, onWall * (1.0 - smoothstep(0.0, 0.08, m0)) * 0.1);
 
                 // hairline cracks: in some of 17 sectors around, one from the edge outward, wandering, thinning out
                 float2 c = float2(_Rect.x + _Rect.y, _Rect.z + _Rect.w) * 0.5;
@@ -110,10 +101,10 @@ Shader "Zumi/Breach"
                 float across = abs((u - uc) * 6.2831853 * length(n * h) - wander);
                 float width = 0.003 * (1.0 - along) + 0.001;
                 float crack = has * step(0.0, m0) * step(m0, reach) * (1.0 - smoothstep(width, width + 1.5 * fwidth(across), across));
-                alpha = max(alpha, 0.25 * crack * (1.0 - along));
+                alpha = max(alpha, 0.2 * crack * (1.0 - along));
 
                 // full strength on the key wall; past the corner, eased to the side walls' share
-                float key = lerp(_Edge.z, 1.0, 1.0 - smoothstep(0.0, _Edge.w, ZumiPast(w0)));
+                float key = ZumiKeyShare(p0);
                 return half4(0, 0, 0, alpha * key * saturate(_Opacity * 3.0));
             }
             ENDHLSL

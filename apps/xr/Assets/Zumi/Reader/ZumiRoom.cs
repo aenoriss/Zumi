@@ -89,11 +89,14 @@ namespace Zumi
         /// <summary>Metres from the eye to the key wall along forward.</summary>
         public float wallDistance;
         public float floorY;
-        /// <summary>The planes the window lies on, each a point and its normal into the room: the key wall, and the
-        /// side walls at its left [0] and right [1] edges the window may fold onto (sideOk).</summary>
+        /// <summary>The planes the window lies on, each a point and its normal into the room, as MRUK gives the walls:
+        /// the key wall, and the side walls at its left [0] and right [1] edges the window may fold onto (sideOk), with
+        /// the corner each shares with the key wall (a point of the corner line at the eye's height, and metres along
+        /// the walls laid flat there) and the way along the side wall from that corner into the room.</summary>
         public Vector3 keyPoint, keyNormal;
         public readonly bool[] sideOk = new bool[2];
-        public readonly Vector3[] sidePoint = new Vector3[2], sideNormal = new Vector3[2];
+        public readonly Vector3[] sidePoint = new Vector3[2], sideNormal = new Vector3[2], cornerPoint = new Vector3[2], sideAlong = new Vector3[2];
+        public readonly float[] cornerAlong = new float[2];
         /// <summary>The window, following the wall: a rounded rectangle on the walls laid flat, from and to in metres
         /// along them (from keyPoint along right, on round a corner along a side wall), bottom and top in world y; its
         /// corners' radius and the width of its soft edge, in metres (ZumiOutline in ZumiOpening.hlsl).</summary>
@@ -112,10 +115,15 @@ namespace Zumi
                 if (sideOk[s]) Exit(sidePoint[s], sideNormal[s], dir, ref metres);
             if (float.IsInfinity(metres)) return false;
             var at = eye + dir * metres;
-            // on the walls laid flat, then the rounded rectangle's signed distance
+            // on the walls laid flat (ZumiFlat in ZumiOpening.hlsl), then the rounded rectangle's signed distance
             var along = Vector3.Dot(at - keyPoint, right);
-            var past = Mathf.Max(0f, Vector3.Dot(at - keyPoint, keyNormal));
-            var p = new Vector2(along + (along < (rect.x + rect.y) / 2f ? -past : past), at.y);
+            var past = Vector3.Dot(at - keyPoint, keyNormal);
+            if (past > 1e-3f)
+            {
+                var s = along < (rect.x + rect.y) / 2f ? 0 : 1;
+                if (sideOk[s]) along = cornerAlong[s] + (s == 0 ? -1f : 1f) * past / Mathf.Max(Vector3.Dot(sideAlong[s], keyNormal), 1e-3f);
+            }
+            var p = new Vector2(along, at.y);
             var c = new Vector2(rect.x + rect.y, rect.z + rect.w) / 2f;
             var h = new Vector2(rect.y - rect.x, rect.w - rect.z) / 2f;
             var r = Mathf.Min(corner, Mathf.Min(h.x, h.y));
@@ -156,9 +164,9 @@ namespace Zumi
         /// middle of each side.</summary>
         public const float WindowWidthDegrees = 100f, WindowHeightDegrees = 66f;
         /// <summary>What the window must still show about the panel's direction once cut to the wall: half of each
-        /// to either side (the panel's 27.5 plus 12.5), and up in all. A wall that cannot hold that keeps no window:
-        /// it stands free VirtualWallDistance ahead of the seat, as without a room.</summary>
-        public const float MinWindowWidthDegrees = 80f, MinWindowHeightDegrees = 52f;
+        /// to either side (the panel's 27.5 plus 4.5), and up in all (the default's proportion). A wall that cannot
+        /// hold that keeps no window: it stands free VirtualWallDistance ahead of the seat, as without a room.</summary>
+        public const float MinWindowWidthDegrees = 64f, MinWindowHeightDegrees = 41.6f;
         /// <summary>Metres the window keeps from the key wall's side edges and its top.</summary>
         public const float WindowInset = 0.15f;
         /// <summary>Metres above the floor the window's lower edge never goes below (the window moves up to keep it).</summary>
@@ -211,6 +219,8 @@ namespace Zumi
         /// <summary>The key wall: the foot of the seat eye's perpendicular on it, and its normal, into the room.</summary>
         public Vector3 KeyWallPoint { get; private set; }
         public Vector3 KeyWallNormal { get; private set; }
+        /// <summary>The key wall's own normal as MRUK gives it (KeyWallNormal is it made level).</summary>
+        public Vector3 KeyWallPlane { get; private set; }
         public float KeyWallDistance => Shape?.wallDistance ?? 0f;
         public string KeyWallName { get; private set; }
         /// <summary>Metres from the seat's eye to the key wall along the seat's own forward: under 1 the panel is in the wall.</summary>
@@ -430,8 +440,11 @@ namespace Zumi
                 why = "no wall ahead of the seat";
                 return false;
             }
+            // level, for the seat's bearings; the wall's plane is the anchor's own (KeyWallPlane), and KeyWallPoint is
+            // on it at the eye's height, straight ahead of the eye along the level normal
             var normal = Vector3.ProjectOnPlane(keyWall.transform.forward, Vector3.up).normalized;
-            var distance = Vector3.Dot(keyWall.transform.position - eye, -normal);
+            var keyPlane = keyWall.transform.forward;
+            var distance = Vector3.Dot(keyWall.transform.position - eye, keyPlane) / Mathf.Min(Vector3.Dot(-normal, keyPlane), -1e-3f);
             if (distance < 0.3f)
             {
                 why = "the seat is against the wall";
@@ -440,6 +453,7 @@ namespace Zumi
             Bounds = room.GetRoomBounds();
             Shape = new RoomShape { eye = eye, forward = -normal, right = Vector3.Cross(Vector3.up, -normal), wallDistance = distance, floorY = floorY };
             KeyWallNormal = normal;
+            KeyWallPlane = keyPlane;
             KeyWallPoint = eye - normal * distance;
             KeyWallName = keyWall.name;
             KeyWallAhead = WallHit(keyWall, eye, ahead, out var straight) ? straight : distance / Mathf.Max(Vector3.Dot(ahead, -normal), 1e-3f);
@@ -555,7 +569,7 @@ namespace Zumi
         void Free(Vector3 eye, Vector3 ahead, float floorY, string name)
         {
             Shape = new RoomShape { eye = eye, forward = ahead, right = Vector3.Cross(Vector3.up, ahead), wallDistance = VirtualWallDistance, floorY = floorY };
-            KeyWallNormal = -ahead;
+            KeyWallNormal = KeyWallPlane = -ahead;
             KeyWallPoint = eye + ahead * VirtualWallDistance;
             KeyWallName = name;
             KeyWallAhead = VirtualWallDistance;
@@ -566,10 +580,12 @@ namespace Zumi
 
         sealed class Side
         {
-            /// <summary>The key wall's edge at the eye's height; the side wall's normal into the room; the way along the
-            /// side wall from the corner into the room; how far the window may go along it.</summary>
-            public Vector3 corner, normal, along;
-            public float metres;
+            /// <summary>The corner the side wall shares with the key wall, where their planes meet at the eye's height;
+            /// a point of the side wall (the anchor's) and its normal into the room, as MRUK gives them; the way along
+            /// the side wall from the corner into the room, level; how far the window may go along it; metres along
+            /// the key wall from KeyWallPoint to the corner.</summary>
+            public Vector3 corner, point, normal, along;
+            public float metres, at;
         }
 
         // The window on a real key wall: as far as the wall reaches (less WindowInset at an edge with no wall round the
@@ -583,7 +599,8 @@ namespace Zumi
             var wallTop = Mathf.Min(key.centre.y + Mathf.Abs(key.up.y) * key.size.y / 2f, ceilingY);
             var left = SideAt(room, keyWall, eye, KeyWallPoint + Shape.right * (across - half));
             var right = SideAt(room, keyWall, eye, KeyWallPoint + Shape.right * (across + half));
-            var held = Window(eye, ahead, across - half + (left != null ? 0f : WindowInset), across + half - (right != null ? 0f : WindowInset),
+            // a fold bends on the corner line itself, where the two walls' planes meet
+            var held = Window(eye, ahead, left != null ? left.at : across - half + WindowInset, right != null ? right.at : across + half - WindowInset,
                               left, right, wallTop - WindowInset, true);
             if (held != null) return held;
             // the rim's room on the key wall: RimMargin round the window, never past the wall
@@ -592,9 +609,7 @@ namespace Zumi
             var mid = Vector3.Dot(w.centre - KeyWallPoint, Shape.right);
             float x0 = Mathf.Max(across - half, mid - w.size.x / 2f - RimMargin), x1 = Mathf.Min(across + half, mid + w.size.x / 2f + RimMargin);
             float y0 = Mathf.Max(floorY, w.centre.y - w.size.y / 2f - RimMargin), y1 = Mathf.Min(wallTop, w.centre.y + w.size.y / 2f + RimMargin);
-            var centre = KeyWallPoint + Shape.right * ((x0 + x1) / 2f);
-            centre.y = (y0 + y1) / 2f;
-            rims.Add(new RoomQuad { name = "window", centre = centre, normal = KeyWallNormal, right = Shape.right, up = Vector3.up, size = new Vector2(x1 - x0, y1 - y0) });
+            rims.Add(Strip("window", KeyWallPoint + Shape.right * x0, KeyWallPoint + Shape.right * x1, KeyWallPoint, KeyWallPlane, y0, y1));
             for (var i = 1; i < portals.Count; i++) rims.Add(portals[i]);
             return null;
         }
@@ -616,10 +631,15 @@ namespace Zumi
                     if (Vector3.Dot(along, KeyWallNormal) <= 0f) continue;
                     var normal = Vector3.ProjectOnPlane(q.normal, Vector3.up).normalized;
                     if (Vector3.Angle(normal, Vector3.ProjectOnPlane(eye - corner, Vector3.up)) > MaxBleedFacingDegrees) return null;
+                    // the corner line: along the key wall, at the eye's height, to where it meets the side wall's plane
+                    var toward = Vector3.Dot(Shape.right, q.normal);
+                    if (Mathf.Abs(toward) < 1e-3f) return null;
+                    var at = Vector3.Dot(q.centre - KeyWallPoint, q.normal) / toward;
+                    var meet = KeyWallPoint + Shape.right * at;
                     var metres = BleedMetres;
-                    var from = Azimuth(eye, corner);
-                    while (metres > 0.05f && Mathf.Abs(Azimuth(eye, corner + along * metres) - from) > BleedDegrees) metres -= 0.02f;
-                    return new Side { corner = corner, normal = normal, along = along, metres = metres };
+                    var from = Azimuth(eye, meet);
+                    while (metres > 0.05f && Mathf.Abs(Azimuth(eye, meet + along * metres) - from) > BleedDegrees) metres -= 0.02f;
+                    return new Side { corner = meet, point = q.centre, normal = q.normal, along = along, metres = metres, at = at };
                 }
             }
             return null;
@@ -657,7 +677,7 @@ namespace Zumi
 
             WindowOnWall = Shape.onWall = onWall;
             Shape.keyPoint = KeyWallPoint;
-            Shape.keyNormal = KeyWallNormal;
+            Shape.keyNormal = KeyWallPlane;
             WindowSpan = new Vector2(azRight - azLeft, elHigh - elLow);
             // up: the angles at the panel's distance, within the sill and the ceiling's inset
             float low = Mathf.Max(bottomY, eye.y + reach * Mathf.Tan(elLow * Mathf.Deg2Rad)), high = Mathf.Min(topY, eye.y + reach * Mathf.Tan(elHigh * Mathf.Deg2Rad));
@@ -665,7 +685,7 @@ namespace Zumi
             // the stencil's quads: on the key wall between the window's sides (or the corners), then the folds
             float x0 = Mathf.Max(left, d * Mathf.Tan(azLeft * Mathf.Deg2Rad)), x1 = Mathf.Min(right, d * Mathf.Tan(azRight * Mathf.Deg2Rad));
             float flatFrom = x0, flatTo = x1;
-            portals.Add(Strip("window", KeyWallPoint + Shape.right * x0, KeyWallPoint + Shape.right * x1, KeyWallNormal, low, high));
+            portals.Add(Strip("window", KeyWallPoint + Shape.right * x0, KeyWallPoint + Shape.right * x1, KeyWallPoint, KeyWallPlane, low, high));
             var lines = new string[2];
             for (var s = 0; s < 2; s++)
             {
@@ -684,9 +704,12 @@ namespace Zumi
                 }
                 if (lo < 0.02f) continue;
                 Shape.sideOk[s] = true;
-                Shape.sidePoint[s] = side.corner;
+                Shape.sidePoint[s] = side.point;
                 Shape.sideNormal[s] = side.normal;
-                portals.Add(Strip(s == 0 ? "fold left" : "fold right", side.corner, side.corner + side.along * lo, side.normal, low, high));
+                Shape.cornerPoint[s] = side.corner;
+                Shape.cornerAlong[s] = side.at;
+                Shape.sideAlong[s] = side.along;
+                portals.Add(Strip(s == 0 ? "fold left" : "fold right", side.corner, side.corner + side.along * lo, side.point, side.normal, low, high));
                 lines[s] = Invariant($"{(s == 0 ? "left" : "right")} {lo:F2} m");
                 if (s == 0) flatFrom = x0 - lo;
                 else flatTo = x1 + lo;
@@ -700,14 +723,17 @@ namespace Zumi
             return null;
         }
 
-        // a quad on a wall between two points of it, from low to high
-        static RoomQuad Strip(string name, Vector3 a, Vector3 b, Vector3 normal, float low, float high)
+        // a quad on a wall between two points of it, from low to high, exactly on the wall's plane (a point of it and
+        // its normal, as MRUK gives them)
+        static RoomQuad Strip(string name, Vector3 a, Vector3 b, Vector3 point, Vector3 normal, float low, float high)
         {
             var centre = (a + b) / 2f;
             centre.y = (low + high) / 2f;
+            centre -= normal * Vector3.Dot(centre - point, normal);
+            var right = Vector3.Cross(Vector3.up, -normal).normalized;
             return new RoomQuad
             {
-                name = name, centre = centre, normal = normal, right = Vector3.Cross(Vector3.up, -normal), up = Vector3.up,
+                name = name, centre = centre, normal = normal, right = right, up = Vector3.Cross(-normal, right),
                 size = new Vector2((Flat(b) - Flat(a)).magnitude, Mathf.Max(high - low, 0f)),
             };
         }
