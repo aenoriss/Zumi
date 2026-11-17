@@ -31,7 +31,16 @@ float3 ZumiLinear(float3 c)
 #endif
 }
 
-float ZumiHash(float n) { return frac(sin(n * 91.3458) * 47453.5453); }
+// a hash of a small whole number, in [0, 1): arithmetic only (Hoskins' hash11). The sine hash it replaces cost one
+// transcendental per call, and the notched outline calls it six times (ZumiNotch), twice a pixel in each of the
+// place's three layers and again in the rim and the reveal: the wall-only shading the headset choked on (2026-11-17)
+float ZumiHash(float n)
+{
+    n = frac(n * 0.1031);
+    n *= n + 33.33;
+    n *= n + n;
+    return frac(n);
+}
 
 // noise along a line, piecewise linear: straight runs between random corners, as a broken edge runs
 float ZumiJag1(float x, float seed)

@@ -162,17 +162,22 @@ namespace Zumi
         /// the panel.</summary>
         public const float VirtualWallDistance = 2.0f;
         /// <summary>The window a place is seen through, at most, as the angles it spans from the seat's eye, centred on
-        /// the panel's direction: the panel at 1 m spans 55 degrees on its long side, so 80 leaves 12.5 on either side
-        /// of it. Smaller than the first 100 by 66 because every pixel of the window draws the place's layers: at 100 by
-        /// 66 the GPU sat at 94-98 % on the headset and frames came every 18.5 ms against 13.9 (2026-11-17); 80 by 53
-        /// draws about 36 % fewer. One opening on the key wall, cut to the wall less WindowInset: it never runs past the
-        /// wall's edges or onto the ceiling. Its edge is a rounded mask in the place's shader (Zumi/Place), touching the
-        /// rectangle's middle of each side.</summary>
-        public const float WindowWidthDegrees = 80f, WindowHeightDegrees = 53f;
-        /// <summary>The free-standing window's least size (no room, or no wall that can hold it): half of each to
-        /// either side of the panel's direction (the panel's 27.5 plus 4.5), and up in all (the default's
-        /// proportion). On a real wall it does not apply (MinWallWindowDegrees).</summary>
-        public const float MinWindowWidthDegrees = 64f, MinWindowHeightDegrees = 41.6f;
+        /// the panel's direction: the panel at 1 m spans 55 degrees on its long side, so 64 leaves 4.5 on either side
+        /// of it. Every pixel of the window draws the place's layers: at 100 by 66 the GPU sat at 94-98 % on the headset
+        /// and frames came every 18.5 ms against 13.9 (2026-11-17); 80 by 53 was still slow, so 64 by 42.4 (the same
+        /// proportion, about 40 % fewer pixels than 80 by 53). One opening on the key wall, cut to the wall less
+        /// WindowInset: it never runs past the wall's edges or onto the ceiling. Its edge is a rounded mask in the
+        /// place's shader (Zumi/Place), touching the rectangle's middle of each side.</summary>
+        public const float WindowWidthDegrees = 64f, WindowHeightDegrees = 42.4f;
+        /// <summary>The free-standing window's least size (no room, or no wall that can hold it): across, the panel's
+        /// 55 degrees plus 2 on either side, so the rift still frames the panel when a narrow place (ContentWidth)
+        /// cuts the window below WindowWidthDegrees; up, the same proportion. On a real wall it does not apply
+        /// (MinWallWindowDegrees).</summary>
+        public const float MinWindowWidthDegrees = 59f, MinWindowHeightDegrees = 39f;
+        /// <summary>Metres the head may move off the seat's eye (sideways or forward) and still see the place to the
+        /// hole's edge: the window keeps atan(HeadReach / wall distance) inside the place's full-strength view on each
+        /// side, 4.8 degrees at a wall 3 m away, 11.8 at 1.2 m.</summary>
+        public const float HeadReach = 0.25f;
         /// <summary>The least a real wall must show, across and up, to hold the window; below it the window stands
         /// free. The free window's minimum (MinWindow*) no longer applies on a wall.</summary>
         public const float MinWallWindowDegrees = 12f;
@@ -196,8 +201,12 @@ namespace Zumi
         public const float BleedMetres = 0.5f, BleedDegrees = 20f, MaxBleedFacingDegrees = 80f;
         /// <summary>Metres a side wall's end may be from the key wall's edge and still be the wall round that corner.</summary>
         const float CornerSlack = 0.25f;
-        /// <summary>Metres round the window on the key wall the rim (the broken wall's cracks) may reach.</summary>
-        const float RimMargin = 0.6f;
+        /// <summary>The rim (Zumi/Breach, the broken wall's cracks) is drawn on a frame round the window on the key
+        /// wall, not on one quad over the whole window: that quad was 6.2 by 3.0 m on a 6.3 m wall, half of each eye's
+        /// pixels running the crack shader for cracks on a thin band (2026-11-17). Outside, RimMargin: a crack runs at
+        /// most 0.45 m out from the notched edge (Zumi/Breach: reach 0.15 plus up to 0.3). Inside, no crack lies further
+        /// in than RimNotch, the notches' greatest depth (ZumiNotch in ZumiOpening.hlsl: 0.065 + 0.035 + 0.02).</summary>
+        const float RimMargin = 0.45f, RimNotch = 0.12f;
         /// <summary>On a real wall: the window's corners' radius, and the width of its soft edge (the plain fade), in
         /// metres.</summary>
         public const float WallCorner = 0.45f, WallSoftEdge = 0.4f;
@@ -247,9 +256,12 @@ namespace Zumi
         public IReadOnlyList<RoomBox> Boxes => boxes;
         /// <summary>What a place is seen through: the one window on the key wall.</summary>
         public IReadOnlyList<RoomQuad> Portals => portals;
-        /// <summary>Where the window's edge is drawn (Zumi/Breach): round the window on the key wall within its
-        /// extent, and the folds.</summary>
+        /// <summary>Where the window's edge is drawn (Zumi/Breach): on a real wall a frame of four strips round the
+        /// window on the key wall within its extent, and the folds; standing free, the window itself.</summary>
         public IReadOnlyList<RoomQuad> Rims => rims;
+        /// <summary>On a real wall: the inside of the rim's frame, where cracks only show while the window is still
+        /// opening (grown from the middle, its edge further in); ZumiPlaces draws it only then. Null standing free.</summary>
+        public RoomQuad? RimInside { get; private set; }
         /// <summary>Degrees the window spans from the seat's eye, across and up (smaller than the defaults when the key
         /// wall cuts it).</summary>
         public Vector2 WindowSpan { get; private set; }
@@ -350,19 +362,23 @@ namespace Zumi
             loadNote = result == MRUK.LoadDeviceResult.Success ? null : $"sample room {index}: {result}";
         }
 
-        /// <summary>The most of the window the places can fill: across and up, in degrees about the panel's direction
-        /// and the eye's level, where every place of the episode still shows at full strength (inside its vignette).
-        /// The window never runs past it: the hole on the wall was bigger than the scene behind it, which faded out
-        /// well inside the hole's edge (owner, 2026-11-16). Set by ZumiPlaces once the episode is known.</summary>
-        public Vector2 ContentSpan { get; private set; } = new Vector2(WindowWidthDegrees, WindowHeightDegrees);
+        /// <summary>Degrees across, about the window's middle, where every place of the episode still shows at full
+        /// strength (inside its vignette). The window keeps HeadReach's angle inside it on each side, so the scene
+        /// reaches past the hole's edge however big the wall (owner, 2026-11-16 and 17: "there is a gap"). Set by
+        /// ZumiPlaces once the episode is known; infinite until then.</summary>
+        public float ContentWidth { get; private set; } = float.PositiveInfinity;
         int contentSerial;
 
-        public void LimitToContent(Vector2 span)
+        public void LimitToContent(float degrees)
         {
-            if (span == ContentSpan) return;
-            ContentSpan = span;
+            if (degrees == ContentWidth) return;
+            ContentWidth = degrees;
             contentSerial++;
         }
+
+        /// <summary>Degrees the window keeps inside the place's full-strength view on each side, for a wall that far
+        /// from the eye: what HeadReach of head movement sideways uncovers past the hole's edge.</summary>
+        public static float HeadMarginDegrees(float wallDistance) => Mathf.Atan2(HeadReach, Mathf.Max(wallDistance, 0.1f)) * Mathf.Rad2Deg;
 
         void Update()
         {
@@ -394,6 +410,7 @@ namespace Zumi
             boxes.Clear();
             portals.Clear();
             rims.Clear();
+            RimInside = null;
             BleedLine = "none";
             Vector3 eye = seat.Position, ahead = seat.Forward;
             string why = null;
@@ -634,13 +651,26 @@ namespace Zumi
             var held = Window(eye, ahead, left != null ? left.at : across - half + WindowInset, right != null ? right.at : across + half - WindowInset,
                               left, right, wallTop - WindowInset, true);
             if (held != null) return held;
-            // the rim's room on the key wall: RimMargin round the window, never past the wall
+            // the rim on the key wall: a frame from RimMargin outside the window's outline (never past the wall) to
+            // where no crack reaches inside it. At a rounded corner of radius r the outline lies r (1 - 1/sqrt 2)
+            // inside the rectangle's corner along the diagonal, so the frame's inner corner must sit further in
             rims.Clear();
-            var w = portals[0];
-            var mid = Vector3.Dot(w.centre - KeyWallPoint, Shape.right);
-            float x0 = Mathf.Max(across - half, mid - w.size.x / 2f - RimMargin), x1 = Mathf.Min(across + half, mid + w.size.x / 2f + RimMargin);
-            float y0 = Mathf.Max(floorY, w.centre.y - w.size.y / 2f - RimMargin), y1 = Mathf.Min(wallTop, w.centre.y + w.size.y / 2f + RimMargin);
-            rims.Add(Strip("window", KeyWallPoint + Shape.right * x0, KeyWallPoint + Shape.right * x1, KeyWallPoint, KeyWallPlane, y0, y1));
+            var r = Shape.rect;
+            var inset = Shape.corner > RimNotch ? Shape.corner - (Shape.corner - RimNotch) / Mathf.Sqrt(2f) : RimNotch;
+            float x0 = Mathf.Max(across - half, r.x - RimMargin), x1 = Mathf.Min(across + half, r.y + RimMargin);
+            float y0 = Mathf.Max(floorY, r.z - RimMargin), y1 = Mathf.Min(wallTop, r.w + RimMargin);
+            // the inside, on the key wall only (a fold's own quad carries the rim round the corner)
+            float i0 = Mathf.Clamp(r.x + inset, x0, x1), i1 = Mathf.Clamp(r.y - inset, i0, x1);
+            float j0 = Mathf.Clamp(r.z + inset, y0, y1), j1 = Mathf.Clamp(r.w - inset, j0, y1);
+            void Frame(string name, float a, float b, float low, float high)
+            {
+                if (b - a > 1e-3f && high - low > 1e-3f) rims.Add(Strip(name, KeyWallPoint + Shape.right * a, KeyWallPoint + Shape.right * b, KeyWallPoint, KeyWallPlane, low, high));
+            }
+            Frame("window bottom", x0, x1, y0, j0);
+            Frame("window top", x0, x1, j1, y1);
+            Frame("window left", x0, i0, j0, j1);
+            Frame("window right", i1, x1, j0, j1);
+            RimInside = Strip("window inside", KeyWallPoint + Shape.right * i0, KeyWallPoint + Shape.right * i1, KeyWallPoint, KeyWallPlane, j0, j1);
             for (var i = 1; i < portals.Count; i++) rims.Add(portals[i]);
             return null;
         }
@@ -694,7 +724,8 @@ namespace Zumi
             var panelAt = Azimuth(eye, eye + ahead);
             var azLeft = sideL != null ? Azimuth(eye, sideL.corner + sideL.along * sideL.metres) : Mathf.Atan2(left, d) * Mathf.Rad2Deg;
             var azRight = sideR != null ? Azimuth(eye, sideR.corner + sideR.along * sideR.metres) : Mathf.Atan2(right, d) * Mathf.Rad2Deg;
-            var width = Mathf.Min(WindowWidthDegrees, ContentSpan.x);
+            // never wider than the place shows at full strength less what HeadReach uncovers on each side
+            var width = Mathf.Min(WindowWidthDegrees, ContentWidth - 2f * HeadMarginDegrees(d));
             azLeft = Mathf.Max(azLeft, panelAt - width / 2f, -MaxWindowAzimuth);
             azRight = Mathf.Min(azRight, panelAt + width / 2f, MaxWindowAzimuth);
             var reach = d / Mathf.Cos(Mathf.Clamp(panelAt, -MaxWindowAzimuth, MaxWindowAzimuth) * Mathf.Deg2Rad);
@@ -734,8 +765,12 @@ namespace Zumi
                 Shape.sideOk[s] = false;
                 lines[s] = $"{(s == 0 ? "left" : "right")} none";
                 if (side == null) continue;
-                // along the side wall to where the ellipse's side meets it
                 float lo = 0f, hi = side.metres, from = Azimuth(eye, side.corner);
+                // a window whose side stops on the key wall short of the corner does not fold: on a 6.3 m wall 3 m
+                // away the window's side (40 degrees) stopped 0.65 m short of the corners, yet each fold added its
+                // 0.5 m to the outline, so the hole ran 0.5 m past the scene on either side (owner, 2026-11-17)
+                if (s == 0 ? limit >= from : limit <= from) continue;
+                // along the side wall to where the window's side meets it
                 for (var i = 0; i < 14; i++)
                 {
                     var mid = (lo + hi) / 2f;

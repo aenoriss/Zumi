@@ -82,8 +82,20 @@ namespace Zumi
         public RoomEffects RoomEffects => places.RoomEffects;
         public int Seatings => seat.Seatings;
 
+        /// <summary>Fixed foveated rendering on the headset: the eye buffers' outer tiles shaded at lower density. It
+        /// was never turned on (Off is the default), so the place's layers were shaded at full density out to the
+        /// lens's blurry edge; High is Meta's usual setting for a fill-bound app (the GPU sat at 94-98 % with a place
+        /// on a wall, 2026-11-17). Fixed, not dynamic: the cost should not swing with the scene.</summary>
+        public const OVRManager.FoveatedRenderingLevel Foveation = OVRManager.FoveatedRenderingLevel.High;
+
         async void Start()
         {
+            if (XRSettings.isDeviceActive)
+            {
+                OVRManager.useDynamicFoveatedRendering = false;
+                OVRManager.foveatedRenderingLevel = Foveation;
+                Debug.Log($"[Zumi] reader: foveation {OVRManager.foveatedRenderingLevel} (supported {OVRManager.fixedFoveatedRenderingSupported})");
+            }
             seat = Part<ZumiSeat>();
             presenter = GetComponent<ZumiPanelPresenter>();
             places = GetComponent<ZumiPlaces>();

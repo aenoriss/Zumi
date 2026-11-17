@@ -61,10 +61,6 @@ namespace Zumi
         /// the broken wall's thickness, seen in perspective inside the hole. The opening, the reveal's mouth and the
         /// cracks lie exactly on the wall's plane: nothing is pushed off it.</summary>
         public const float RevealDepth = ZumiRoom.WallThickness;
-        /// <summary>Degrees the window keeps inside the place's full-strength view on either side (hDeg / 2 less
-        /// VignetteInsetDegrees and VignetteDegrees), about the place's own centre: the scene always reaches past the
-        /// hole's edge (owner, 2026-11-16: "make the hole a bit smaller in width compared to 3d scene").</summary>
-        public const float WindowMarginDegrees = 8f;
         /// <summary>Segments of the reveal round the outline.</summary>
         public const int RevealSegments = 1024;
         /// <summary>Where the window folds onto a side wall: how much of the broken wall's notches and cracks it keeps
@@ -165,7 +161,11 @@ namespace Zumi
         Transform stage, openings;
         Material openingMaterial, farMaterial, clearMaterial, breachMaterial, revealMaterial;
         readonly List<GameObject> rims = new();
+        GameObject rimInside;
         bool rimsShown;
+        /// <summary>OpenShare at or above this is the window fully open: the outline (and its cracks) at its full size,
+        /// within a tenth of a millimetre on a 5 m window.</summary>
+        const float FullyOpen = 0.99998f;
         GameObject reveal;
         Mesh quad, revealMesh, backdropMesh;
         int openingsSerial = -1;
@@ -299,15 +299,11 @@ namespace Zumi
             seat = GetComponent<ZumiSeat>();
             if (places == null) return;
             foreach (var mesh in places.meshes) known[mesh.setting] = mesh;
-            // the window is no wider than what every place fills at full strength (inside its vignette) less
-            // WindowMarginDegrees on each side, nor taller than that full-strength span
-            var span = new Vector2(float.MaxValue, float.MaxValue);
-            foreach (var mesh in places.meshes)
-            {
-                span.x = Mathf.Min(span.x, mesh.hDeg - 2f * (VignetteInsetDegrees + VignetteDegrees + WindowMarginDegrees));
-                span.y = Mathf.Min(span.y, mesh.vDeg - 2f * (VignetteInsetDegrees + VignetteDegrees));
-            }
-            if (span.x < float.MaxValue) room.LimitToContent(Vector2.Max(span, new Vector2(20f, 20f)));
+            // the window is no wider than what every place fills at full strength (inside its vignette); ZumiRoom keeps
+            // a margin inside that for the head's movement (HeadReach)
+            var width = float.PositiveInfinity;
+            foreach (var mesh in places.meshes) width = Mathf.Min(width, mesh.hDeg - 2f * (VignetteInsetDegrees + VignetteDegrees));
+            room.LimitToContent(width);
 
             stage = new GameObject("Places").transform;
             openings = new GameObject("Openings").transform;
@@ -496,6 +492,8 @@ namespace Zumi
                 rimsShown = rim;
                 foreach (var go in rims) go.SetActive(rim);
             }
+            var opening = rim && OpenShare < FullyOpen;
+            if (rimInside && rimInside.activeSelf != opening) rimInside.SetActive(opening);
             breachMaterial.SetFloat(Rift, EdgeMode == "rift" ? 1f : 0f);
             breachMaterial.SetFloat(Opacity, Fade);
             breachMaterial.SetFloat(Open, OpenShare);
@@ -1020,6 +1018,15 @@ namespace Zumi
                 go.transform.localScale = new Vector3(q.size.x, q.size.y, 1f);
                 go.SetActive(rimsShown);
                 rims.Add(go);
+            }
+            // the frame's inside: cracks show there only while the window grows from the middle (Update)
+            rimInside = null;
+            if (room.RimInside is { } inside)
+            {
+                rimInside = Marked("rim window inside", quad, breachMaterial);
+                rimInside.transform.SetPositionAndRotation(inside.centre, Quaternion.LookRotation(-inside.normal, inside.up));
+                rimInside.transform.localScale = new Vector3(inside.size.x, inside.size.y, 1f);
+                rimInside.SetActive(false);
             }
             // the reveal: placed on the walls by its shader; its bounds cover the window and the depth behind it
             reveal = Marked("reveal", revealMesh, revealMaterial);
