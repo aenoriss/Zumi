@@ -5,7 +5,7 @@ The `.zumi` episode file: a zip with `manifest.json` at the root and assets refe
 
 ```
 manifest.json
-cover.png                                series cover, 3:4
+cover.png                                series cover, portrait (3:4; a comic finished from pencil: 2:3, its title lettered in it)
 thumbnail.png                            episode thumbnail, 3:4
 refs/<name>.png                          style reference images (snapshot)
 episode/music/<trackId>.wav              instrumental loops (PCM); the score's envelope says which sounds when

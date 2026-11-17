@@ -70,6 +70,18 @@ The configuration the owner chose among every one tried (2026-11-13, finish_test
    balloons: whether every lettering region's outline was found on the output (LOST_FIT): where the model painted
    no balloon the letters land on the artwork, and the other checks see nothing.
 
+11. The name (2026-11-16): once every page is read, one small Sonnet call over the readings' stories and the
+   characters' names gives the comic a short title, plain and catchy, no quotes; the line under it is "Episode 1 ·
+   N pages", written by the code, not the model (title.json: {"title", "line", "usd"}). Not before every page is
+   read: a title asked on part of the story would be asked again.
+12. The cover (2026-11-16, the owner's decision, accepting that a model can misspell): once every page is
+   finished, one image call with the run's model paints a portrait front cover on a blank canvas (COVER_CANVAS:
+   2:3 at Nano Banana's 2K), the title lettered prominently at the top exactly as given and no other text, the main
+   characters (the COVER_CHARACTERS drawn in the most panels, by the readings) in a scene that sums up the story,
+   each from its description and sheet, in the look of the first and last finished pages, sent with it (cover.png;
+   report.json's "cover" names the title it was asked to letter). Not before every page is finished: a cover painted
+   from part of the comic would be painted again.
+
 Tried and dropped (2026-11-12 and 13; the owner compared the pages): a direction for every panel written by the
 founding, a style sample and its description in words, a call per panel, a colour check against the bible, a check
 of the drawn lettering by a reading model, and a single fixed prompt with no bible at all.
@@ -89,22 +101,25 @@ reading's task, the entries and the place the page before ended in; a page's raw
 its lettering regions and the constants that clear their text, its prompt (the reading and the descriptions inside
 it), the sheets sent and the model; the output
 laid on the pencil's grid by the raw output and this file; the finished page by the laid output; the checks by the
-finished page (what costs nothing is made again at any edit of this file). So a run with nothing changed makes no
+finished page (what costs nothing is made again at any edit of this file); the title by its task, its model and the
+stories and names it is given; the cover by its prompt (the title inside it), the sheets sent, the raw outputs of the
+pages sent and the model. So a run with nothing changed makes no
 call and writes nothing, and a changed description repaints its sheet and the pages that used it. The model is in
 every paid stamp and in the name of every paid file, so a run with another model paints its own sheets and pages
 and a run back to the first finds its own again.
 
 The order of a run: the lettering regions of every page to paint (local, free), the entries, the readings, the
-sheets, then the pages in the order given (a folder's pages by the numbers in their names: 2 before 10). Before the
-first reading or image call the plan is printed: the pages to read, the sheets and pages to paint and about what
-they cost. --only paints some of the pages; all of them are still read, because a panel's place comes from the
-pages before it.
+sheets, then the pages in the order given (a folder's pages by the numbers in their names: 2 before 10), then the
+title and the cover. Each phase starts with a line "== 0 finish: <phase>" (lettering, bible, readings, sheets, pages,
+title, cover), which the Modal service shows as its job's step. Before the first reading or image call the plan is
+printed: the pages to read, the sheets and pages to paint and about what they cost. --only paints some of the pages;
+all of them are still read, because a panel's place comes from the pages before it.
 
 Under the out dir: <page>.png (the finished page, the pencil page's pixel size), sent/ (the pencil page as sent,
 its text cleared), raw/<model>/ (the model's own output, and <page>.json: the prompt, what was asked and what it
 cost), laid/ (that output on the pencil's grid, and its mapping), read/ (each page's reading), lettering/ (the
 regions of the pencil page: a grey level per region), checks/<page>-lines.png (pencil strokes found in green,
-missed in red, new ink in blue),
+missed in red, new ink in blue), title.json, cover.png (and cover.json: what was asked, what it cost),
 report.json, stamps.json, and bible/ unless one is given.
 
     python finish.py <pencil pages dir or files> <out dir> [--bible <dir>] [--model nano|klein]
@@ -112,6 +127,7 @@ report.json, stamps.json, and bible/ unless one is given.
 """
 from __future__ import annotations
 
+import collections
 import json
 import re
 import sys
@@ -206,6 +222,15 @@ READ_SIDE = 1568          # the page is sent to it at most this long: boxes are 
 READ_USD = 0.13           # about what one costs with READER at READ_REASONING, for the plan (0.13 measured at high,
                           # 0.057 at low, 2026-11-14)
 FOUND_USD = 0.13          # about what the entries call costs for ten pages, for the plan (0.13 measured, 2026-11-14)
+
+TITLE_MODEL = "anthropic/claude-sonnet-5.5"  # names the comic: one call over the readings' stories, text only
+TITLE_REASONING = "low"
+TITLE_TOKENS = 200        # its answer: a few words
+TITLE_USD = 0.01          # about what it costs, for the plan (a first guess: a page of text in, a line out)
+TITLE_LINE = "Episode 1 · {n} pages"  # the line under the title: step 0 makes a new comic, its first episode
+COVER_CANVAS = (1696, 2528)  # the blank canvas the cover is painted on: 2:3 at Nano Banana's 2K (0.101 USD)
+COVER_CHARACTERS = 3      # the main characters on the cover: those drawn in the most panels
+COVER_PAGES = 2           # finished pages sent with it for the comic's look: the first and the last
 
 FAILED =(OSError, RuntimeError, ValueError)  # a call that did not come back with what was asked: the budget
                      # (BudgetExceeded is a RuntimeError), the network, a refusal, a reply that is no answer
@@ -448,6 +473,29 @@ Reply with ONE JSON object:
  "on_bare": ["..."]}
 ```
 """
+
+TITLE_TASK = """# Task: name a comic
+
+Below are the characters of a comic and what happens on each of its pages. Give the comic its title, for its cover
+and its shelf: one to four words, plain and catchy, the kind of name a reader remembers after one look. It may name
+the main characters or the story's hook, and gives away no ending. Plain words only: no quotation marks, no colon,
+no subtitle, no episode number, no emoji.
+
+Reply with ONE JSON object: {"title": "..."}
+"""
+COVER_PROMPT = """Image 1 is a blank portrait canvas. Paint on it the front cover of a comic book.
+
+At the top of the cover, the title, lettered prominently, large and easy to read, spelled exactly as given here, letter for letter: {title}
+The title is the only text on the cover: no subtitle, author, issue number, price, logo, caption or speech balloon.
+
+Below the title, {who}, in one scene that sums up the comic, posed as a cover shows its heroes. What the comic is about: {story}
+{characters}
+The look is the comic's own: {look}, in the same manner of ink lines, colour, shading and light."""
+COVER_CHARACTER = "- {name}: {description}{sheet}"  # a character on the cover, after COVER_CHARACTERS_PROMPT
+COVER_CHARACTERS_PROMPT = ("\nEach character is exactly as its description and its reference sheet show it: its build, "
+                           "its parts and their colours. A sheet is a reference only: its pose and its view are not "
+                           "copied.\n")
+COVER_LOOK = "images {pages} are finished pages of the comic"
 
 
 def _fit(img: Image.Image, side: int) -> Image.Image:
@@ -1119,6 +1167,75 @@ def added_check(sent: Image.Image, painted: Image.Image, lab: np.ndarray, places
     return {"areas": areas, "painted": round(float((free & ~blank_).sum() / max(1, free.sum())), 4)}
 
 
+def name_comic(pages: list[Path], reads: dict, have: dict[str, dict], out: Path, st: fresh.Stamps) -> dict:
+    """The comic's title (TITLE_TASK, one call over every page's story and the characters' names) and the line under
+    it (TITLE_LINE), saved as title.json and stamped by what the call is given: {"title", "line", "usd"}. Raises
+    what the call raises (FAILED)."""
+    f = out / "title.json"
+    names = "\n".join(f"- {e.get('name') or k}" for k, e in have.items() if e["kind"] == "character") or "(none)"
+    story = "\n".join(f"- Page {n}: {reads[p.stem]['story']}" for n, p in enumerate(pages, 1))
+    text = f"{TITLE_TASK}\n## The characters\n{names}\n\n## The pages\n{story}\n"
+    stamp = fresh.digest(text, TITLE_MODEL, TITLE_REASONING, TITLE_TOKENS, TITLE_LINE.format(n=len(pages)))
+    if st.current("title", stamp, f):
+        return json.loads(f.read_text(encoding="utf-8"))
+    reply, usd = ask_json(TITLE_MODEL, [{"type": "text", "text": text}], f"finish title {pages[0].stem}", TITLE_TOKENS,
+                          TITLE_REASONING, brief=False)
+    title = " ".join(str(reply.get("title") or "").split()).strip("\"'“”‘’«»")
+    if not title:
+        raise ValueError(f"the title call gave no title ({json.dumps(reply)[:200]})")
+    named = {"title": title, "line": TITLE_LINE.format(n=len(pages)), "usd": usd}
+    _save(f, named)
+    st.made("title", stamp)
+    print(f"  title: {title} ({named['line']}), {usd:.4f} USD")
+    return named
+
+
+def cover_ask(pages: list[Path], reads: dict, have: dict[str, dict], title: str, model: str, out: Path,
+              st: fresh.Stamps) -> dict:
+    """What the cover's call is made of: {"prompt", "sheets": the main characters' sheets sent, "pages": the
+    finished pages sent, "stamp"}. The main characters are the COVER_CHARACTERS figures drawn in the most panels of
+    the readings; each with a sheet is sent with it, after the canvas, then the first and last finished pages."""
+    drawn = collections.Counter(e["key"] for r in reads.values() for pn in r["panels"] for e in pn["elements"]
+                                if e["kind"] == "figure" and e["key"] in have)
+    main = [k for k, _ in drawn.most_common(COVER_CHARACTERS)]
+    sheets = [k for k in main if have[k]["sheet"]]
+    looks = list(dict.fromkeys([pages[0], pages[-1]]))[:COVER_PAGES]
+    name = lambda k: have[k].get("name") or k
+    who = ("the main characters, " + ", ".join(name(k) for k in main)) if main else "the comic's main characters"
+    rows = [COVER_CHARACTER.format(name=name(k), description=have[k].get("description") or "",
+                                   sheet=SHEET_REF.format(k=2 + sheets.index(k)) if k in sheets else "") for k in main]
+    first_look = 2 + len(sheets)
+    prompt = COVER_PROMPT.format(
+        title=title, who=who, story=" ".join(reads[p.stem]["story"] for p in pages),
+        characters=COVER_CHARACTERS_PROMPT + "\n".join(rows) + "\n" if rows else "",
+        look=COVER_LOOK.format(pages=" and ".join(str(first_look + i) for i in range(len(looks)))))
+    stamp = fresh.digest(prompt, *[have[k]["sheet"] for k in sheets], [st.get(f"{p.stem}/raw/{model}") for p in looks],
+                         recipe_of(model), COVER_CANVAS, REF_SIDE)
+    return {"prompt": prompt, "sheets": sheets, "pages": [p.stem for p in looks], "stamp": stamp}
+
+
+def cover(pages: list[Path], reads: dict, have: dict[str, dict], title: str, model: str, out: Path,
+          st: fresh.Stamps) -> dict:
+    """The comic's front cover (cover_ask) painted on a blank COVER_CANVAS with the title lettered in it, saved as
+    cover.png, the model's whole output: {"file", "title": the title it was asked to letter, "sheets", "pages",
+    "prompt", "usd"}. Raises what the call raises (FAILED)."""
+    f, facts = out / "cover.png", out / "cover.json"
+    ask = cover_ask(pages, reads, have, title, model, out, st)
+    if st.current(f"cover/{model}", ask["stamp"], f, facts):
+        return json.loads(facts.read_text(encoding="utf-8"))
+    print(f"  cover: asking {MODELS[model]} for it, about {price_of(model, COVER_CANVAS):.3f} USD")
+    refs = [_fit(Image.open(have[k]["sheet"]), REF_SIDE) for k in ask["sheets"]]
+    refs += [_fit(Image.open(out / f"{stem}.png"), REF_SIDE) for stem in ask["pages"]]
+    img, usd = paint(model, ask["prompt"], Image.new("RGB", COVER_CANVAS, (255, 255, 255)), refs, f"finish cover {title}")
+    img.save(f)
+    made = {"file": f.name, "title": title, "model": MODELS[model], "size": list(img.size),
+            **{k: v for k, v in ask.items() if k != "stamp"}, "usd": usd}
+    _save(facts, made)
+    st.made(f"cover/{model}", ask["stamp"])
+    print(f"  cover: {img.width} x {img.height}, lettered \"{title}\", {usd:.3f} USD")
+    return made
+
+
 def finish(pages: list[Path], out: Path, bible: Path | None = None, model: str = "nano",
            only: list[str] | None = None, reader: str = READER, effort: str = READ_REASONING) -> dict:
     """Every pencil page finished under `out` with the image model `model` (see the module docstring), or of the
@@ -1130,11 +1247,12 @@ def finish(pages: list[Path], out: Path, bible: Path | None = None, model: str =
     f_report = out / "report.json"
     report = json.loads(f_report.read_text(encoding="utf-8")) if f_report.exists() else {}
     report = {"found": report.get("found", {}), "reads": report.get("reads", {}), "sheets": report.get("sheets", {}),
-              "pages": report.get("pages", {})}
+              "pages": report.get("pages", {}), "title": report.get("title", {}), "cover": report.get("cover", {})}
     st = fresh.Stamps(out / "stamps.json")
 
     # What costs nothing first: the lettering regions of every page to paint, with one SAM loaded only when a
     # page's are not saved.
+    print("== 0 finish: lettering")
     painted_pages = [p for p in pages if only is None or p.stem in only]
     recipe = [LETTER_PROMPTS, LETTER_SCORE, SAME, fresh.recipe(sam, skip=("BATCH",))]  # what shapes the regions
     lettering = {p.stem: (out / "lettering" / f"{p.stem}.png", fresh.digest(p, recipe)) for p in painted_pages}
@@ -1151,13 +1269,14 @@ def finish(pages: list[Path], out: Path, bible: Path | None = None, model: str =
         import torch
         torch.cuda.empty_cache()
 
+    print("== 0 finish: bible")
     try:
         fd = found(pages, bible)
         report["found"] = {"usd": fd["cost"], "entries": list(fd["entries"]), "notes": fd.get("notes")}
     except FAILED as err:  # no entries, no page: a page painted without them is the page this step exists to avoid,
         report["found"] = {"error": str(err)[:300]}  # and it would be paid for twice
         print(f"  entries: none, {str(err)[:200]}; nothing is painted")
-        return _closed(report, f_report)
+        return _closed(report, f_report, pages)
     have = entries(bible, model)
 
     # Each page's reading, in order: a page is read with the story so far and the place the page before ended in,
@@ -1204,12 +1323,16 @@ def finish(pages: list[Path], out: Path, bible: Path | None = None, model: str =
     waiting = {j["key"] for j in jobs}  # a page with a sheet still to paint, or still to read, is painted after it
     to_paint = [p for p in painted_pages if p in unread or waiting & set(on_page(reads[p.stem], p.stem, fd["entries"]))
                 or not st.current(f"{p.stem}/raw/{model}", asked(p.stem, have)["stamp"], *raw_of(p.stem))]
-    if unread or jobs or to_paint:
+    named = (out / "title.json").exists() and (out / "cover.png").exists()  # a changed title or cover is not foreseen here
+    if unread or jobs or to_paint or not named:
         usd = (sum(price_of(model, sheet_crop(Image.open(by_stem[j["page"]]), j["box"]).size) for j in jobs)
                + sum(price_of(model, Image.open(p).size) for p in to_paint)
-               + (READ_USD * len(unread) * pricing(reader)[1] / pricing(READER)[1] if unread else 0))
+               + (READ_USD * len(unread) * pricing(reader)[1] / pricing(READER)[1] if unread else 0)
+               + (0 if named else TITLE_USD + price_of(model, COVER_CANVAS)))
         print(f"  plan: up to {len(unread)} pages to read with {reader}, {len(jobs)} sheets and {len(to_paint)} pages to "
-              f"paint with {MODELS[model]}, about {usd:.2f} USD; {spent_today():.3f} USD spent today of {DAILY_CAP_USD:.2f}")
+              f"paint with {MODELS[model]}{'' if named else ', the title and the cover'}, about {usd:.2f} USD; "
+              f"{spent_today():.3f} USD spent today of {DAILY_CAP_USD:.2f}")
+    print("== 0 finish: readings")
     for p in unread:
         f_read, stamp = reading_of(p, before)
         if not st.current(f"{p.stem}/read", stamp, f_read):  # a later page holds when what came before it did
@@ -1225,9 +1348,11 @@ def finish(pages: list[Path], out: Path, bible: Path | None = None, model: str =
             print(f"  {p.stem}: read, {len(seen['panels'])} panels and {len(seen['bare'])} bare areas, {usd:.4f} USD")
         reads[p.stem] = json.loads(f_read.read_text(encoding="utf-8"))
         before = after(reads[p.stem], before)
+    print("== 0 finish: sheets")
     sheets(jobs, by_stem, bible, report, model, bible_st)
     have = entries(bible, model)
 
+    print("== 0 finish: pages")
     for p in painted_pages:
         stem = p.stem
         if stem not in reads:
@@ -1307,13 +1432,54 @@ def finish(pages: list[Path], out: Path, bible: Path | None = None, model: str =
                   "move of a frame side "
                   + (f"{frames['largest']} px" if frames["largest"] is not None else "not measured (a panel not found)")
                   + f"; {len(added['areas'])} blank areas added, {added['painted']:.1%} of the open paper painted; failing: " + (", ".join(k for k, v in row["ok"].items() if not v) or "nothing"))
-    return _closed(report, f_report)
+
+    # The title once every page is read, the cover once every page is finished: asked on part of the comic, either
+    # would be asked again when the rest came.
+    if len(reads) < len(pages):
+        return _closed(report, f_report, pages)
+    print("== 0 finish: title")
+    try:
+        report["title"] = name_comic(pages, reads, have, out, st)
+    except FAILED as err:
+        report["title"] = {"error": str(err)[:300]}
+        print(f"  title: not named, {str(err)[:200]}")
+        return _closed(report, f_report, pages)
+    if not all((out / f"{p.stem}.png").exists() and "error" not in report["pages"].get(p.stem, {}) for p in pages):
+        return _closed(report, f_report, pages)
+    print("== 0 finish: cover")
+    try:
+        report["cover"] = {k: v for k, v in cover(pages, reads, have, report["title"]["title"], model, out, st).items()
+                           if k != "prompt"}
+    except FAILED as err:
+        report["cover"] = {"error": str(err)[:300]}
+        print(f"  cover: not painted, {str(err)[:200]}")
+    return _closed(report, f_report, pages)
 
 
-def _closed(report: dict, file: Path) -> dict:
-    """The report with the cost of everything in it, saved."""
+def missing_of(report: dict, pages: list[Path], out: Path) -> dict[str, str]:
+    """What the comic still lacks after a run: {a page's stem, "title" or "cover": why}, empty when every page is
+    finished, the comic named and its cover painted. The Modal service fails a job on it (run_episodes.py)."""
+    error = lambda row: str(row["error"]) if isinstance(row, dict) and row.get("error") else None
+    missing = {}
+    for p in pages:
+        row = report["pages"].get(p.stem, {})
+        if not (out / f"{p.stem}.png").exists() or error(row):
+            missing[p.stem] = (error(report["found"]) or error(report["reads"].get(p.stem)) or error(row)
+                               or "not painted: not read yet, or left out by --only")
+    if not (out / "title.json").exists():
+        missing["title"] = error(report["title"]) or "not named: a page is not read"
+    if not (out / "cover.png").exists():
+        missing["cover"] = error(report["cover"]) or "not painted: a page is not finished, or the comic not named"
+    return missing
+
+
+def _closed(report: dict, file: Path, pages: list[Path]) -> dict:
+    """The report with the cost of everything in it and what the comic still lacks ("missing", missing_of),
+    saved."""
+    report["missing"] = missing_of(report, pages, file.parent)
     report["usd"] = round(sum(float(r.get("usd") or 0) for r in [report["found"], *report["reads"].values(),
-                                                                 *report["sheets"].values(), *report["pages"].values()]), 4)
+                                                                 *report["sheets"].values(), *report["pages"].values(),
+                                                                 report.get("title", {}), report.get("cover", {})]), 4)
     _save(file, report)
     return report
 
@@ -1349,6 +1515,6 @@ if __name__ == "__main__":
     files = [f for a in args[:-1] for f in (sorted(Path(a).iterdir(), key=_by_number) if Path(a).is_dir() else [Path(a)])
              if f.suffix.lower() in PICTURES]
     done = finish(files, Path(args[-1]), bible_dir, name, some, who, how)
-    missing = [k for k, r in {**done["sheets"], **done["pages"]}.items() if "error" in r]
+    missing = [k for k, r in done["sheets"].items() if "error" in r] + list(done["missing"])
     print(f"  finish: {len(files)} pages, {done['usd']:.3f} USD for what is in {args[-1]}; "
           f"{spent_today():.3f} USD spent today in all" + (f"; not made: {', '.join(missing)}" if missing else ""))

@@ -27,7 +27,8 @@ today's limit leaves (gemini_tts.requests_left) against the lines and designs to
 them it warns, with the days the voices take, and never blocks: the run records what fits and goes on another day.
 
 needed_usd is an estimate from the panel count, the same for a first run and a resumed one (a resumed run needs
-less): per provider PER_PANEL a box plus PER_EPISODE, then MARGIN on top. The prices are the ledgers' averages per
+less): per provider PER_PANEL a box plus PER_EPISODE, and for a comic sent in pencil step 0 (finish.py: STEP0_*, by
+its page count) on OpenRouter and Gemini, then MARGIN on top. The prices are the ledgers' averages per
 call (2026-11-15) and the modules' own constants; the counts are the chain's limits or what its episodes have had.
 The voiced lines are counted from the episode's speaker records when its out dir is given and has them (every
 balloon with a speaker, less the lines already recorded: at most what a run sends), else estimated as
@@ -73,6 +74,14 @@ PER_EPISODE = {"openrouter": 0.645 + PLACES * 0.012, "bfl": PLACES * (0.12 + PRO
 # records are not at hand (the one episode with them: 6 in 28 boxes)
 SFX_PER_PANEL, SFX_S, SFX_USD_PER_S, SFX_PLAN_USD = 0.25, 2.0, 0.002, 0.03
 VOICE_USD = {"gemini": (GEMINI_LINE_USD, gemini_tts.DESIGN_USD), "inworld": (INWORLD_LINE_USD, 0.01)}  # (a line, a design)
+# Step 0 (finish.py), for a comic sent in pencil, measured on Dan & Buck's ten pages (2026-11-14 to 16): on OpenRouter
+# the entries call (0.11 for ten pages, FOUND_USD 0.13), a reading a page (Opus at high: 0.07 to 0.16, READ_USD 0.13)
+# and the title (TITLE_USD 0.01); on Gemini (Nano Banana 2) a page at 4K (0.156 to 0.159), a sheet at 1K (0.069) and
+# the cover at 2K (0.101 and its tokens). Sheets: one per character and prop, and a place with an establishing panel
+# (12 for those ten pages), at least STEP0_SHEETS_MIN
+STEP0_FOUND_USD, STEP0_READ_USD, STEP0_TITLE_USD = 0.13, 0.13, 0.01
+STEP0_PAGE_USD, STEP0_SHEET_USD, STEP0_COVER_USD = 0.16, 0.069, 0.11
+STEP0_SHEETS_PER_PAGE, STEP0_SHEETS_MIN = 1.2, 4
 KEYS = {"openrouter": "OPENROUTER_API_KEY", "bfl": "BFL_API_KEY", "fal": "FAL_KEY", "gemini": "GEMINI_API_KEY",
         "inworld": "INWORLD_API_KEY"}
 ANCHORS = spend.SPEND / "credits-anchors.json"  # the stated balances, {provider: {"usd", "at": local ISO time}}
@@ -182,10 +191,21 @@ def sfx_count(panels: int, out: Path | None = None) -> int:
                if r.get("kind") == "sfx" and (r.get("text") or "").strip())
 
 
-def needed(panels: int, lines: int | None = None, designs: int = VOICES, sfx: int | None = None) -> dict[str, float]:
+def step0(pages: int) -> dict[str, float]:
+    """Step 0's estimate per provider for a comic of this many pencil pages, without MARGIN: the entries, a reading
+    a page and the title on OpenRouter; the pages, the sheets and the cover on Gemini."""
+    if not pages:
+        return {}
+    sheets = max(STEP0_SHEETS_MIN, math.ceil(STEP0_SHEETS_PER_PAGE * pages))
+    return {"openrouter": STEP0_FOUND_USD + STEP0_READ_USD * pages + STEP0_TITLE_USD,
+            "gemini": STEP0_PAGE_USD * pages + STEP0_SHEET_USD * sheets + STEP0_COVER_USD}
+
+
+def needed(panels: int, lines: int | None = None, designs: int = VOICES, sfx: int | None = None,
+           pencil_pages: int = 0) -> dict[str, float]:
     """The estimate per provider for an episode of this many boxes, MARGIN included; the voices' lines and designs
-    on the backend's provider, the sound effects on fal and their plan on OpenRouter. Only the providers the run
-    uses."""
+    on the backend's provider, the sound effects on fal and their plan on OpenRouter, and step 0 (step0) for a
+    comic of `pencil_pages` pencil pages. Only the providers the run uses."""
     lines = math.ceil(LINES_PER_PANEL * panels) if lines is None else lines
     sfx = math.ceil(SFX_PER_PANEL * panels) if sfx is None else sfx
     tts = tts_backend()
@@ -194,6 +214,8 @@ def needed(panels: int, lines: int | None = None, designs: int = VOICES, sfx: in
     if sfx:
         usd["fal"] += sfx * SFX_S * SFX_USD_PER_S
         usd["openrouter"] += SFX_PLAN_USD
+    for p, v in step0(pencil_pages).items():
+        usd[p] = usd.get(p, 0) + v
     return {p: round(v * (1 + MARGIN), 2) for p, v in usd.items()}
 
 
@@ -237,12 +259,14 @@ def tts_row(left: int, lines: int, designs: int, basis: str, limit: int) -> dict
 
 
 def check(panels: int = DEFAULT_PANELS, cap_left: float | None = None, out: Path | None = None,
-          tts_sent: int | None = None) -> dict[str, dict]:
-    """The table for an episode of `panels` boxes. cap_left and tts_sent: what today's cap leaves and the voice
-    requests already counted today, when the caller knows better than this machine's files (the batch runner, which
-    reads the volume's). out: the episode's out dir, to count its lines."""
+          tts_sent: int | None = None, pencil_pages: int = 0) -> dict[str, dict]:
+    """The table for an episode of `panels` boxes, and step 0 for one sent as `pencil_pages` pencil pages. cap_left
+    and tts_sent: what today's cap leaves and the voice requests already counted today, when the caller knows better
+    than this machine's files (the batch runner, which reads the volume's). out: the episode's out dir, to count its
+    lines."""
     lines, designs, basis = voice_requests(panels, out)
-    need, table, stated, marked = needed(panels, lines, designs, sfx_count(panels, out)), {}, anchors(), spend.depleted()
+    need, table, stated, marked = (needed(panels, lines, designs, sfx_count(panels, out), pencil_pages), {}, anchors(),
+                                   spend.depleted())
     for p in need:
         key = _key(p)
         if key is None:

@@ -3,6 +3,18 @@ the run is on another machine), as a batch from this machine or as a service ano
 the whole chain of one episode after another: step 1, the intake (pipeline/zumi: the pages stitched and cut into
 boxes, the chapter .zumi the rest reads; free), then segment/episode.py (steps 2-10d).
 
+A service job's pages are pencil unless it says "input": "colour" (owner, 2026-11-16: the headset scans pencil
+pages). A pencil job first runs step 0 in the same container: segment/finish.py on its pages, out dir
+<out dir>/finish (the bible, the sheets, the readings, the finished pages, the comic's title and its cover; the job's
+"step" names each phase as it starts, "0 finish: bible" and so on). Then the intake cuts step 0's finished pages
+(copied to <INPUTS>/<root>/<episode>.finished), episode.py runs on that chapter, and the export takes the title and
+the cover from step 0 (series.title, episode.title, series.cover). Step 0 never stops on a page it could not make;
+the job does: when report.json names anything missing after it (a page, the title, the cover), the job fails with
+"pages missing after step 0: ..." and why, resumable, and a new job on the episode makes only what is missing (step
+0 resumes by its stamps like every step). A colour job is the chain as before. What the job's pages were taken as is
+kept beside them (input.txt): a job that resends the same pages, or none, takes them so again unless it names the
+other input, and that needs "replace": true. The batch is colour.
+
 The pages come in one of two ways, both ending as <INPUTS>/<root>/<episode>/0001.png, 0002.jpg, ... in the order
 given, with pages.json (where each came from): "pages", https links downloaded by the job (each to a .part file,
 checked against its Content-Length, opened and decoded whole, then renamed: a broken one is never kept), or
@@ -30,20 +42,27 @@ It serves four HTTPS endpoints, every one behind Modal proxy auth (headers Modal
 auth token made once in the workspace settings; a call without them is refused before it reaches this code):
 
     POST /jobs                {"episode": "name", "pages": ["https://.../1.png", ...] or "pages_dir": "name/of/folder"
-                               (under INPUTS), "replace": false, "args": ["--no-music"], "root": "web",
-                               "budget_usd": 0.5, "panels": 28, "no_credit_check": false, "tts": "gemini"}
+                               (under INPUTS), "input": "pencil" | "colour", "replace": false, "args": ["--no-music"],
+                               "root": "web", "budget_usd": 0.5, "panels": 28, "no_credit_check": false,
+                               "tts": "gemini", "offline": false}
                               (episode and one of pages, pages_dir are required; both may be left out while the
-                              episode's pages are still on the volume, as when a failed job is started again)
-                              -> 202 {"job": id, "state": "queued", "warnings": [...]}; 402 with the credits table
-                              when a provider is low or depleted; 409 with the running job's id when that episode of
-                              that root is queued or running (the second is rejected, never queued: one writer per
-                              out dir), and 409 when the pages differ from the ones on the volume without "replace"
-    GET  /jobs/{id}           -> {"state": "queued" | "running" | "done" | "failed", "step", "log" (last lines),
-                              "usd" (paid API calls so far), "seconds", "exit", "reason", "resumable"}
+                              episode's pages are still on the volume, as when a failed job is started again; input:
+                              pencil unless given, or what the pages on the volume were taken as; offline: every paid
+                              call refused, nothing paid and no credit check, to try a job's path)
+                              -> 202 {"job": id, "state": "queued", "input", "warnings": [...]}; 402 with the credits
+                              table when a provider is low or depleted; 409 with the running job's id when that
+                              episode of that root is queued or running (the second is rejected, never queued: one
+                              writer per out dir), and 409 when the pages, or the input they were taken as, differ
+                              from the ones on the volume without "replace"
+    GET  /jobs/{id}           -> {"state": "queued" | "running" | "done" | "failed", "input", "step", "log" (last
+                              lines), "usd" (paid API calls so far), "seconds", "exit", "reason", "resumable"}
     GET  /jobs/{id}/result    -> the exported .zumi (export_zumi.py), streamed from the volume; 409 until done
-    GET  /credits?panels=28   (or ?pages=11: boxes estimated from the page count; or ?episode=name&root=web) -> {"can_run", "blocking", "warnings", "panels", "basis",
+    GET  /credits?pages=11    (or ?panels=28; or ?episode=name&root=web; &input=colour for a coloured comic) ->
+                              {"can_run", "blocking", "warnings", "panels", "input", "basis", "step0_usd",
                               "rows": {provider: {"usd", "needed_usd", "state", "source", "as_of", "detail"}}}:
-                              credits.py's table and its verdict, the rule POST /jobs starts by
+                              credits.py's table and its verdict, the rule POST /jobs starts by; for pencil (the
+                              default) step 0's pages, sheets, cover, readings and title are in the rows' needs, and
+                              "step0_usd" is that part
     PUT  /credits/{provider}  {"usd": 12.40} -> the balance its owner reads now, for a provider with no balance
                               API (gemini); the row is then an estimate from it and the ledgers
 
@@ -65,8 +84,9 @@ start of every run, batch or service, and every hour once deployed (sweep). The 
 later episodes of a series read them.
 
 Spending. Runs, jobs and the sweep take turns on the volume (one writer: LOCK), so batch and service share the
-ledgers on it (LEDGERS_DIR), read and written by spend.py as it does locally, under one cap a day (ZUMI_DAILY_USD,
-2 USD unless set: in pipeline/.env at deploy for the service, in the environment for the batch). The batch takes
+ledgers on it (LEDGERS_DIR), read and written by spend.py as it does locally, under one cap a day (ZUMI_DAILY_USD:
+for the service SERVICE_DAILY_USD, 15 USD since 2026-11-16, unless the deploying shell sets it; for the batch this
+machine's, 2 USD unless set in its environment). The batch takes
 off what this machine spent outside Modal today and brings every new line of the volume's ledgers into the local
 ones. What this machine spends outside Modal never reaches the volume, so a service job does not count it: that
 part of the cap is not shared. Before a run starts, credits.py's table must show no provider low or depleted
@@ -87,6 +107,7 @@ import collections
 import datetime as dt
 import filecmp
 import json
+import math
 import os
 import re
 import shutil
@@ -137,8 +158,13 @@ PAGE_EXT = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}  # a page's file nam
 # the chain's settings a run takes from its caller: the voice backend (voices.backend; Gemini when unset) and the
 # backend's requests a day. The batch passes this machine's; a job may name "tts"; the service's others come from
 # pipeline/.env at deploy
-SETTINGS = ("ZUMI_TTS", "ZUMI_TTS_DAILY_REQUESTS")
+SETTINGS = ("ZUMI_TTS", "ZUMI_TTS_DAILY_REQUESTS", "ZUMI_OFFLINE")  # ZUMI_OFFLINE: a job's "offline": spend.py
+                                       # refuses every paid call, to try a job's path for nothing
 TTS = ("gemini", "inworld")            # voices.BACKENDS' names
+INPUT = ("pencil", "colour")           # what a job's pages are: pencil, finished by step 0 first (finish.py), or a
+                                       # coloured comic the chain reads as it is
+SERVICE_DAILY_USD = "15"               # the service's daily cap (owner, 2026-11-16) unless the deploying shell sets
+                                       # ZUMI_DAILY_USD
 LOG_LINES = 30                         # a job's last lines of output kept for its status
 # an HTTP 402 as the chain's modules word it (bfl.py and lyria.py "HTTP 402", openrouter.py, inworld.py, and
 # requests for fal.py): the provider wants payment
@@ -164,10 +190,11 @@ def _tz() -> str:
     return f"LCL{'-' if west < 0 else ''}{abs(west) // 3600}:{abs(west) % 3600 // 60:02d}"
 
 
-# The service's daily cap is spend.py's default unless the deploying shell sets ZUMI_DAILY_USD (the owner's permission
-# for that day): `ZUMI_DAILY_USD=6 modal deploy ...` holds until the next deploy without it.
+# The service's daily cap is SERVICE_DAILY_USD unless the deploying shell sets ZUMI_DAILY_USD (the owner's permission
+# for that day): `ZUMI_DAILY_USD=6 modal deploy ...` holds until the next deploy without it. A batch run passes its
+# own cap to every step (run's cap_usd).
 ENV = {"PYTHONUNBUFFERED": "1", "TZ": _tz() if modal.is_local() else "",
-       **({"ZUMI_DAILY_USD": os.environ["ZUMI_DAILY_USD"]} if modal.is_local() and os.environ.get("ZUMI_DAILY_USD") else {})}
+       **({"ZUMI_DAILY_USD": os.environ.get("ZUMI_DAILY_USD") or SERVICE_DAILY_USD} if modal.is_local() else {})}
 image = (
     # gcc: triton (SAM 3.1, MoGe's sparse blocks) compiles its kernels' launchers; DejaVu: the identity sheets' labels
     modal.Image.debian_slim(python_version="3.12")
@@ -291,10 +318,11 @@ def _old(marker: Path, limit: float, now: float) -> bool:
 
 
 def _drop_episode(root: str, ep: str) -> None:
-    """An episode's files off the volume: its out dir, its pages (the job's folder and the batch's upload beside
-    it), and its chapter .zumi unless another run's out dir is of the same episode or the exemplar bank crops from
-    it."""
-    for d in (f"/data/out/{root}/dataset/{ep}", f"{INPUTS}/{root}/{ep}", f"{INPUTS}/{root}/{ep}.src"):
+    """An episode's files off the volume: its out dir, its pages (the job's folder, the batch's upload and step 0's
+    finished pages beside it), and its chapter .zumi unless another run's out dir is of the same episode or the
+    exemplar bank crops from it."""
+    for d in (f"/data/out/{root}/dataset/{ep}", f"{INPUTS}/{root}/{ep}", f"{INPUTS}/{root}/{ep}.src",
+              f"{INPUTS}/{root}/{ep}.finished"):
         shutil.rmtree(d, ignore_errors=True)
     if ep not in BANK_CHAPTERS and not list(Path("/data/out").glob(f"*/dataset/{ep}")):
         for f in (Path(f"/data/chapters/{ep}.zumi"), Path(f"/data/chapters/{ep}.seen")):
@@ -359,6 +387,15 @@ def _sources_of(d: Path) -> list[str] | None:
     try:
         return json.loads((d / "pages.json").read_text()).get("sources") or None
     except (OSError, ValueError):
+        return None
+
+
+def _input_of(d: Path) -> str | None:
+    """What the pages in a job's folder were taken as by the last run on them (INPUT; its input.txt), None before
+    one."""
+    try:
+        return (d / "input.txt").read_text().strip() or None
+    except OSError:
         return None
 
 
@@ -475,13 +512,16 @@ def sweep() -> list[str]:
 @app.function(gpu=GPU, cpu=CPUS, memory=MEM_MB, timeout=_seconds(MAX_BUDGET_USD) + 300, max_containers=1,
               secrets=[keys, hf], volumes={f"{REMOTE}/.models": models, "/data": data})
 def run(root: str, episodes: list[str], args: list[str], cap_usd: float | None = None,
-        budget_usd: float = BUDGET_USD, sources: dict | None = None, settings: dict | None = None) -> dict:
+        budget_usd: float = BUDGET_USD, sources: dict | None = None, settings: dict | None = None,
+        inputs: dict | None = None) -> dict:
     """episode.py on each episode in turn, chapters from /data/chapters, out dirs in /data/out/<root>/dataset, until
     the budget's time is spent (the episode running then is stopped, with every process it started). Returns per
     episode {"exit", "s", "usd", "stopped": why it is not done, when it is not}.
 
     sources: {episode: its pages, links or "dir:<path>" files in order}; an episode not in it goes by the pages its
-    folder on the volume has (_pages). settings: SETTINGS' values for the chain's environment. A batch run passes
+    folder on the volume has (_pages). inputs: {episode: "pencil" or "colour" (INPUT)}, "colour" when not in it: a
+    pencil episode is finished by step 0 first (finish), and the intake cuts its finished pages. settings: SETTINGS'
+    values for the chain's environment. A batch run passes
     cap_usd, the day's cap less what its machine spent outside Modal. A service job passes None (spend.py's own
     cap); each episode it finishes is exported to
     /data/out/<root>/export/<episode>.zumi and its pages, chapter and out dir leave the volume, and the job's record (jobs)
@@ -555,20 +595,50 @@ def run(root: str, episodes: list[str], args: list[str], cap_usd: float | None =
     def last_line() -> str:
         return next((l for l in reversed(tail) if l.strip()), "")[:300]
 
-    def intake(ep: str, zumi: Path) -> str | None:
-        """Step 1: the episode's pages on the volume (_pages), then cut into the chapter .zumi episode.py reads,
-        unless the chapter is the one made from these same pages by this intake (stamped: the pages by content and
-        the intake's code; and the chapter's own content, since episodes of one name share its path across roots).
-        Returns why it failed, None when the chapter is there."""
-        if f"{REMOTE}/segment" not in sys.path:
-            sys.path.insert(0, f"{REMOTE}/segment")
-        import fresh
-        d = Path(f"{INPUTS}/{root}/{ep}")
-        line = f"== 1 intake: {ep}'s pages"
+    def announce(line: str) -> None:
         print(line)
         tail.append(line)
         tell(step=line[3:])
+
+    def finish(ep: str, out: Path) -> tuple[str | None, list[str] | None]:
+        """Step 0 for a pencil episode: its pages on the volume (_pages), then segment/finish.py on them, its out
+        dir <out>/finish, which resumes by its own stamps (a page finished is not painted again). Returns (why the
+        comic is not whole, None), or (None, its finished pages as the intake's sources). finish.py never stops on
+        a page it could not make (its docstring); a comic with a page missing is wrong, so the job fails here with
+        the pages report.json's "missing" names and why, resumable: the next job on the episode makes only what
+        is missing. The same for the title and the cover."""
+        d, fin = Path(f"{INPUTS}/{root}/{ep}"), out / "finish"
+        announce(f"== 0 finish: {ep}'s pencil pages")
         pages = _pages(d, (sources or {}).get(ep))
+        (d / "input.txt").write_text("pencil")
+        code, late = step([sys.executable, "-u", "finish.py", *map(str, pages), str(fin)], env)
+        if late or code:
+            return ("the Modal budget ran out in step 0" if late else f"step 0 failed (exit {code}): {last_line()}"), None
+        try:
+            missing = json.loads((fin / "report.json").read_text(encoding="utf-8"))["missing"]
+        except (OSError, ValueError, KeyError):
+            return "step 0 wrote no report", None
+        if missing:
+            lost = [k for k in missing if k not in ("title", "cover")]
+            what = (f"pages missing after step 0: {', '.join(lost)}" if lost else
+                    f"the comic's {' and '.join(missing)} missing after step 0")
+            why = "; ".join(dict.fromkeys(v[:160] for v in missing.values()))
+            return f"{what} ({why}); a new job on this episode makes only what is missing", None
+        return None, ["dir:" + (fin / f"{p.stem}.png").as_posix() for p in pages]
+
+    def intake(ep: str, zumi: Path, d: Path, srcs: list[str] | None, mode: str | None) -> str | None:
+        """Step 1: the episode's pages in folder d on the volume (_pages from srcs), then cut into the chapter .zumi
+        episode.py reads, unless the chapter is the one made from these same pages by this intake (stamped: the
+        pages by content and the intake's code; and the chapter's own content, since episodes of one name share its
+        path across roots). mode: what the job's own folder is taken as, saved there (input.txt); None for step 0's
+        folder of finished pages. Returns why it failed, None when the chapter is there."""
+        if f"{REMOTE}/segment" not in sys.path:
+            sys.path.insert(0, f"{REMOTE}/segment")
+        import fresh
+        announce(f"== 1 intake: {ep}'s pages")
+        pages = _pages(d, srcs)
+        if mode:
+            (d / "input.txt").write_text(mode)
         stamps = fresh.Stamps(d / "stamps.json")
         stamp = fresh.digest(*pages, *sorted(Path(f"{REMOTE}/zumi").rglob("*.py")))
         if stamps.current("intake", stamp, zumi) and stamps.get("chapter") == fresh.digest(zumi):
@@ -622,9 +692,15 @@ def run(root: str, episodes: list[str], args: list[str], cap_usd: float | None =
             zumi, out = Path(f"/data/chapters/{ep}.zumi"), Path(f"/data/out/{root}/dataset/{ep}")
             now.update(out=out, payment=None)
             code, late = -1, False
-            why = intake(ep, zumi)
+            pencil = (inputs or {}).get(ep) == "pencil"
+            _drop_broken(out)
+            if pencil:
+                why, finished = finish(ep, out)
+                if why is None:
+                    why = intake(ep, zumi, Path(f"{INPUTS}/{root}/{ep}.finished"), finished, None)
+            else:
+                why = intake(ep, zumi, Path(f"{INPUTS}/{root}/{ep}"), (sources or {}).get(ep), "colour")
             if why is None:
-                _drop_broken(out)
                 code, late = step([sys.executable, "-u", "episode.py", str(zumi), str(out), *args], env)
                 why = ("the Modal budget ran out" if late else
                        f"a provider refused for payment: {now['payment']}" if now["payment"] else
@@ -634,7 +710,8 @@ def run(root: str, episodes: list[str], args: list[str], cap_usd: float | None =
                 export = Path(f"/data/out/{root}/export/{ep}.zumi")
                 export.parent.mkdir(parents=True, exist_ok=True)
                 tell(step="export")
-                code, late = step([sys.executable, "-u", "export_zumi.py", str(zumi), str(out), str(export)], env)
+                code, late = step([sys.executable, "-u", "export_zumi.py", str(zumi), str(out), str(export),
+                                   *(["--finish", str(out / "finish")] if pencil else [])], env)
                 why = "the Modal budget ran out" if late else f"the export failed (exit {code}): {last_line()}" if code else None
                 if why is None:  # the result is made: the episode's files leave the volume, the export stays
                     export.with_suffix(".made").write_text(str(time.time()))
@@ -679,11 +756,12 @@ def api():
 
     web = FastAPI(title="zumi-episodes")
 
-    def table(panels: int, out: Path | None = None) -> dict:
-        """credits.check on the volume's ledgers, stated balances and counts as they are now."""
+    def table(panels: int, out: Path | None = None, pencil_pages: int = 0) -> dict:
+        """credits.check on the volume's ledgers, stated balances and counts as they are now; with step 0 for
+        `pencil_pages` pencil pages."""
         data.reload()
         _ledgers()
-        return credits.check(panels, out=out)
+        return credits.check(panels, out=out, pencil_pages=pencil_pages)
 
     def record(job: str) -> dict:
         rec = jobs.get(f"job:{job}")
@@ -700,15 +778,20 @@ def api():
         return rec
 
     @web.get("/credits")
-    def credit(panels: int = 0, pages: int = 0, episode: str = "", root: str = SERVICE_ROOT):
+    def credit(panels: int = 0, pages: int = 0, episode: str = "", root: str = SERVICE_ROOT, input: str = ""):
         """With an episode whose chapter is on the volume (its intake has run), its boxes are counted, and its voiced
         lines when its out dir has speaker records; with its pages there, or a page count, the boxes are estimated
-        from the pages; the other needs stay the estimate from the box count ("basis" says which)."""
+        from the pages; the other needs stay the estimate from the box count ("basis" says which). A pencil job
+        (input, else what the episode's pages were taken as, else pencil) adds step 0 for its pages: the page count,
+        else the episode's pages on the volume, else the pages the box count makes ("step0_usd", MARGIN included)."""
         if episode and not (NAME.fullmatch(episode) and NAME.fullmatch(root)):
             raise HTTPException(422, "episode and root: lower-case letters, digits, '.', '_' and '-'")
+        if input and input not in INPUT:
+            raise HTTPException(422, f"input: one of {', '.join(INPUT)}")
         data.reload()
         zumi, basis, out = Path(f"/data/chapters/{episode}.zumi"), "the box count given", None
         pages = pages or len(_sources_of(Path(f"{INPUTS}/{root}/{episode}")) or []) if episode else pages
+        mode = input or (_input_of(Path(f"{INPUTS}/{root}/{episode}")) if episode else None) or "pencil"
         if episode and zumi.exists():
             panels, basis, out = credits.panels_of(zumi), f"{episode}'s boxes", Path(f"/data/out/{root}/dataset/{episode}")
         elif not panels and pages:
@@ -716,8 +799,12 @@ def api():
             basis = f"estimated from {pages} pages, {credits.PANELS_PER_PAGE} boxes a page"
         elif not panels:
             panels, basis = credits.DEFAULT_PANELS, "no episode on the volume and no count: the default box count"
-        t = table(panels, out)
-        return {"panels": panels, "basis": basis, **credits.verdict(t), "rows": t}
+        pencil = 0 if mode == "colour" else pages or math.ceil(panels / credits.PANELS_PER_PAGE)
+        if pencil:
+            basis += f"; step 0 for {pencil} pencil pages"
+        t = table(panels, out, pencil)
+        step0 = {p: round(v * (1 + credits.MARGIN), 2) for p, v in credits.step0(pencil).items()}
+        return {"panels": panels, "input": mode, "basis": basis, "step0_usd": step0, **credits.verdict(t), "rows": t}
 
     @web.put("/credits/{provider}")
     def state(provider: str, body: dict = Body(...)):
@@ -751,6 +838,8 @@ def api():
             raise HTTPException(422, "pages: a link is given twice")
         if body.get("tts") and body["tts"] not in TTS:
             raise HTTPException(422, f"tts: one of {', '.join(TTS)}")
+        if body.get("input") is not None and body["input"] not in INPUT:
+            raise HTTPException(422, f"input: one of {', '.join(INPUT)}")
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             raise HTTPException(422, "args: a list of episode.py arguments")
         if not 0 < budget <= MAX_BUDGET_USD:
@@ -770,32 +859,40 @@ def api():
         if pages is not None and have and pages != have and not body.get("replace"):
             return JSONResponse({"error": 'this episode has other pages on the volume; "replace": true starts over '
                                           "from the new ones (what was made from the old is made again)"}, 409)
+        was = _input_of(Path(f"{INPUTS}/{root}/{ep}")) if have else None
+        mode = body.get("input") or (was if pages is None or pages == have else None) or "pencil"
+        if was and mode != was and not body.get("replace"):
+            return JSONResponse({"error": f'this episode\'s pages were taken as {was}; "replace": true takes them as '
+                                          f"{mode} (what was made from them is made again)"}, 409)
         zumi = Path(f"/data/chapters/{ep}.zumi")
-        known = pages == have or pages is None  # the chapter on the volume is of these pages
+        known = (pages == have or pages is None) and mode == was  # the chapter on the volume is of these pages
         panels = int(body.get("panels") or 0) or (credits.panels_of(zumi) if known and zumi.exists() else
                                                   credits.panels_from_pages(len(pages or have)))
-        t = table(panels)
+        t = table(panels, pencil_pages=len(pages or have) if mode == "pencil" else 0)
         missing = [c for c in BANK_CHAPTERS if not Path(f"/data/chapters/{c}.zumi").exists()]
         if missing:
             raise HTTPException(503, f"the exemplar bank's chapters are not on the volume: {', '.join(missing)}")
         v = credits.verdict(t)
-        if not v["can_run"] and not body.get("no_credit_check"):
+        offline = bool(body.get("offline"))
+        if not v["can_run"] and not body.get("no_credit_check") and not offline:
             return JSONResponse({"error": "credit too low to start", **v, "rows": t}, 402)
         key, token = f"lock:{root}/{ep}", f"starting-{time.time()}"
         holder = _take(key, token)
         if holder:
             return JSONResponse({"error": "this episode is queued or running", "job": holder}, 409)
         try:
+            settings = {**({"ZUMI_TTS": body["tts"]} if body.get("tts") else {}),
+                        **({"ZUMI_OFFLINE": "1"} if offline else {})}
             call = run.spawn(root, [ep], args, None, budget, {ep: pages} if pages is not None else None,
-                             {"ZUMI_TTS": body["tts"]} if body.get("tts") else None)
+                             settings or None, {ep: mode})
         except Exception:
             jobs.pop(key)
             raise
         jobs[key] = call.object_id
         # unless the run has started and written its own record already
-        jobs.put(f"job:{call.object_id}", {"episode": ep, "root": root, "state": "queued", "queued_at": time.time()},
-                 skip_if_exists=True)
-        return {"job": call.object_id, "state": "queued", "warnings": v["warnings"]}
+        jobs.put(f"job:{call.object_id}", {"episode": ep, "root": root, "input": mode, "state": "queued",
+                                           "queued_at": time.time()}, skip_if_exists=True)
+        return {"job": call.object_id, "state": "queued", "input": mode, "warnings": v["warnings"]}
 
     @web.get("/jobs/{job}")
     def status(job: str):
