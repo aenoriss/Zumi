@@ -27,7 +27,12 @@ as the panel's fallback.
 
 An episode with a speaking line that has no audio is not exported (voices.missing_lines): the run says which.
 
-    python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi>        (ZUMI_TTS=inworld for Inworld's lines)
+A comic finished from pencil (finish.py, step 0) gives --finish its out dir: its title.json names the comic
+(series.title, the title the reader's carousel shows; episode.title, the line under it, "Episode 1 · N pages") and
+its cover.png is packed at the root as series.cover.
+
+    python export_zumi.py <chapter.zumi> <episode out dir> <new.zumi> [--finish <step 0 out dir>]
+                                                                          (ZUMI_TTS=inworld for Inworld's lines)
 """
 from __future__ import annotations
 
@@ -252,6 +257,7 @@ def speaker_card(s: str, box: Box, panel_ids: list[str]) -> str:
 
 def main():
     src, ep_out, dst = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+    finished = Path(sys.argv[sys.argv.index("--finish") + 1]) if "--finish" in sys.argv else None
     zin = zipfile.ZipFile(src)
     man = json.loads(zin.read("manifest.json"))
     stem = src.stem
@@ -341,6 +347,11 @@ def main():
     sc = score.load(ep)
     if sc:  # step 10b: the tracks and the music envelope on this clock
         score.music_into(man, sc, ep_out, added)
+    if finished:  # step 0: the comic's name and cover
+        named = json.loads((finished / "title.json").read_text(encoding="utf-8"))
+        man["series"]["title"], man["episode"]["title"] = named["title"], named["line"]
+        man["series"]["cover"] = "cover.png"
+        added["cover.png"] = (finished / "cover.png").read_bytes()
     # the manifest alone beside the episode's outputs: the parallax viewer plays the episode from it (cast, timeline,
     # speakers, clips, animations) without opening the .zumi
     (ep_out / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
