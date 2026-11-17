@@ -1,6 +1,8 @@
-<img src="docs/images/header.webp" alt="Zumi: a pencil page, the same page colored, and the panel playing through a window in a real wall" width="100%">
+<img src="docs/images/header.webp" alt="Zumi: a pencil page, the same page colored, and the panel playing through a window in a real wall, captured on a Quest 3" width="100%">
 
-# Zumi
+# <img src="docs/images/zumi-logo.png" alt="" height="44"> Zumi
+
+[![Demo video](https://img.shields.io/badge/demo_video-YouTube-red)](https://www.youtube.com/watch?v=WcKxd4QNLlw)
 
 Turn your pencil sketches into awesome mixed reality comics. Zumi takes a comic drawn in pencil, colors it without redrawing it, gives every character a voice, scores it, builds the world of each scene in 3D, and plays the result on a Meta Quest: the panels float in front of you while the scene behind them opens up through a window in your real wall. We built it as a team of two (one engineer working with AI coding agents, one comic artist) for the Meta VR Start Developer Competition, in a few weeks.
 
@@ -11,6 +13,17 @@ Comics have always been the medium where a tiny team can take you somewhere that
 Mixed reality can finally make the old fantasy real: stepping into the panels, hearing the characters, seeing their world in your room. But an interactive comic like that takes a colorist, a letterer, voice actors, a composer, 3D artists and a developer. Basically a studio. We wanted to give that back to the person with the pencil.
 
 Our first episode, *Dan & Buck*, went from 10 pencil pages to a fully voiced mixed reality comic for under $6 in API calls.
+
+## On the headset
+
+Real captures from a Quest 3, from the [demo video](https://www.youtube.com/watch?v=WcKxd4QNLlw).
+
+| | |
+|---|---|
+| <img src="docs/images/capture-carousel.webp" alt="The carousel with the Dan and Buck book"> | <img src="docs/images/capture-making-of.webp" alt="The making-of showcase: ten pages floating in the room"> |
+| The carousel: grab the book to open it | How it was made: the pages, stage by stage, in your room |
+| <img src="docs/images/capture-portal.webp" alt="A panel in front of a window cut into the real wall, the cafe behind it"> | <img src="docs/images/capture-props.webp" alt="A bar stool from the comic standing on the real floor"> |
+| The panel in front, the café through the wall | Props from the story in your real room |
 
 ## What it does
 
