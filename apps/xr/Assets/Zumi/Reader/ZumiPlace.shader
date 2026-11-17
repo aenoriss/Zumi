@@ -121,13 +121,10 @@ Shader "Zumi/Place"
                 UNITY_BRANCH
                 if (calm > 0.01)
                 {
-                    // a ring of eight taps about the pixel, wider toward the panel's middle
-                    float2 d = _MainTex_TexelSize.xy * _ScrimLook.z * calm;
-                    half3 ring = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(d.x, 0)).rgb + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - float2(d.x, 0)).rgb
-                               + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(0, d.y)).rgb + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - float2(0, d.y)).rgb
-                               + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + d * 0.7).rgb + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - d * 0.7).rgb
-                               + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(d.x, -d.y) * 0.7).rgb + SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(-d.x, d.y) * 0.7).rgb;
-                    half3 soft = (colour + ring) / 9.0;
+                    // the blur from the texture's own mips, one read: a lower mip by log2 of the blur's width in texels,
+                    // wider toward the panel's middle (eight extra reads a pixel over most of the window, on the front
+                    // and the back alike, kept the GPU saturated on the headset, 2026-11-17)
+                    half3 soft = SAMPLE_TEXTURE2D_BIAS(_MainTex, sampler_MainTex, i.uv, log2(1.0 + _ScrimLook.z * calm)).rgb;
                     half grey = dot(soft, half3(0.299, 0.587, 0.114));
                     half3 quiet = lerp(grey.xxx, soft, _ScrimLook.y) * _ScrimLook.x;
                     colour = lerp(colour, quiet, calm);

@@ -162,11 +162,13 @@ namespace Zumi
         /// the panel.</summary>
         public const float VirtualWallDistance = 2.0f;
         /// <summary>The window a place is seen through, at most, as the angles it spans from the seat's eye, centred on
-        /// the panel's direction: the panel at 1 m spans 55 degrees on its long side, so 100 leaves 22 on either side
-        /// of it. One opening on the key wall, cut to the wall less WindowInset: it never runs past the wall's edges or
-        /// onto the ceiling. Its edge is a rounded mask in the place's shader (Zumi/Place), touching the rectangle's
-        /// middle of each side.</summary>
-        public const float WindowWidthDegrees = 100f, WindowHeightDegrees = 66f;
+        /// the panel's direction: the panel at 1 m spans 55 degrees on its long side, so 80 leaves 12.5 on either side
+        /// of it. Smaller than the first 100 by 66 because every pixel of the window draws the place's layers: at 100 by
+        /// 66 the GPU sat at 94-98 % on the headset and frames came every 18.5 ms against 13.9 (2026-11-17); 80 by 53
+        /// draws about 36 % fewer. One opening on the key wall, cut to the wall less WindowInset: it never runs past the
+        /// wall's edges or onto the ceiling. Its edge is a rounded mask in the place's shader (Zumi/Place), touching the
+        /// rectangle's middle of each side.</summary>
+        public const float WindowWidthDegrees = 80f, WindowHeightDegrees = 53f;
         /// <summary>The free-standing window's least size (no room, or no wall that can hold it): half of each to
         /// either side of the panel's direction (the panel's 27.5 plus 4.5), and up in all (the default's
         /// proportion). On a real wall it does not apply (MinWallWindowDegrees).</summary>
