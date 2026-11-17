@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Zumi.Format;
 
 namespace Zumi
 {
@@ -14,8 +15,14 @@ namespace Zumi
     ///   Coloured    each pencil page turns into its coloured page, a wave across the grid
     ///   Panels      frame outlines draw over the pages, the masks fade in, a few balloons per page type their
     ///               transcribed text beside them with the speaker's name
-    ///   Depth       one panel (the bundle's depth panel, its scene from the episode) lifts out of its page and fans
-    ///               into its layers
+    ///   Depth       one panel (the bundle's depth panel, its scene from the episode) lifts out of its page, turns
+    ///               about 60 degrees so its side shows, and its layers slide apart into an exploded multiplane stack
+    ///               (DepthGap between consecutive layers, the background farthest, each sheet outlined in soft ink),
+    ///               sway, close up, turn back and settle onto the page
+    ///   3D world    one place of the episode (the depth panel's setting when it has props, else the first place that
+    ///               has them) floats where the depth panel was, seen through a rounded window with the Zumi rim, and
+    ///               turns slowly so its depth reads; its props pop in one by one in front of the window with their
+    ///               names, then everything shrinks back into the depth panel's page
     ///   Voice       that voice line plays over its balloon with its waveform, then a sound effect; the music swells
     /// then the pages merge in the middle, the Zumi glow (Resources/ZumiGlow.shader) blooms over them and the whole
     /// screen fades out (OutroSeconds), and Finished fires.
@@ -24,7 +31,7 @@ namespace Zumi
     /// </summary>
     public class ZumiMakingOf : MonoBehaviour
     {
-        public const float GatherSeconds = 5f, ColourSeconds = 9f, PanelsSeconds = 18f, DepthSeconds = 12f, VoiceSeconds = 12f, OutroSeconds = 3.6f;
+        public const float GatherSeconds = 5f, ColourSeconds = 9f, PanelsSeconds = 18f, DepthSeconds = 12f, WorldSeconds = 12f, VoiceSeconds = 12f, OutroSeconds = 3.6f;
         public const float GridDistance = 1.0f, GridDrop = 0.04f, PageHeight = 0.27f, Gap = 0.035f;
         public const int Columns = 5;
         public const int BalloonsPerPage = 3, LabelLines = 2;
@@ -43,16 +50,26 @@ namespace Zumi
             "I find each panel, each balloon, and read every word.",
             "I learn who's who, so every character stays the same on every page.",
             "I split each panel into layers and repaint the background hidden behind them.",
+            "I build the world around each scene, and the objects in it.",
             "Every character gets a voice, plus sounds and music.",
         };
-        public const string DoneLine = "Your comic is ready. Grab it from the shelf!";
+        public const string DoneLine = "Your comic is ready. Grab it to read!";
         /// <summary>The caption sits this far under the eyes here: clear of the grid's bottom row.</summary>
         public const float CaptionBelow = 0.37f;
         public const float CharactersSeconds = 8f;
-        public static readonly string[] StageNames = { "Scanned", "Coloured", "Panels and balloons", "Character identification", "Depth", "Voice and sound" };
+        public static readonly string[] StageNames = { "Scanned", "Coloured", "Panels and balloons", "Character identification", "Depth", "3D world", "Voice and sound" };
         // the characters' stage takes no time when the bundle has no cast (set in Play)
-        static readonly float[] StageSeconds = { GatherSeconds, ColourSeconds, PanelsSeconds, CharactersSeconds, DepthSeconds, VoiceSeconds };
-        const int StageCharacters = 3, StageDepth = 4, StageVoice = 5;
+        static readonly float[] StageSeconds = { GatherSeconds, ColourSeconds, PanelsSeconds, CharactersSeconds, DepthSeconds, WorldSeconds, VoiceSeconds };
+        const int StageCharacters = 3, StageDepth = 4, StageWorld = 5, StageVoice = 6;
+        /// <summary>The depth panel at its widest: this many times its size on the page, turned this many degrees, its
+        /// layers this many metres apart (consecutive, in depth order), their outlines this many metres wide.</summary>
+        public const float DepthScale = 2.7f, DepthTurn = 58f, DepthGap = 0.08f, DepthOutline = 0.0025f;
+        /// <summary>The 3D world's window (metres), its corner radius, how far ahead it floats, the tallest prop's height
+        /// in front of it (the others keep their heights relative to it), and the widest share of the view inside it.</summary>
+        public static readonly Vector2 WorldWindow = new(0.5f, 0.35f);
+        public const float WorldCorner = 0.05f, WorldDistance = 0.72f, PropTallest = 0.15f, WorldViewHalfDegrees = 32f;
+        /// <summary>Tries at loading the depth panel's scene and the 3D world's place before giving up.</summary>
+        public const int LoadTries = 3;
 
         // ---- read-only state for tests and tools -------------------------------------------------------------
         /// <summary>The stage on show (StageNames), "done" at the end, null before.</summary>
@@ -70,6 +87,18 @@ namespace Zumi
         }
         public bool Skipped { get; private set; }
         public bool DepthLoaded => depthScene != null;
+        /// <summary>The depth panel's layers (nodes at one depth are one layer), and now: the metres from its front
+        /// layer to its back one along its own axis, and its turn in degrees.</summary>
+        public int DepthLayers => depthLayers.Count;
+        public float DepthStackMetres { get; private set; }
+        public float DepthTurnDegrees { get; private set; }
+        /// <summary>Why the depth scene or the world did not load, after its last try; null when it did or is loading.</summary>
+        public string DepthError { get; private set; }
+        public string WorldError { get; private set; }
+        public bool WorldLoaded => world;
+        /// <summary>The place the 3D world shows, and how many of its props have popped in now.</summary>
+        public string WorldPlace { get; private set; }
+        public int WorldPropsShown { get; private set; }
         public bool VoicePlayed { get; private set; }
 
         public event Action Finished;
@@ -115,7 +144,39 @@ namespace Zumi
         // depth
         ZumiPanelScene depthScene;
         Transform depthPivot;
-        bool depthLoading;
+        bool scenesLoading;
+        // the scene's metres per unit at the pivot's scale 1
+        float depthUnit;
+
+        sealed class DepthLayer
+        {
+            public readonly List<ZumiPanelScene.Node> nodes = new();
+            public readonly List<Vector3> homes = new();
+            /// <summary>Scene units from the eye (the window's is 1).</summary>
+            public float depth;
+            public ZumiDraw.Parts outline;
+        }
+
+        // far to near
+        readonly List<DepthLayer> depthLayers = new();
+        // the 3D world
+        sealed class WorldProp
+        {
+            public Transform root, model;
+            public Material material;
+            public Mesh mesh;
+            public Texture2D texture;
+            public readonly ZumiDraw.Parts label = new() { blended = true, queue = 3045 };
+            public float at;
+        }
+
+        Transform world;
+        readonly List<WorldProp> worldProps = new();
+        readonly List<Material> worldMaterials = new();
+        readonly List<Mesh> worldMeshes = new();
+        readonly List<Texture2D> worldTextures = new();
+        readonly ZumiDraw.Parts worldParts = new() { blended = true, queue = 3019 };
+        Material frameMaterial, worldRimMaterial;
         // sound
         AudioSource voiceSource, sfxSource, musicSource;
         AudioClip voiceClip, sfxClip, musicClip;
@@ -157,6 +218,8 @@ namespace Zumi
             startedAt = Time.time;
             running = true;
             LoadSounds();
+            // from the start: on a fresh install the episode is still being copied out of the APK for a while
+            LoadScenes();
             Debug.Log($"[Zumi] making-of: playing, {TotalSeconds:F0} s");
         }
 
@@ -197,7 +260,10 @@ namespace Zumi
                     }
                 stepText.text = $"Step {step} of {steps}";
                 Debug.Log($"[Zumi] making-of: stage {PlaybackStage}");
-                if (index == 2 && !depthLoading) LoadDepth();
+                if (index is StageDepth or StageWorld)
+                    Debug.Log($"[Zumi] making-of: {(index == StageDepth ? $"depth scene {(DepthLoaded ? $"loaded, {DepthLayers} layers" : $"missing ({DepthError ?? "still loading"})")}" : $"world {(WorldLoaded ? $"{WorldPlace}, {worldProps.Count} props" : $"missing ({WorldError ?? "still loading"})")}")}");
+                // a load that gave up tries again
+                if (!scenesLoading && (!DepthLoaded || !WorldLoaded) && index < StageWorld) LoadScenes();
                 // Zumi says what this step does, for the whole step
                 caption.Show(StageLines[index], CaptionBelow);
             }
@@ -209,6 +275,7 @@ namespace Zumi
                 case 2: Panels(t); break;
                 case StageCharacters: Characters(t); break;
                 case StageDepth: Depth(t); break;
+                case StageWorld: World(t); break;
                 case StageVoice: Sound(t); break;
             }
             Music();
@@ -500,7 +567,8 @@ namespace Zumi
             var overlays = StageSeconds[StageCharacters] > 0f ? 0f : 1f - ZumiFlowKit.Smooth(t / 0.8f);
             if (characterRoot) characterRoot.gameObject.SetActive(false);
             var depthPage = data.depth != null ? Mathf.Clamp(data.depth.page - 1, 0, pages.Count - 1) : 0;
-            var dim = ZumiFlowKit.Smooth(t / 1f) * (1f - ZumiFlowKit.Smooth((t - DepthSeconds + 1.2f) / 1f));
+            // they stay dimmed into the 3D world when it follows
+            var dim = ZumiFlowKit.Smooth(t / 1f) * (WorldLoaded ? 1f : 1f - ZumiFlowKit.Smooth((t - DepthSeconds + 1.2f) / 1f));
             for (var i = 0; i < pages.Count; i++)
             {
                 var v = pages[i];
@@ -509,7 +577,7 @@ namespace Zumi
                 ZumiFlowKit.SetTint(v.mask, new Color(1f, 1f, 1f, 0.7f * overlays));
                 ZumiFlowKit.SetTint(v.picture, new Color(1f, 1f, 1f, i == depthPage ? 1f : 1f - 0.65f * dim));
             }
-            if (depthScene == null || !depthPivot)
+            if (depthScene == null || !depthPivot || depthLayers.Count == 0)
             {
                 // no scene: the page itself lifts toward the reader and back
                 var lift = Mathf.Sin(Mathf.Clamp01(t / DepthSeconds) * Mathf.PI);
@@ -518,26 +586,57 @@ namespace Zumi
                 v.root.localScale = Vector3.one * (1f + 0.8f * lift);
                 return;
             }
-            var page = pages[depthPage];
-            var box = data.depth.box;
-            var start = page.root.TransformPoint(OnPage(page, (box[0] + box[2]) / 2f, (box[1] + box[3]) / 2f, -0.002f));
-            var front = anchor.position + anchor.rotation * new Vector3(0f, -0.02f, 0.62f);
-            // it lifts out and stays: it turns to show its layers, they spread apart, they close up again, and the
-            // panel fades where it is (it never travels back across its neighbours)
-            var lifted = ZumiFlowKit.Smooth((t - 0.6f) / 2.8f);
-            var fade = 1f - ZumiFlowKit.Smooth((t - DepthSeconds + 1.5f) / 0.35f);
-            depthPivot.gameObject.SetActive(t > 0.6f && fade > 0f);
-            depthPivot.position = Vector3.Lerp(start, front, lifted);
-            depthPivot.localScale = Vector3.one * Mathf.Lerp(1f, 4f, lifted);
-            var turn = Mathf.Sin((t - 3f) / 6.5f * Mathf.PI * 2f) * 32f * ZumiFlowKit.Smooth((t - 3f) / 1.5f) * (1f - ZumiFlowKit.Smooth((t - DepthSeconds + 3.5f) / 1f));
-            depthPivot.rotation = Facing(depthPivot.position) * Quaternion.Euler(0f, turn, 0f);
-            var spread = 1f + 1.4f * lifted * (1f - ZumiFlowKit.Smooth((t - DepthSeconds + 2.5f) / 0.8f));
-            foreach (var node in depthScene.Nodes)
+            // the panel lifts out (0.6 to 2.6 s), turns its side to the reader (2.2 to 4), its layers slide apart (2.6 to
+            // 4.2) and sway; they close up (7.6 to 9), it turns back (8.2 to 9.6) and settles onto its page (9.6 to 11.2),
+            // where it fades into the same panel printed there
+            var home = DepthHome();
+            var front = anchor.position + anchor.rotation * new Vector3(0f, -0.065f, 0.66f);
+            var lifted = ZumiFlowKit.Smooth((t - 0.6f) / 2f) * (1f - ZumiFlowKit.Smooth((t - 9.6f) / 1.6f));
+            var open = ZumiFlowKit.Smooth((t - 2.6f) / 1.6f) * (1f - ZumiFlowKit.Smooth((t - 7.6f) / 1.4f));
+            var turned = ZumiFlowKit.Smooth((t - 2.2f) / 1.8f) * (1f - ZumiFlowKit.Smooth((t - 8.2f) / 1.4f));
+            var fade = 1f - ZumiFlowKit.Smooth((t - DepthSeconds + 0.6f) / 0.4f);
+            depthPivot.gameObject.SetActive(t > 0.5f && fade > 0f);
+            var scale = Mathf.Lerp(1f, DepthScale, lifted);
+            var yaw = DepthTurn * turned + Mathf.Sin((t - 4f) * 1.4f) * 5f * open;
+            DepthTurnDegrees = yaw;
+            var facing = Facing(Vector3.Lerp(home, front, lifted));
+            var rotation = facing * Quaternion.Euler(0f, yaw, 0f);
+            // it turns about the middle of its stack, not about its front
+            var middle = (Z(depthLayers[0]) + Z(depthLayers[^1])) / 2f * scale;
+            depthPivot.SetPositionAndRotation(Vector3.Lerp(home, front, lifted) + (facing * Vector3.forward - rotation * Vector3.forward) * middle, rotation);
+            depthPivot.localScale = Vector3.one * scale;
+            // each layer keeps its own place and slides along the panel's axis to its slot in an even stack, the front
+            // layer's depth kept, the background farthest, the stack's middle where it was
+            var n = depthLayers.Count;
+            var gap = DepthGap / DepthScale;
+            var near = Z(depthLayers[n - 1]);
+            var shift = middle / scale - (near + (n - 1) * gap / 2f);
+            var axis = depthPivot.TransformVector(Vector3.forward);
+            for (var i = 0; i < n; i++)
             {
-                if (node.kind == "window") continue;
-                node.transform.localPosition = new Vector3(0f, 0f, node.bounds.center.z * (spread - 1f));
-                depthScene.SetLook(node, new Color(1f, 1f, 1f, fade), 0f);
+                var layer = depthLayers[i];
+                var slot = near + (n - 1 - i) * gap + shift;
+                // pivot units (metres at scale 1) along +z, away from the reader
+                var offset = open * (slot - Z(layer));
+                for (var k = 0; k < layer.nodes.Count; k++)
+                {
+                    var node = layer.nodes[k];
+                    node.transform.localPosition = layer.homes[k] + node.transform.parent.InverseTransformVector(axis * offset);
+                    depthScene.SetLook(node, new Color(1f, 1f, 1f, fade), 0f);
+                }
+                layer.outline.SetAlpha(fade * ZumiFlowKit.Smooth(open / 0.4f));
             }
+            DepthStackMetres = (Z(depthLayers[0]) - Z(depthLayers[n - 1])) * (1f - open) * scale + (n - 1) * gap * open * scale;
+        }
+
+        // a layer's distance behind the panel's window, in pivot units (metres at scale 1)
+        float Z(DepthLayer layer) => (layer.depth - 1f) * depthUnit;
+
+        Vector3 DepthHome()
+        {
+            var page = pages[Mathf.Clamp(data.depth.page - 1, 0, pages.Count - 1)];
+            var box = data.depth.box;
+            return page.root.TransformPoint(OnPage(page, (box[0] + box[2]) / 2f, (box[1] + box[3]) / 2f, -0.002f));
         }
 
         // ---- character identification: each character in its colour, its appearances outlined and joined page by
@@ -693,24 +792,77 @@ namespace Zumi
                 m.parts.SetAlpha(gone * Mathf.Lerp(1f, Trace, ZumiFlowKit.Smooth((t - m.end) / 0.4f)));
         }
 
-        async void LoadDepth()
+        // ---- loading the depth panel's scene and the 3D world ---------------------------------------------------
+
+        // The episode is opened by the reader at launch; on a fresh install it is first copied out of the APK (a few
+        // hundred MB), and until then it has no manifest. Both loads wait for it, try LoadTries times, and say why
+        // they failed.
+        async void LoadScenes()
         {
-            depthLoading = true;
-            if (data?.depth == null || reader?.Source == null) return;
-            var manifest = reader.Source.Manifest;
-            var panel = manifest?.panels.Find(p => p.id == data.depth.panel);
-            if (panel == null || string.IsNullOrEmpty(panel.scene))
+            if (scenesLoading || data == null) return;
+            scenesLoading = true;
+            try
             {
-                Debug.LogWarning($"[Zumi] making-of: the depth panel {data.depth.panel} has no scene in the episode");
-                return;
+                if (!DepthLoaded) DepthError = await Tries("depth panel", TryLoadDepth);
+                if (this && !WorldLoaded) WorldError = await Tries("3D world", TryLoadWorld);
             }
+            finally
+            {
+                scenesLoading = false;
+            }
+        }
+
+        async Task<string> Tries(string what, Func<Task<string>> load)
+        {
+            string why = null;
+            for (var attempt = 1; attempt <= LoadTries && this; attempt++)
+            {
+                try
+                {
+                    why = await load();
+                }
+                catch (OperationCanceledException)
+                {
+                    return "cancelled";
+                }
+                catch (Exception e)
+                {
+                    why = $"{e.GetType().Name}: {e.Message}";
+                }
+                if (why == null) return null;
+                Debug.LogWarning($"[Zumi] making-of: the {what} did not load (try {attempt} of {LoadTries}): {why}");
+                if (attempt < LoadTries) await Task.Delay(1500);
+            }
+            return why;
+        }
+
+        async Task<ZumiManifest> OpenEpisode()
+        {
+            // up to two minutes: the first launch's copy of the episode
+            for (var i = 0; i < 1200 && this && !cancel.IsCancellationRequested
+                            && (reader?.Source == null || reader.Source.State is EpisodeSourceState.Closed or EpisodeSourceState.Opening); i++)
+                await Task.Delay(100);
+            return this && reader?.Source is { State: EpisodeSourceState.Ready } ? reader.Source.Manifest : null;
+        }
+
+        string NotOpen() => $"the episode is not open ({reader?.SourceState ?? "no reader"}{(reader?.SourceError != null ? $": {reader.SourceError}" : "")})";
+
+        async Task<string> TryLoadDepth()
+        {
+            if (data.depth == null) return "the bundle names no depth panel";
+            var manifest = await OpenEpisode();
+            if (!this) return "gone";
+            if (manifest == null) return NotOpen();
+            var panel = manifest.panels.Find(p => p.id == data.depth.panel);
+            if (panel == null || string.IsNullOrEmpty(panel.scene)) return $"the panel {data.depth.panel} has no scene in the episode";
             var glb = await reader.Source.Read(panel.scene, cancel.Token);
-            if (!this || glb == null) return;
+            if (!this) return "gone";
+            if (glb == null) return $"{panel.scene} could not be read";
             var presenter = reader.GetComponent<ZumiPanelPresenter>();
-            depthPivot = new GameObject("Depth panel").transform;
-            depthPivot.gameObject.SetActive(false);
+            var pivot = new GameObject("Depth panel").transform;
+            pivot.gameObject.SetActive(false);
             var eye = new GameObject("Eye").transform;
-            eye.SetParent(depthPivot, false);
+            eye.SetParent(pivot, false);
             var page = pages[Mathf.Clamp(data.depth.page - 1, 0, pages.Count - 1)];
             var box = data.depth.box;
             var heightMetres = (box[3] - box[1]) / page.data.Pixels.y * page.size.y;
@@ -718,12 +870,14 @@ namespace Zumi
             var scene = await ZumiPanelScene.Load(glb, eye, 1f, presenter.WindowShader, presenter.CardShader, null, cancel.Token);
             if (!this || scene == null)
             {
-                if (depthPivot) Destroy(depthPivot.gameObject);
-                return;
+                if (pivot) Destroy(pivot.gameObject);
+                return this ? $"{panel.scene} did not build" : "gone";
             }
-            var unit = heightMetres / Mathf.Max(scene.PanelSize.y, 1e-3f);
-            scene.Root.localScale = Vector3.one * unit;
-            eye.localPosition = new Vector3(0f, 0f, -unit);
+            depthUnit = heightMetres / Mathf.Max(scene.PanelSize.y, 1e-3f);
+            scene.Root.localScale = Vector3.one * depthUnit;
+            eye.localPosition = new Vector3(0f, 0f, -depthUnit);
+            depthLayers.Clear();
+            var layers = new List<ZumiPanelScene.Node>();
             foreach (var node in scene.Nodes)
             {
                 if (node.kind == "window")
@@ -733,20 +887,292 @@ namespace Zumi
                 }
                 // every layer whole, not only through its frame's window
                 foreach (var m in node.materials) m.SetFloat("_StencilComp", (float)UnityEngine.Rendering.CompareFunction.Always);
+                layers.Add(node);
             }
+            // far to near; nodes at one depth (the lettering) are one sheet
+            layers.Sort((a, b) => b.Depth.CompareTo(a.Depth));
+            foreach (var node in layers)
+            {
+                if (depthLayers.Count == 0 || depthLayers[^1].depth - node.Depth > 0.01f) depthLayers.Add(new DepthLayer { depth = node.Depth });
+                var layer = depthLayers[^1];
+                layer.nodes.Add(node);
+                layer.homes.Add(node.transform.localPosition);
+            }
+            foreach (var layer in depthLayers) Outline(layer);
+            depthPivot = pivot;
             depthScene = scene;
-            Debug.Log($"[Zumi] making-of: depth panel {data.depth.panel} loaded, {scene.Nodes.Count} layers");
+            Debug.Log($"[Zumi] making-of: depth panel {data.depth.panel} loaded, {scene.Nodes.Count} nodes in {depthLayers.Count} layers");
+            return null;
+        }
+
+        // a thin soft-ink rectangle round a layer's art, on its own plane, so the stack reads as sheets
+        void Outline(DepthLayer layer)
+        {
+            var b = layer.nodes[0].bounds;
+            foreach (var node in layer.nodes) b.Encapsulate(node.bounds);
+            var queue = layer.nodes[^1].materials.Count > 0 ? layer.nodes[^1].materials[0].renderQueue : 3000;
+            layer.outline = new ZumiDraw.Parts { blended = true, queue = queue };
+            var holder = new GameObject("Sheet outline").transform;
+            holder.SetParent(layer.nodes[0].transform, false);
+            // the scene looks down its -z: turned round, the outline's front faces the reader
+            holder.SetLocalPositionAndRotation(b.center, Quaternion.Euler(0f, 180f, 0f));
+            float w = b.size.x, h = b.size.y, th = DepthOutline / (depthUnit * DepthScale);
+            ZumiDraw.Shape(flat, layer.outline, "Outline", holder, 0f, new Color(ZumiDraw.SoftInk.r, ZumiDraw.SoftInk.g, ZumiDraw.SoftInk.b, 0.85f), 0,
+                ZumiDraw.Box(-w / 2f, h / 2f - th, w, th), ZumiDraw.Box(-w / 2f, -h / 2f, w, th), ZumiDraw.Box(-w / 2f, -h / 2f, th, h), ZumiDraw.Box(w / 2f - th, -h / 2f, th, h));
+            layer.outline.SetAlpha(0f);
+        }
+
+        async Task<string> TryLoadWorld()
+        {
+            var manifest = await OpenEpisode();
+            if (!this) return "gone";
+            if (manifest == null) return NotOpen();
+            var meshes = manifest.episode?.places?.meshes;
+            if (meshes is not { Count: > 0 }) return "the episode has no places";
+            // the depth panel's place when it has props, else the first place that has them
+            var panel = data.depth != null ? manifest.panels.Find(p => p.id == data.depth.panel) : null;
+            var setting = panel?.frames?.Find(f => !string.IsNullOrEmpty(f.setting))?.setting;
+            var place = meshes.Find(m => m.setting == setting && m.props is { Count: > 0 }) ?? meshes.Find(m => m.props is { Count: > 0 })
+                        ?? meshes.Find(m => m.setting == setting) ?? meshes[0];
+            var source = reader.Source;
+            var token = cancel.Token;
+            var frontFile = await source.Read(place.front, token);
+            if (frontFile == null) return $"{place.front} could not be read";
+            var backFile = string.IsNullOrEmpty(place.back) ? null : await source.Read(place.back, token);
+            var (front, back) = await Task.Run(() => (ZumiGlb.Read(frontFile), backFile != null ? ZumiGlb.Read(backFile) : null), token);
+            var textures = new List<Texture2D>();
+            var props = new List<(PlaceProp data, ZumiGlb glb, Texture2D texture)>();
+            try
+            {
+                var frontTexture = await ZumiPlaces.Picture(front, $"{place.setting} front", false, token);
+                textures.Add(frontTexture);
+                var backTexture = back != null ? await ZumiPlaces.Picture(back, $"{place.setting} back", false, token) : null;
+                if (backTexture) textures.Add(backTexture);
+                foreach (var prop in place.props ?? new List<PlaceProp>())
+                {
+                    try
+                    {
+                        var file = await source.Read(prop.model, token);
+                        if (file == null) throw new InvalidOperationException($"{prop.model} could not be read");
+                        var glb = await Task.Run(() => ZumiGlb.Read(file), token);
+                        var texture = await ZumiPlaces.Picture(glb, prop.name, true, token);
+                        textures.Add(texture);
+                        props.Add((prop, glb, texture));
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[Zumi] making-of: the prop {place.setting}/{prop.name} is left out ({e.Message})");
+                    }
+                }
+                if (!this) throw new OperationCanceledException();
+                BuildWorld(place, front, frontTexture, back, backTexture, props);
+            }
+            catch
+            {
+                foreach (var tex in textures)
+                    if (tex) Destroy(tex);
+                throw;
+            }
+            WorldPlace = place.setting;
+            Debug.Log($"[Zumi] making-of: 3D world {place.setting} loaded, {(front.triangles.Length + (back?.triangles.Length ?? 0)) / 3} triangles, {worldProps.Count} props");
+            return null;
+        }
+
+        Material WorldMaterial(string name, Texture texture, int queue, bool masked, float shade)
+        {
+            var m = new Material(ZumiFlowKit.DioramaShader) { name = name, mainTexture = texture, renderQueue = queue };
+            m.SetFloat("_Masked", masked ? 1f : 0f);
+            m.SetVector("_Half", new Vector4(WorldWindow.x / 2f, WorldWindow.y / 2f, WorldCorner, 0f));
+            m.SetFloat("_Shade", shade);
+            worldMaterials.Add(m);
+            return m;
+        }
+
+        Mesh WorldMesh(string name, ZumiGlb glb, bool normals)
+        {
+            var mesh = new Mesh { name = name, indexFormat = glb.positions.Length > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16 };
+            mesh.SetVertices(glb.positions);
+            mesh.SetUVs(0, glb.uvs);
+            mesh.SetTriangles(glb.triangles, 0);
+            if (normals) mesh.RecalculateNormals();
+            worldMeshes.Add(mesh);
+            return mesh;
+        }
+
+        static Transform Model(string name, Transform parent, Mesh mesh, Material material)
+        {
+            var go = new GameObject(name, typeof(MeshFilter), typeof(MeshRenderer));
+            go.transform.SetParent(parent, false);
+            go.GetComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = go.GetComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            return go.transform;
+        }
+
+        // The window's frame: its origin the opening's middle, +z into the place. The place's eye stands in front of the
+        // opening where the opening spans WorldViewHalfDegrees either side, and the place is scaled about that eye so
+        // its near distance lands just behind the opening (and its far one no more than 0.6 m beyond it).
+        void BuildWorld(PlaceMesh place, ZumiGlb front, Texture2D frontTexture, ZumiGlb back, Texture2D backTexture,
+                        List<(PlaceProp data, ZumiGlb glb, Texture2D texture)> props)
+        {
+            world = new GameObject("3D world").transform;
+            world.gameObject.SetActive(false);
+            worldTextures.Add(frontTexture);
+            if (backTexture) worldTextures.Add(backTexture);
+            var half = Mathf.Min(WorldViewHalfDegrees, place.hDeg / 2f - 12f);
+            var eye = WorldWindow.x / 2f / Mathf.Tan(Mathf.Max(half, 15f) * Mathf.Deg2Rad);
+            var nearM = place.nearM ?? (place.medianM ?? 1f) * 0.5f;
+            var farM = place.farM ?? (place.medianM ?? 1f) * 2f;
+            var scale = Mathf.Min(eye * 1.12f / Mathf.Max(nearM, 0.05f), (eye + 0.6f) / Mathf.Max(farM, 0.1f));
+            var view = new GameObject("Place").transform;
+            view.SetParent(world, false);
+            view.localPosition = new Vector3(0f, 0f, -eye);
+            view.localScale = Vector3.one * scale;
+            Model("front", view, WorldMesh($"{place.setting} front", front, false), WorldMaterial($"{place.setting} front", frontTexture, 3020, true, 0f));
+            if (back != null && backTexture)
+                Model("back", view, WorldMesh($"{place.setting} back", back, false), WorldMaterial($"{place.setting} back", backTexture, 3021, true, 0f));
+            // a cream sheet in the opening, behind the place, shows where its mesh has holes; the frame and the rim round it
+            ZumiDraw.Shape(flat, worldParts, "Opening", world, 0.001f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(WorldWindow.x, WorldWindow.y, WorldCorner));
+            frameMaterial = ZumiFlowKit.Picture(Texture2D.whiteTexture, ZumiDraw.Plate, 3030);
+            const float frame = 0.012f, rim = 0.0055f;
+            var band = Model("Frame", world, ZumiFlowKit.RoundedBand(WorldWindow + Vector2.one * (2f * frame), WorldCorner + frame, frame), frameMaterial);
+            band.localPosition = new Vector3(0f, 0f, -0.001f);
+            worldRimMaterial = new Material(ZumiFlowKit.RimShader) { name = "World rim", renderQueue = 3031 };
+            var ring = Model("Rim", world, ZumiFlowKit.RoundedBand(WorldWindow + Vector2.one * (2f * (frame + rim)), WorldCorner + frame + rim, rim), worldRimMaterial);
+            ring.localPosition = new Vector3(0f, 0f, -0.0015f);
+            worldMeshes.Add(band.GetComponent<MeshFilter>().sharedMesh);
+            worldMeshes.Add(ring.GetComponent<MeshFilter>().sharedMesh);
+
+            // the props in a row on the opening's sill, a little in front of it, their heights relative to the tallest
+            var tallest = 0f;
+            foreach (var p in props) tallest = Mathf.Max(tallest, p.data.heightM);
+            var k = PropTallest / Mathf.Max(tallest, 0.01f);
+            var widths = new List<float>();
+            var scales = new List<float>();
+            var total = 0f;
+            foreach (var p in props)
+            {
+                var box = p.glb.bounds;
+                var height = p.data.bounds is { min: { Length: 3 }, max: { Length: 3 } } b ? b.max[1] - b.min[1] : box.size.y;
+                var s = p.data.heightM * k / Mathf.Max(height, 1e-4f);
+                scales.Add(s);
+                widths.Add(Mathf.Max(box.size.x * s, 0.07f));
+                total += widths[^1];
+            }
+            const float spacing = 0.03f;
+            total += spacing * Mathf.Max(props.Count - 1, 0);
+            var fit = Mathf.Min(1f, (WorldWindow.x + 0.1f) / Mathf.Max(total, 1e-3f));
+            var x = -total * fit / 2f;
+            for (var i = 0; i < props.Count; i++)
+            {
+                var (data, glb, texture) = props[i];
+                worldTextures.Add(texture);
+                var s = scales[i] * fit;
+                var w = widths[i] * fit;
+                var prop = new WorldProp { texture = texture, at = 3.4f + i * 0.85f };
+                prop.root = new GameObject($"Prop {data.name}").transform;
+                prop.root.SetParent(world, false);
+                prop.root.localPosition = new Vector3(x + w / 2f, -WorldWindow.y / 2f - 0.01f, -0.07f);
+                x += w + spacing * fit;
+                prop.mesh = WorldMesh(data.name, glb, true);
+                prop.material = WorldMaterial(data.name, texture, 3022, false, 1f);
+                prop.model = Model("Model", prop.root, prop.mesh, prop.material);
+                prop.model.localScale = Vector3.one * s;
+                prop.model.localPosition = new Vector3(-glb.bounds.center.x * s, -glb.bounds.min.y * s, -glb.bounds.center.z * s);
+                // its name on a small cream label under it
+                var name = PropName(data.name);
+                const float cap = 0.0095f;
+                var labelWidth = ZumiDraw.Width(name, cap) + 0.018f;
+                var label = new GameObject("Label").transform;
+                label.SetParent(prop.root, false);
+                label.localPosition = new Vector3(0f, -0.022f, -0.02f);
+                ZumiDraw.Shape(flat, prop.label, "Plate", label, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(labelWidth, cap * 2.4f, cap * 1.2f));
+                ZumiDraw.Text(flat, prop.label, "Name", label, new Vector3(0f, 0f, -0.001f), cap, ZumiDraw.Ink, 1, name);
+                prop.label.SetAlpha(0f);
+                prop.root.gameObject.SetActive(false);
+                worldProps.Add(prop);
+            }
+        }
+
+        static string PropName(string id)
+        {
+            var s = (id ?? "").Replace('-', ' ').Replace('_', ' ').Trim();
+            return s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
+        }
+
+        // ---- 3D world: the place grows out of the depth panel's page into a window, turns slowly, its props pop in
+        // one by one with their names, then it shrinks back into the page --------------------------------------
+
+        void World(float t)
+        {
+            Panels(PanelsSeconds + 10f);
+            if (hero != null)
+            {
+                hero.picture.renderQueue = 2990;
+                hero.mask.renderQueue = 2991;
+            }
+            if (characterRoot) characterRoot.gameObject.SetActive(false);
+            if (depthPivot) depthPivot.gameObject.SetActive(false);
+            var depthPage = data.depth != null ? Mathf.Clamp(data.depth.page - 1, 0, pages.Count - 1) : 0;
+            for (var i = 0; i < pages.Count; i++)
+            {
+                var v = pages[i];
+                v.parts.SetAlpha(0f);
+                v.labelParts.SetAlpha(0f);
+                ZumiFlowKit.SetTint(v.mask, new Color(1f, 1f, 1f, 0f));
+                // still dimmed from the depth stage; they come back at the end
+                var dim = 1f - ZumiFlowKit.Smooth((t - WorldSeconds + 1.2f) / 1f);
+                ZumiFlowKit.SetTint(v.picture, new Color(1f, 1f, 1f, i == depthPage ? 1f : 1f - 0.65f * dim));
+            }
+            if (!world) return;
+            var home = data.depth != null ? DepthHome() : anchor.position + anchor.rotation * new Vector3(0f, -GridDrop, GridDistance);
+            var front = anchor.position + anchor.rotation * new Vector3(0f, 0.0f, WorldDistance);
+            var grown = ZumiFlowKit.Smooth((t - 0.1f) / 1.5f) * (1f - ZumiFlowKit.Smooth((t - 10f) / 1.5f));
+            var shown = ZumiFlowKit.Smooth(t / 0.5f) * (1f - ZumiFlowKit.Smooth((t - 11.1f) / 0.5f));
+            world.gameObject.SetActive(shown > 0f);
+            var at = Vector3.Lerp(home, front, grown);
+            // a slow turn, about 18 degrees either way, so the place's depth reads
+            var yaw = 18f * Mathf.Sin((t - 1f) / 7f * Mathf.PI * 2f) * ZumiFlowKit.Smooth((t - 1f) / 1f) * grown;
+            world.SetPositionAndRotation(at, Facing(at) * Quaternion.Euler(0f, yaw, 0f));
+            world.localScale = Vector3.one * Mathf.Lerp(0.18f, 1f, grown);
+            foreach (var m in worldMaterials)
+            {
+                m.SetMatrix("_Window", world.worldToLocalMatrix);
+                m.SetFloat("_Opacity", shown);
+            }
+            worldParts.SetAlpha(shown);
+            ZumiFlowKit.SetTint(frameMaterial, new Color(ZumiDraw.Plate.r, ZumiDraw.Plate.g, ZumiDraw.Plate.b, shown));
+            worldRimMaterial.SetFloat("_Turn", -t * 0.9f);
+            worldRimMaterial.SetColor("_Color", new Color(1f, 1f, 1f, 0.9f * shown));
+            var popped = 0;
+            for (var i = 0; i < worldProps.Count; i++)
+            {
+                var p = worldProps[i];
+                var on = t >= p.at;
+                p.root.gameObject.SetActive(on && shown > 0f);
+                if (!on) continue;
+                popped++;
+                p.root.localScale = Vector3.one * Mathf.Max(0.001f, ZumiFlowKit.OutBack((t - p.at) / 0.5f));
+                p.model.localRotation = Quaternion.Euler(0f, 22f * Mathf.Sin((t - p.at) * 0.8f + i), 0f);
+                p.label.SetAlpha(ZumiFlowKit.Smooth((t - p.at - 0.25f) / 0.35f) * shown);
+            }
+            WorldPropsShown = popped;
         }
 
         // ---- voice, sound and music --------------------------------------------------------------------------
 
         async void LoadSounds()
         {
-            if (data == null || reader?.Source == null)
+            // the episode may still be opening
+            if (data == null || await OpenEpisode() == null || !this)
             {
-                // the episode may still be opening
-                for (var i = 0; i < 100 && (reader?.Source == null || reader.Source.State != EpisodeSourceState.Ready); i++) await Task.Delay(100);
-                if (!this || reader?.Source == null) return;
+                if (this) Debug.LogWarning($"[Zumi] making-of: no sounds, {NotOpen()}");
+                return;
             }
             voiceSource = Source("Voice");
             sfxSource = Source("Sound effect");
@@ -926,6 +1352,7 @@ namespace Zumi
             barFill.localScale = Vector3.one;
             soundParts.SetAlpha(0f);
             if (depthPivot) depthPivot.gameObject.SetActive(false);
+            if (world) world.gameObject.SetActive(false);
             if (t < OutroSeconds - FadeSeconds) caption.Show(DoneLine, CaptionBelow);
             else caption.Hide();
             // the glow, in front of the pile, facing the reader
@@ -995,7 +1422,22 @@ namespace Zumi
             soundParts.Destroy();
             depthScene?.Dispose();
             depthScene = null;
+            foreach (var layer in depthLayers) layer.outline?.Destroy();
+            depthLayers.Clear();
             if (depthPivot) Destroy(depthPivot.gameObject);
+            foreach (var p in worldProps) p.label.Destroy();
+            worldProps.Clear();
+            worldParts.Destroy();
+            foreach (var m in worldMaterials) Destroy(m);
+            worldMaterials.Clear();
+            foreach (var m in worldMeshes) Destroy(m);
+            worldMeshes.Clear();
+            foreach (var tex in worldTextures)
+                if (tex) Destroy(tex);
+            worldTextures.Clear();
+            if (frameMaterial) Destroy(frameMaterial);
+            if (worldRimMaterial) Destroy(worldRimMaterial);
+            if (world) Destroy(world.gameObject);
         }
 
         void OnDestroy()

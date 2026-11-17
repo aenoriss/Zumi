@@ -729,7 +729,7 @@ namespace Zumi
         // texture request instead, which decodes on a worker: written to the cache folder, read back, deleted.
         // A place's pictures get no mip chain: they are magnified on screen (about 15 texels a degree), and it is a
         // third less memory; a prop's get one.
-        static async Task<Texture2D> Picture(ZumiGlb glb, string name, bool mips, CancellationToken cancel)
+        internal static async Task<Texture2D> Picture(ZumiGlb glb, string name, bool mips, CancellationToken cancel)
         {
             var image = glb.image;
             glb.image = null;

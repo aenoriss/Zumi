@@ -25,6 +25,8 @@ namespace Zumi
         public static Shader GlowShader => glowShader ? glowShader : glowShader = Resources.Load<Shader>("ZumiGlow");
         static Shader rimShader;
         public static Shader RimShader => rimShader ? rimShader : rimShader = Resources.Load<Shader>("ZumiRim");
+        static Shader dioramaShader;
+        public static Shader DioramaShader => dioramaShader ? dioramaShader : dioramaShader = Resources.Load<Shader>("ZumiDiorama");
 
         /// <summary>The band round a rounded rectangle (its outer size, corner radius, the band's width), facing -z,
         /// with uv the point's place in the outer square (for Zumi/Rim's turning colours).</summary>
