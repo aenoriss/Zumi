@@ -8,10 +8,11 @@ using Zumi.Format;
 namespace Zumi
 {
     /// <summary>
-    /// The pipeline screen: a mocked playback, from the making-of bundle, of what the pipeline does to the ten scanned
-    /// pages, stage by stage (the constants below), in a grid in front of the reader with the stage's name and a
-    /// progress bar over it:
-    ///   Scanned     the pages fly from the scan stack into the grid
+    /// How a comic was made: a mocked playback, from the making-of bundle, of what the pipeline did to its ten pencil
+    /// pages, stage by stage (the constants below), in a grid in front of the reader under a header (the comic's
+    /// "How ... was made", the stage's name, its step and a progress bar):
+    ///   Scanned     the comic's book comes out of the carousel, opens in front of the grid (ZumiBook.Showcase) and
+    ///               its pencil pages fly out of it into the grid; then it closes and fades
     ///   Coloured    each pencil page turns into its coloured page, a wave across the grid
     ///   Panels      frame outlines draw over the pages, the masks fade in, a few balloons per page type their
     ///               transcribed text beside them with the speaker's name
@@ -31,7 +32,7 @@ namespace Zumi
     /// </summary>
     public class ZumiMakingOf : MonoBehaviour
     {
-        public const float GatherSeconds = 5f, ColourSeconds = 9f, PanelsSeconds = 18f, DepthSeconds = 12f, WorldSeconds = 12f, VoiceSeconds = 12f, OutroSeconds = 3.6f;
+        public const float GatherSeconds = 6.8f, ColourSeconds = 9f, PanelsSeconds = 18f, DepthSeconds = 12f, WorldSeconds = 12f, VoiceSeconds = 12f, OutroSeconds = 3.6f;
         public const float GridDistance = 1.0f, GridDrop = 0.04f, PageHeight = 0.27f, Gap = 0.035f;
         public const int Columns = 5;
         public const int BalloonsPerPage = 3, LabelLines = 2;
@@ -45,15 +46,21 @@ namespace Zumi
         /// <summary>What the mascot says during each stage (StageNames' order), and at the merge.</summary>
         public static readonly string[] StageLines =
         {
-            "Got your pages! Let me take a good look.",
-            "First, I colour your pencils, keeping every line yours.",
+            "It all started as pencil pages.",
+            "First, I colour the pencils, keeping every line the artist's.",
             "I find each panel, each balloon, and read every word.",
             "I learn who's who, so every character stays the same on every page.",
             "I split each panel into layers and repaint the background hidden behind them.",
             "I build the world around each scene, and the objects in it.",
             "Every character gets a voice, plus sounds and music.",
         };
-        public const string DoneLine = "Your comic is ready. Grab it to read!";
+        /// <summary>The merge line; {0} is the comic's title.</summary>
+        public const string DoneLine = "That's how {0} was made. Grab it to read!";
+        /// <summary>The header's title; {0} is the comic's title.</summary>
+        public const string HeaderTitle = "How {0} was made";
+        /// <summary>The open book: metres ahead of the eyes and below them, its height. Its pages fly out one after
+        /// another from PagesOut seconds, PageStagger apart, each PageFlight long; it is put away at BookPutAway.</summary>
+        public const float BookAhead = 0.6f, BookDrop = 0.13f, BookHeight = 0.24f, PagesOut = 1.9f, PageStagger = 0.24f, PageFlight = 1.3f, BookPutAway = 5.5f;
         /// <summary>The caption sits this far under the eyes here: clear of the grid's bottom row.</summary>
         public const float CaptionBelow = 0.37f;
         public const float CharactersSeconds = 8f;
@@ -131,6 +138,10 @@ namespace Zumi
         ZumiCaption caption;
         ZumiReader reader;
         ZumiMakingOfData data;
+        ZumiBook book;
+        string comicTitle;
+        Pose bookPose;
+        bool bookAway;
         Pose anchor;
         readonly List<PageView> pages = new();
         PageView hero;
@@ -194,10 +205,19 @@ namespace Zumi
             this.reader = reader;
         }
 
-        /// <summary>Starts the playback with the scanned pages (their textures and where their cards are now).</summary>
-        public async void Play(IReadOnlyList<ZumiScanner.Capture> captures)
+        /// <summary>Starts the playback of how that comic was made: its book comes forward and opens at once, and its
+        /// pencil pages fly out of it.</summary>
+        public async void Play(ZumiBook comic, string title)
         {
             cancel = new CancellationTokenSource();
+            book = comic;
+            comicTitle = title;
+            bookAway = false;
+            anchor = ZumiFlowKit.LevelHead();
+            var at = anchor.position + anchor.rotation * new Vector3(0f, -BookDrop, BookAhead);
+            // the cover toward the eyes, tipped back a little, like a book held up to show
+            bookPose = new Pose(at, Quaternion.LookRotation(anchor.position - at, Vector3.up) * Quaternion.Euler(-12f, 0f, 0f));
+            if (book) book.Showcase(bookPose, BookHeight);
             data = await ZumiMakingOfData.Get();
             if (!this) return;
             if (data == null)
@@ -207,9 +227,8 @@ namespace Zumi
                 End();
                 return;
             }
-            anchor = ZumiFlowKit.LevelHead();
             StageSeconds[StageCharacters] = data.cast is { Count: > 0 } ? CharactersSeconds : 0f;
-            BuildGrid(captures);
+            BuildGrid();
             BuildHeader();
             BuildCharacters();
             caption.Show(StageLines[0], CaptionBelow);
@@ -286,10 +305,9 @@ namespace Zumi
         Vector3 GridPoint(float x, float y, float z = 0f) => anchor.position + anchor.rotation * new Vector3(x, y - GridDrop, GridDistance + z);
         Quaternion Facing(Vector3 at) => ZumiFlowKit.Facing(at, anchor.position);
 
-        void BuildGrid(IReadOnlyList<ZumiScanner.Capture> captures)
+        void BuildGrid()
         {
-            // as many pages as were scanned, up to the bundle's
-            var n = data != null ? Mathf.Clamp(captures.Count, 1, data.pages.Count) : 0;
+            var n = data.pages.Count;
             var rows = Mathf.CeilToInt(n / (float)Columns);
             // the hero: the page whose balloons have the most different speakers, not the one the depth stage lifts
             var heroIndex = 0;
@@ -312,8 +330,7 @@ namespace Zumi
                 var row = i / Columns;
                 var at = GridPoint((col - (Columns - 1) / 2f) * (size.x + Gap), ((rows - 1) / 2f - row) * (size.y + Gap));
                 var view = new PageView { data = page, size = size, cell = new Pose(at, Facing(at)) };
-                var capture = i < captures.Count ? captures[i] : null;
-                var tex = capture?.texture ? capture.texture : page.pencilTexture;
+                var tex = page.pencilTexture;
                 view.root = new GameObject($"Making-of page {i + 1}").transform;
                 // the hero draws after the grid it passes in front of
                 if (isHero) view.parts.queue = 3012;
@@ -324,19 +341,13 @@ namespace Zumi
                 view.maskRenderer = ZumiFlowKit.Card("Masks", view.root, size, view.mask);
                 view.maskRenderer.transform.localPosition = new Vector3(0f, 0f, -0.0008f);
                 view.maskRenderer.enabled = false;
-                if (capture?.card)
-                {
-                    view.from = new Pose(capture.card.position, capture.card.rotation);
-                    view.fromSize = new Vector2(capture.card.localScale.x, capture.card.localScale.y);
-                    Destroy(capture.card.gameObject);
-                }
-                else
-                {
-                    view.from = new Pose(at - (at - anchor.position).normalized * 0.4f, Facing(at));
-                    view.fromSize = size * 0.2f;
-                }
+                // out of the open book: a page about its height, just in front of its leaves
+                var from = bookPose.position + (anchor.position - bookPose.position).normalized * 0.03f;
+                view.from = new Pose(from, Facing(from));
+                view.fromSize = size * (BookHeight * 0.85f / size.y);
                 view.root.SetPositionAndRotation(view.from.position, view.from.rotation);
                 view.root.localScale = new Vector3(view.fromSize.x / size.x, view.fromSize.y / size.y, 1f);
+                view.root.gameObject.SetActive(false);
                 BuildOverlays(view, isHero);
                 pages.Add(view);
                 if (isHero) hero = view;
@@ -459,17 +470,19 @@ namespace Zumi
         {
             header = new GameObject("Making-of header").transform;
             var rows = Mathf.CeilToInt(pages.Count / (float)Columns);
-            var top = rows * (PageHeight + Gap) / 2f + 0.12f;
+            var top = rows * (PageHeight + Gap) / 2f + 0.14f;
             var at = GridPoint(0f, top);
             header.SetPositionAndRotation(at, Facing(at));
             var plateWidth = BarWidth + 0.08f;
-            ZumiDraw.Shape(flat, headerParts, "Plate", header, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(plateWidth, 0.11f, 0.03f));
-            stageText = ZumiDraw.Text(flat, headerParts, "Stage", header, new Vector3(0f, 0.025f, -0.002f), HeaderCap, ZumiDraw.Ink, 2, StageNames[0]);
-            stepText = ZumiDraw.Text(flat, headerParts, "Step", header, new Vector3(0f, -0.01f, -0.002f), 0.016f, ZumiDraw.SoftInk, 2, "");
-            ZumiDraw.Shape(flat, headerParts, "Bar", header, -0.001f, ZumiDraw.Hex(0xE2D3C3), 1, ZumiDraw.Rounded(BarWidth, 0.01f, 0.005f).MovedBy(new Vector2(0f, -0.036f)));
+            ZumiDraw.Shape(flat, headerParts, "Plate", header, 0f, ZumiDraw.Plate, 0, ZumiDraw.Rounded(plateWidth, 0.15f, 0.035f));
+            var heading = ZumiDraw.Text(flat, headerParts, "Title", header, new Vector3(0f, 0.046f, -0.002f), 0.015f, ZumiDraw.SoftInk, 2, string.Format(HeaderTitle, comicTitle));
+            heading.fontStyle = FontStyle.Bold;
+            stageText = ZumiDraw.Text(flat, headerParts, "Stage", header, new Vector3(0f, 0.012f, -0.002f), HeaderCap, ZumiDraw.Ink, 2, StageNames[0]);
+            stepText = ZumiDraw.Text(flat, headerParts, "Step", header, new Vector3(0f, -0.022f, -0.002f), 0.014f, ZumiDraw.SoftInk, 2, "");
+            ZumiDraw.Shape(flat, headerParts, "Bar", header, -0.001f, ZumiDraw.Hex(0xE2D3C3), 1, ZumiDraw.Rounded(BarWidth, 0.01f, 0.005f).MovedBy(new Vector2(0f, -0.047f)));
             barFill = new GameObject("Fill").transform;
             barFill.SetParent(header, false);
-            barFill.localPosition = new Vector3(-BarWidth / 2f, -0.036f, -0.002f);
+            barFill.localPosition = new Vector3(-BarWidth / 2f, -0.047f, -0.002f);
             ZumiDraw.Shape(flat, headerParts, "Fill", barFill, 0f, ZumiDraw.Hover, 2, ZumiDraw.Box(0f, -0.005f, BarWidth, 0.01f));
         }
 
@@ -477,10 +490,17 @@ namespace Zumi
 
         void Gather(float t)
         {
+            if (t >= BookPutAway && !bookAway)
+            {
+                bookAway = true;
+                if (book) book.PutAway();
+            }
             for (var i = 0; i < pages.Count; i++)
             {
                 var v = pages[i];
-                var k = ZumiFlowKit.Smooth((t - 0.3f - i * 0.22f) / 1.3f);
+                var at = t - PagesOut - i * PageStagger;
+                var k = ZumiFlowKit.Smooth(at / PageFlight);
+                if (v.root.gameObject.activeSelf != at > 0f) v.root.gameObject.SetActive(at > 0f);
                 var lift = Mathf.Sin(k * Mathf.PI) * 0.06f;
                 v.root.SetPositionAndRotation(Vector3.Lerp(v.from.position, v.cell.position, k) + Vector3.up * lift, Quaternion.Slerp(v.from.rotation, v.cell.rotation, k));
                 var s = Vector2.Lerp(new Vector2(v.fromSize.x / v.size.x, v.fromSize.y / v.size.y), Vector2.one, k);
@@ -492,8 +512,15 @@ namespace Zumi
         {
             foreach (var v in pages)
             {
+                v.root.gameObject.SetActive(true);
                 v.root.SetPositionAndRotation(v.cell.position, v.cell.rotation);
                 v.root.localScale = Vector3.one;
+            }
+            // the book is gone by now (put away during Scanned)
+            if (book && book.State == "showcase")
+            {
+                bookAway = true;
+                book.Stow();
             }
         }
 
@@ -1347,13 +1374,13 @@ namespace Zumi
             if (stageText.text != "Done")
             {
                 stageText.text = "Done";
-                stepText.text = "Your pages are a comic now";
+                stepText.text = "Ready to read";
             }
             barFill.localScale = Vector3.one;
             soundParts.SetAlpha(0f);
             if (depthPivot) depthPivot.gameObject.SetActive(false);
             if (world) world.gameObject.SetActive(false);
-            if (t < OutroSeconds - FadeSeconds) caption.Show(DoneLine, CaptionBelow);
+            if (t < OutroSeconds - FadeSeconds) caption.Show(string.Format(DoneLine, comicTitle), CaptionBelow);
             else caption.Hide();
             // the glow, in front of the pile, facing the reader
             if (!glow)
@@ -1369,7 +1396,7 @@ namespace Zumi
             glowMaterial.SetColor("_Color", new Color(1f, 1f, 1f, 0.9f * Mathf.Min(bloom, a)));
         }
 
-        /// <summary>Where the pages merge and the last glow blooms (the new comic flies out of it).</summary>
+        /// <summary>Where the pages merge and the last glow blooms (the comic flies out of it to its place).</summary>
         public Vector3 EndPoint => anchor.position + anchor.rotation * new Vector3(0f, -GridDrop, GridDistance - 0.03f);
 
         /// <summary>The outro: the pages merge, the glow blooms and holds, then everything fades.</summary>
@@ -1394,6 +1421,7 @@ namespace Zumi
             PlaybackStage = "done";
             caption.Hide();
             if (musicSource) musicSource.Stop();
+            if (book) book.Stow();
             Clear();
             Finished?.Invoke();
         }

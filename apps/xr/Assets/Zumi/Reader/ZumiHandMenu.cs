@@ -72,7 +72,7 @@ namespace Zumi
         internal Shader FlatShader => flatShader;
 
         public bool Open => owner != null;
-        /// <summary>While on, the menu does not open (the creation flow's menu and scanner own the hands).</summary>
+        /// <summary>While on, the menu does not open (the flow's carousel and books own the hands).</summary>
         public bool Suppressed { get; set; }
         /// <summary>Asked first when a button is pressed, with its name; true: the press was taken (the creation flow's
         /// playback skips to its end) and the reader does not see it.</summary>

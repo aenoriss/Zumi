@@ -4,23 +4,21 @@ using UnityEngine;
 namespace Zumi
 {
     /// <summary>
-    /// The demo's creation flow, as a state machine over the reader. The episode no longer plays at launch: it opens,
-    /// held (ZumiReader.HoldForBook), and reading starts only when a book is opened.
-    ///   logo      the Zumi logo moment (ZumiMenu.LogoSeconds)
-    ///   home      the carousel (ZumiCarousel): the comics made so far and "New comic"
-    ///   scanner   New comic: the carousel folds away, the reader touches the table, the page guide lies there, each
-    ///             page is taken when the Scan disc is pressed, then Done (ZumiScanner)
-    ///   pipeline  the mocked pipeline playback (ZumiMakingOf), which fades out at its end; a pinch or the hand menu
-    ///             skips it; then home again, and the new comic (Dan &amp; Buck) arrives out of the last glow
-    ///   opening   the middle comic was brought close or ray-pinched and opens (ZumiBook)
-    ///   reading   the reader has the episode, from its start; the hand menu is the reader's again
-    /// Dan &amp; Buck is in the carousel from launch, beside New comic; after the showcase it arrives again into its own
-    /// place. While the carousel, the scanner or a book own the hands, the hand menu stays shut.
+    /// The demo's flow, as a state machine over the reader. The episode no longer plays at launch: it opens, held
+    /// (ZumiReader.HoldForBook), and reading starts only when a book is opened.
+    ///   logo       the Zumi logo moment (ZumiMenu.LogoSeconds)
+    ///   home       the carousel (ZumiCarousel): Dan &amp; Buck in the middle, and Create
+    ///   invite     Create turned over: creating is invite-only for now; "See how it's made", or "Back" (home again)
+    ///   making-of  See how it's made: the carousel folds away, the Dan &amp; Buck book comes forward and opens, its
+    ///              pencil pages fly out into the showcase (ZumiMakingOf), which fades out at its end; a pinch or the
+    ///              hand menu skips it; then home again, and the book arrives back into its place out of the last glow
+    ///   opening    the middle comic was brought close or ray-pinched and opens (ZumiBook)
+    ///   reading    the reader has the episode, from its start; the hand menu is the reader's again
+    /// While the carousel or a book own the hands, the hand menu stays shut.
     /// </summary>
     [RequireComponent(typeof(ZumiReader))]
     public class ZumiFlow : MonoBehaviour
     {
-        public const float ProcessDelaySeconds = 1.2f;
         /// <summary>Where earlier builds kept "the comic was made" across launches; deleted at start so old installs
         /// forget it.</summary>
         const string StaleCreatedKey = "zumi.demo.created";
@@ -36,18 +34,15 @@ namespace Zumi
         [SerializeField] bool readingCaption;
 
         // ---- read-only state for tests and tools -------------------------------------------------------------
-        /// <summary>"logo", "home", "scanner", "pipeline", "opening", "reading"; null with the flow off.</summary>
+        /// <summary>"logo", "home", "invite", "making-of", "opening", "reading"; null with the flow off.</summary>
         public string FlowStage { get; private set; }
-        public int PagesCaptured => scanner ? scanner.PagesCaptured : 0;
-        public string ScannerState => scanner ? scanner.State : null;
         public string PlaybackStage => makingOf ? makingOf.PlaybackStage : null;
         /// <summary>The showcase has finished in this run (Dan &amp; Buck arrived out of it).</summary>
         public bool ComicCreated { get; private set; }
         public ZumiCarousel Carousel => carousel;
-        public ZumiScanner Scanner => scanner;
         public string CarouselState => carousel ? carousel.State : null;
         public string CarouselCentre => carousel ? carousel.CentreTitle : null;
-        public string GuideSource => scanner ? scanner.GuideSource : null;
+        public string InviteState => carousel ? carousel.Invite : null;
         public string BookState => comic ? comic.State : null;
         public string CaptionLine => caption ? caption.Line : null;
         public bool CaptionsOn
@@ -63,7 +58,6 @@ namespace Zumi
         ZumiReader reader;
         ZumiHandMenu handMenu;
         ZumiMenu menu;
-        ZumiScanner scanner;
         ZumiMakingOf makingOf;
         ZumiCaption caption;
         ZumiCarousel carousel;
@@ -87,16 +81,21 @@ namespace Zumi
             caption.On = captions;
             menu = gameObject.AddComponent<ZumiMenu>();
             menu.Init(flat, mascot);
-            scanner = gameObject.AddComponent<ZumiScanner>();
-            scanner.Init(flat, caption);
             makingOf = gameObject.AddComponent<ZumiMakingOf>();
             makingOf.Init(flat, caption, reader);
             carousel = gameObject.AddComponent<ZumiCarousel>();
             carousel.Init(flat, mascot);
-            carousel.CreatePressed += Create;
+            carousel.InviteOpened += () =>
+            {
+                if (FlowStage == "home") Enter("invite");
+            };
+            carousel.InviteClosed += () =>
+            {
+                if (FlowStage == "invite") Enter("home");
+            };
+            carousel.SeeHowPressed += SeeHowItsMade;
             menu.LogoDone += ShowHome;
-            scanner.Finished += () => Invoke(nameof(Process), ProcessDelaySeconds);
-            makingOf.Finished += OnPipelineDone;
+            makingOf.Finished += OnShowcaseDone;
         }
 
         async void Start()
@@ -112,7 +111,7 @@ namespace Zumi
             }
             Enter("logo");
             menu.StartLogo();
-            carousel.AddNewComic();
+            carousel.AddCreate();
             // the bundle and the book load while the logo shows
             _ = ZumiMakingOfData.Get();
             comic = await ZumiBook.Create("Book dan-buck");
@@ -135,38 +134,27 @@ namespace Zumi
             carousel.Show();
         }
 
-        /// <summary>New comic: the carousel folds away, then the scanner asks for a touch on the table.</summary>
-        public void Create()
+        /// <summary>See how it's made: the book leaves its place for the showcase while the carousel folds away.</summary>
+        public void SeeHowItsMade()
         {
-            if (FlowStage != "home") return;
-            Enter("scanner");
-            carousel.Fold(scanner.Begin);
-        }
-
-        /// <summary>Takes every page left (tools, tests, and a rehearsal of the video).</summary>
-        public void FillScan() => scanner.FillRemaining();
-
-        void Process()
-        {
-            if (FlowStage != "scanner") return;
-            Enter("pipeline");
-            var captures = new List<ZumiScanner.Capture>(scanner.Captures);
-            scanner.Close();
+            if (FlowStage is not ("home" or "invite") || !comic) return;
+            Enter("making-of");
             handMenu.Suppressed = false;
             handMenu.Intercept = _ =>
             {
                 makingOf.Skip();
                 return true;
             };
-            makingOf.Play(captures);
+            makingOf.Play(comic, ComicTitle);
+            carousel.Fold(null);
         }
 
-        /// <summary>Skips the pipeline playback to its end (as a pinch does).</summary>
+        /// <summary>Skips the showcase to its end (as a pinch does).</summary>
         public void SkipPlayback() => makingOf.Skip();
 
-        // the playback faded out: home, and the comic just made flies out of the glow into its own place (it is on
-        // the carousel from launch, so it never shows twice)
-        void OnPipelineDone()
+        // the showcase faded out: home, and the comic flies out of the glow into its own place (it is on the
+        // carousel from launch, so it never shows twice)
+        void OnShowcaseDone()
         {
             Enter("home");
             handMenu.Suppressed = true;
@@ -192,7 +180,7 @@ namespace Zumi
         {
             if (!flowEnabled) return;
             // the comic opening (brought close, or a ray pinch on the carousel's middle): the carousel goes
-            if (FlowStage == "home" && comic && comic.State == "opening")
+            if (FlowStage is "home" or "invite" && comic && comic.State == "opening")
             {
                 Enter("opening");
                 carousel.Hide();

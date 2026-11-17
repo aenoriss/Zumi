@@ -15,12 +15,11 @@ namespace Zumi
     /// </summary>
     public static class ZumiFlowKit
     {
-        static Shader picture, warp;
+        static Shader picture;
         static readonly int MainTex = Shader.PropertyToID("_MainTex"), SecondTex = Shader.PropertyToID("_SecondTex"),
             Mix = Shader.PropertyToID("_Mix"), Tint = Shader.PropertyToID("_Color"), ZWrite = Shader.PropertyToID("_ZWrite");
 
         public static Shader PictureShader => picture ? picture : picture = Resources.Load<Shader>("ZumiPicture");
-        public static Shader WarpShader => warp ? warp : warp = Resources.Load<Shader>("ZumiWarp");
         static Shader glowShader;
         public static Shader GlowShader => glowShader ? glowShader : glowShader = Resources.Load<Shader>("ZumiGlow");
         static Shader rimShader;

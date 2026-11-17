@@ -27,7 +27,8 @@ namespace Zumi
         public const float SettleSeconds = 0.45f, CoverSeconds = 1.0f, CoverDegrees = 110f, PageDegreesFirst = 100f, PageStagger = 0.07f;
         public const float RiseDelay = 0.7f, RiseSeconds = 1.2f, FadeDelay = 0.6f, FadeSeconds = 1.3f;
 
-        /// <summary>"loading", "shelf", "held", "opening", "gone".</summary>
+        /// <summary>"loading", "shelf", "held", "opening", "gone"; "showcase" while it shows how it was made, "away"
+        /// after it (hidden, until the carousel shelves it again).</summary>
         public string State { get; private set; } = "loading";
         public bool Grabbed => grabbable && grabbable.SelectingPointsCount > 0;
         /// <summary>How far open the front cover is: 0 closed, 1 at CoverDegrees.</summary>
@@ -289,6 +290,80 @@ namespace Zumi
                 case "opening":
                     Animate(Time.time - openSince);
                     break;
+                case "showcase":
+                    Showing(Time.time - showSince);
+                    break;
+            }
+        }
+
+        // ---- the showcase: the book leaves its place, opens where the making-of plays (its pencil pages fly out of
+        // it), then closes and fades; it waits hidden ("away") until the carousel shelves it again ------------------
+        public const float ShowcaseFlySeconds = 0.9f, PutAwaySeconds = 0.9f;
+        Pose showFrom, showTo;
+        float showSince, awaySince = -1f, showScaleFrom, showScaleTo;
+
+        /// <summary>The book flies from where it is to `to` (its middle there, its cover toward the pose's +z), grows
+        /// to `height` metres tall, and opens; it stays open until PutAway.</summary>
+        public void Showcase(Pose to, float height)
+        {
+            if (State is not ("shelf" or "held" or "away")) return;
+            State = "showcase";
+            SetGrabbable(false);
+            gameObject.SetActive(true);
+            showScaleFrom = transform.localScale.x;
+            showFrom = new Pose(transform.TransformPoint(centreOffset), transform.rotation);
+            showScaleTo = height / Mathf.Max(Size.y, 1e-3f);
+            showTo = to;
+            showSince = Time.time;
+            awaySince = -1f;
+            Debug.Log($"[Zumi] book: {name} out for the showcase");
+        }
+
+        /// <summary>The open book closes and fades away (then "away").</summary>
+        public void PutAway()
+        {
+            if (State == "showcase" && awaySince < 0f) awaySince = Time.time;
+        }
+
+        /// <summary>Gone at once (the showcase skipped), closed, ready to be shelved.</summary>
+        public void Stow()
+        {
+            if (State != "showcase") return;
+            State = "away";
+            Unfold(0f);
+            OpenAmount = 0f;
+            for (var i = 0; i < materials.Count; i++) ZumiFlowKit.SetTint(materials[i], tints[i]);
+            gameObject.SetActive(false);
+            Debug.Log($"[Zumi] book: {name} put away");
+        }
+
+        void Showing(float t)
+        {
+            var k = ZumiFlowKit.Smooth(t / ShowcaseFlySeconds);
+            var rotation = Quaternion.Slerp(showFrom.rotation, showTo.rotation, k);
+            var scale = Mathf.Lerp(showScaleFrom, showScaleTo, k);
+            var middle = Vector3.Lerp(showFrom.position, showTo.position, k) + Vector3.up * (Mathf.Sin(k * Mathf.PI) * 0.04f);
+            transform.SetPositionAndRotation(middle - rotation * (centreOffset * scale), rotation);
+            transform.localScale = Vector3.one * scale;
+            var away = awaySince < 0f ? 0f : Time.time - awaySince;
+            var open = (t - ShowcaseFlySeconds * 0.7f) * (1f - ZumiFlowKit.Smooth(away / (PutAwaySeconds * 0.6f)));
+            Unfold(open);
+            if (away <= 0f) return;
+            var alpha = 1f - ZumiFlowKit.Smooth((away - PutAwaySeconds * 0.4f) / (PutAwaySeconds * 0.6f));
+            for (var i = 0; i < materials.Count; i++) ZumiFlowKit.SetTint(materials[i], new Color(tints[i].r, tints[i].g, tints[i].b, tints[i].a * alpha));
+            if (away >= PutAwaySeconds) Stow();
+        }
+
+        // the cover swings open about the spine and the pages follow, one after another; open: seconds into it
+        void Unfold(float open)
+        {
+            OpenAmount = ZumiFlowKit.Smooth(open / CoverSeconds);
+            if (cover) cover.localRotation = coverRest * Quaternion.Euler(0f, hingeSign * CoverDegrees * OpenAmount, 0f);
+            for (var i = 0; i < pages.Count; i++)
+            {
+                var share = 1f - (i + 1f) / (pages.Count + 1f);
+                var a = ZumiFlowKit.Smooth((open - 0.15f - i * PageStagger) / CoverSeconds) * PageDegreesFirst * share;
+                pages[i].localRotation = pageRest[i] * Quaternion.Euler(0f, hingeSign * a, 0f);
             }
         }
 
@@ -311,16 +386,7 @@ namespace Zumi
             // it leaves the hand and settles in front of the eyes
             var k = ZumiFlowKit.Smooth(t / SettleSeconds);
             transform.SetPositionAndRotation(Vector3.Lerp(flyFrom.position, flyTo.position, k), Quaternion.Slerp(flyFrom.rotation, flyTo.rotation, k));
-            // the cover swings open about the spine; the pages follow, one after another
-            var open = t - SettleSeconds * 0.6f;
-            OpenAmount = ZumiFlowKit.Smooth(open / CoverSeconds);
-            if (cover) cover.localRotation = coverRest * Quaternion.Euler(0f, hingeSign * CoverDegrees * OpenAmount, 0f);
-            for (var i = 0; i < pages.Count; i++)
-            {
-                var share = 1f - (i + 1f) / (pages.Count + 1f);
-                var a = ZumiFlowKit.Smooth((open - 0.15f - i * PageStagger) / CoverSeconds) * PageDegreesFirst * share;
-                pages[i].localRotation = pageRest[i] * Quaternion.Euler(0f, hingeSign * a, 0f);
-            }
+            Unfold(t - SettleSeconds * 0.6f);
             // once the pages have fanned, the book dissolves into the Zumi colours, its crumbs drifting up
             var fade = t - SettleSeconds - RiseDelay - FadeDelay;
             if (fade > 0f)

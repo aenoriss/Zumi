@@ -7,21 +7,23 @@ using UnityEngine;
 namespace Zumi
 {
     /// <summary>
-    /// The home screen: the reader's comics (newest first) and, last, a "New comic" card, floating in an arc at chest
+    /// The home screen: the reader's comics (newest first) and, last, a "Create" card, floating in an arc at chest
     /// height, five places in view; places the shelf has no item for show an empty grey frame (room for more). The
     /// middle item is larger, nearer and alive: a soft ring of the Zumi hues blooms behind it with a thin turning rim,
     /// it lifts a little toward the reader, and on a comic the mascot hops onto its top right corner. Under it a cream
-    /// pill names a comic (New comic names itself on its card and has none), a chip says what a hand does ("Grab to
+    /// pill names a comic (Create names itself on its card and has none), a chip says what a hand does ("Grab to
     /// read"), and dots say where it is in the row.
     ///
     /// Every item is reached by a hand ray and a pinch from afar, or by a poke: on a side item it brings that item to
     /// the middle; on the middle comic a ray pinch opens it (a hand grab and bringing it close does too, ZumiBook); on
-    /// "New comic" either starts Create (CreatePressed), as grabbing it does. A ray pinched and drawn sideways
-    /// (beyond DragDegrees) turns the arc instead, as an open hand swept through it does; let go, it runs on, slows
-    /// and settles on the nearest item. A ray hovering an item enlarges it a little and brightens the middle's ring.
+    /// "Create" either (or grabbing it) turns the card over into the invite panel: creating is invite-only for now,
+    /// with "See how it's made" (SeeHowPressed) and "Back" (turns it back). Swiping the arc closes the panel too. A
+    /// ray pinched and drawn sideways (beyond DragDegrees) turns the arc instead, as an open hand swept through it
+    /// does; let go, it runs on, slows and settles on the nearest item. A ray hovering an item enlarges it a little
+    /// and brightens the middle's ring.
     ///
-    /// A comic made by the pipeline arrives (Arrive): out of the pipeline's last glow it flies to the middle in pencil,
-    /// then its colour sweeps across it left to right behind a thin line of the Zumi hues, once; then it comes alive.
+    /// A comic arrives (Arrive): out of the showcase's last glow it flies to its place in the middle in pencil, then
+    /// its colour sweeps across it left to right behind a thin line of the Zumi hues, once; then it comes alive.
     /// The look is <see cref="Style"/>; the mechanics do not depend on its values.
     /// </summary>
     public class ZumiCarousel : MonoBehaviour
@@ -69,8 +71,16 @@ namespace Zumi
             public Color cream = ZumiDraw.Hex(0xF7F4EF), plate = ZumiDraw.Hex(0xF4ECE4), paper = ZumiDraw.Hex(0xF5EDDC), ink = ZumiDraw.Hex(0x2A211B), softInk = ZumiDraw.Hex(0x6B5E52);
             /// <summary>An empty place: a translucent cream-grey card and its frame.</summary>
             public Color emptyFill = new(0.85f, 0.83f, 0.8f, 0.28f), emptyFrame = new(0.6f, 0.57f, 0.53f, 0.45f);
-            /// <summary>"New comic": its fill's opacity, the dashed border (dash, gap, width), the plus's ring.</summary>
-            public float newFillAlpha = 0.8f, dash = 0.012f, dashGap = 0.008f, dashWidth = 0.0018f, plusRing = 0.026f;
+            /// <summary>"Create": its fill's opacity, the dashed border (dash, gap, width), the "Invite only" chip's
+            /// lettering and height.</summary>
+            public float newFillAlpha = 0.8f, dash = 0.012f, dashGap = 0.008f, dashWidth = 0.0018f, inviteChipCap = 0.0085f, inviteChipHeight = 0.024f;
+            /// <summary>The invite panel: seconds of the turn over, its size, corner, lettering, buttons (height, the
+            /// primary's width, the secondary's, the gap), the mascot beside it.</summary>
+            public float flipSeconds = 0.35f;
+            public Vector2 panelSize = new(0.3f, 0.2f);
+            public float panelCorner = 0.022f, panelTitleCap = 0.0125f, panelBodyCap = 0.0096f, buttonHeight = 0.036f, primaryWidth = 0.15f, secondaryWidth = 0.075f, buttonGap = 0.014f, buttonCap = 0.0095f;
+            public float panelMascotHeight = 0.1f, buttonHoverScale = 1.05f, buttonPressScale = 0.95f;
+            public Color buttonFill = ZumiDraw.Hex(0xFFFFFF), secondaryFill = ZumiDraw.Hex(0xF4ECE4), secondaryHover = ZumiDraw.Hex(0xEADDCF);
         }
 
         public static readonly Look Style = new();
@@ -88,15 +98,21 @@ namespace Zumi
         public const float SettledWithin = 0.15f;
         public const int Visible = 5;
 
-        public event Action CreatePressed;
+        /// <summary>The invite panel's "See how it's made"; its opening and closing.</summary>
+        public event Action SeeHowPressed, InviteOpened, InviteClosed;
 
         // ---- read-only state for tests and tools -------------------------------------------------------------
         /// <summary>"hidden", "fanning", "shown", "folding".</summary>
         public string State { get; private set; } = "hidden";
+        /// <summary>The invite panel: "opening", "open", "closing"; null while the Create card shows.</summary>
+        public string Invite { get; private set; }
+        /// <summary>A button of the invite panel ("see", "back"): its world position, and whether a hand is on it.</summary>
+        public Vector3 InviteButtonPosition(string which) => (which == "see" ? seeButton : backButton)?.root.position ?? default;
+        public bool InviteButtonHovered(string which) => (which == "see" ? seeButton : backButton)?.Touched ?? false;
         public float Scroll { get; private set; }
         public int Count => items.Count;
         public int CentreIndex => items.Count == 0 ? -1 : Mathf.Clamp(Mathf.RoundToInt(Scroll), 0, items.Count - 1);
-        /// <summary>"comic", "new"; null when empty.</summary>
+        /// <summary>"comic", "create"; null when empty.</summary>
         public string CentreKind => CentreIndex >= 0 ? items[CentreIndex].kind : null;
         public string CentreTitle => CentreIndex >= 0 ? items[CentreIndex].title : null;
         /// <summary>How alive the middle item is, 0..1.</summary>
@@ -106,7 +122,8 @@ namespace Zumi
         public string Arrival => arrival?.phase;
         /// <summary>"ray", "hand" while the arc is being turned.</summary>
         public string Dragging { get; private set; }
-        /// <summary>The last press: "ray centre comic" (opened), "ray side 1", "poke new" ...; and how many.</summary>
+        /// <summary>The last press: "ray centre comic" (opened), "ray side 1", "poke centre create", "ray invite see" ...;
+        /// and how many.</summary>
         public string LastPress { get; private set; }
         public int Presses { get; private set; }
         public int Swipes { get; private set; }
@@ -204,11 +221,11 @@ namespace Zumi
             return false;
         }
 
-        /// <summary>"New comic", last in the row.</summary>
-        public void AddNewComic()
+        /// <summary>"Create", last in the row.</summary>
+        public void AddCreate()
         {
-            var item = new Item { kind = "new", title = "New comic", line = "Scan your pencil pages", hint = "Grab to start", parts = new ZumiDraw.Parts { blended = true, queue = 3000 } };
-            item.card = BuildNewCard(item.parts, out item.grab);
+            var item = new Item { kind = "create", title = "Create", line = "", hint = "Grab to open", parts = new ZumiDraw.Parts { blended = true, queue = 3000 } };
+            item.card = BuildCreateCard(item.parts, out item.grab);
             MakeHit(item);
             MakeShadow(item);
             items.Add(item);
@@ -217,7 +234,7 @@ namespace Zumi
         // ---- showing ---------------------------------------------------------------------------------------------
 
         /// <summary>The arc fans in round where the head is now, out of from (or from just below the middle), its
-        /// first item (the newest comic, or New comic) in the middle.</summary>
+        /// first item (the newest comic, or Create) in the middle.</summary>
         public void Show(Vector3? from = null)
         {
             anchor = ZumiFlowKit.LevelHead();
@@ -239,8 +256,8 @@ namespace Zumi
             Debug.Log($"[Zumi] carousel: shown, {items.Count} items, {CentreTitle} in the middle");
         }
 
-        /// <summary>A comic made just now: the arc fans in and the comic flies from `from` to the middle in pencil,
-        /// then its colour sweeps in.</summary>
+        /// <summary>A comic shown being made: the arc fans in and the comic flies from `from` to its place in the
+        /// middle in pencil, then its colour sweeps in.</summary>
         public void Arrive(ZumiBook book, string title, string line, Vector3 from)
         {
             AddComic(book, title, line);
@@ -281,6 +298,9 @@ namespace Zumi
             }
             foreach (var e in empties) e.t.gameObject.SetActive(false);
             SetDressing(false);
+            Invite = null;
+            flip = 0f;
+            if (invite) invite.gameObject.SetActive(false);
         }
 
         // ---- building --------------------------------------------------------------------------------------------
@@ -323,11 +343,11 @@ namespace Zumi
             item.shadow.gameObject.SetActive(false);
         }
 
-        // "New comic": translucent cream, a dashed ink border, a ringed plus and its name; drawn facing -z
-        Transform BuildNewCard(ZumiDraw.Parts parts, out Grabbable grab)
+        // "Create": translucent cream, a dashed ink border, an "Invite only" chip and its name; drawn facing -z
+        Transform BuildCreateCard(ZumiDraw.Parts parts, out Grabbable grab)
         {
             var s = Style;
-            var root = new GameObject("New comic").transform;
+            var root = new GameObject("Create").transform;
             root.gameObject.SetActive(false);
             float w = s.cardSize.x, h = s.cardSize.y;
             ZumiDraw.Shape(flat, parts, "Fill", root, 0f, new Color(s.cream.r, s.cream.g, s.cream.b, s.newFillAlpha), 0, ZumiDraw.Rounded(w, h, s.cardCorner));
@@ -346,20 +366,241 @@ namespace Zumi
                 dashes.Add(ZumiDraw.Box(w / 2f - inset - s.dashWidth, y, s.dashWidth, len));
             }
             ZumiDraw.Shape(flat, parts, "Dashes", root, -0.0005f, s.ink, 1, dashes.ToArray());
-            var plus = new List<Vector2[]>(ZumiDraw.Arc(s.plusRing, 0.0022f, 0f, 360f, 40))
-            {
-                ZumiDraw.Box(-0.011f, -0.0013f, 0.022f, 0.0026f), ZumiDraw.Box(-0.0013f, -0.011f, 0.0026f, 0.022f),
-            };
-            var plusRoot = ZumiDraw.Shape(flat, parts, "Plus", root, -0.0008f, s.ink, 2, plus.ToArray());
-            plusRoot.localPosition = new Vector3(0f, 0.02f, -0.0008f);
-            var label = ZumiDraw.Text(flat, parts, "Name", root, new Vector3(0f, -0.04f, -0.001f), 0.019f, s.ink, 3, "New comic");
+            // the chip: cream on a hairline of soft ink, so it reads on the translucent cream card
+            const string invite = "Invite only";
+            var chipWidth = ZumiDraw.Width(invite, s.inviteChipCap) + 0.022f;
+            var chipRoot = new GameObject("Invite only").transform;
+            chipRoot.SetParent(root, false);
+            chipRoot.localPosition = new Vector3(0f, 0.022f, -0.0008f);
+            const float line = 0.0012f;
+            ZumiDraw.Shape(flat, parts, "Chip edge", chipRoot, 0f, new Color(s.softInk.r, s.softInk.g, s.softInk.b, 0.55f), 2,
+                ZumiDraw.Rounded(chipWidth + 2f * line, s.inviteChipHeight + 2f * line, s.inviteChipHeight / 2f + line));
+            ZumiDraw.Shape(flat, parts, "Chip", chipRoot, -0.0003f, s.cream, 3, ZumiDraw.Rounded(chipWidth, s.inviteChipHeight, s.inviteChipHeight / 2f));
+            ZumiDraw.Text(flat, parts, "Chip text", chipRoot, new Vector3(0f, 0f, -0.0006f), s.inviteChipCap, s.ink, 4, invite);
+            var label = ZumiDraw.Text(flat, parts, "Name", root, new Vector3(0f, -0.03f, -0.001f), 0.022f, s.ink, 4, "Create");
             label.fontStyle = FontStyle.Bold;
             grab = ZumiGrabbableProp.MakeGrabbable(root.gameObject, new Bounds(Vector3.zero, new Vector3(w, h, 0.01f)));
             grab.WhenPointerEventRaised += e =>
             {
-                if (e.Type == PointerEventType.Select) NewCardGrabbed();
+                if (e.Type == PointerEventType.Select) CreateGrabbed();
             };
             return root;
+        }
+
+        // ---- the invite panel ------------------------------------------------------------------------------------
+
+        sealed class PanelButton
+        {
+            public Transform root;
+            public readonly ZumiDraw.Parts parts = new() { blended = true, queue = 3120 };
+            public Material fill, ring;
+            public IInteractableView[] views;
+            public RayInteractable ray;
+            public PokeInteractable poke;
+            public float scale = 1f;
+
+            public bool Touched
+            {
+                get
+                {
+                    foreach (var v in views)
+                        if (v.State is InteractableState.Hover or InteractableState.Select) return true;
+                    return false;
+                }
+            }
+
+            public bool Selected
+            {
+                get
+                {
+                    foreach (var v in views)
+                        if (v.State == InteractableState.Select) return true;
+                    return false;
+                }
+            }
+        }
+
+        Transform invite, inviteMascot;
+        readonly ZumiDraw.Parts inviteParts = new() { blended = true, queue = 3100 };
+        PanelButton seeButton, backButton;
+        float flip, inviteSince;
+
+        // a cream panel facing -z: the title, two lines, "See how it's made" (the gradient ring) and "Back", and the
+        // mascot standing at its lower right
+        void BuildInvite()
+        {
+            var s = Style;
+            invite = new GameObject("Invite panel").transform;
+            float w = s.panelSize.x, h = s.panelSize.y;
+            ZumiDraw.Shape(flat, inviteParts, "Plate", invite, 0f, s.cream, 0, ZumiDraw.Rounded(w, h, s.panelCorner));
+            const float pad = 0.022f;
+            var title = ZumiDraw.Text(flat, inviteParts, "Title", invite, new Vector3(0f, h / 2f - pad - 0.008f, -0.001f), s.panelTitleCap, s.ink, 2, "Creating is invite-only for now");
+            title.fontStyle = FontStyle.Bold;
+            var body = ZumiDraw.Text(flat, inviteParts, "Body", invite, new Vector3(0f, 0.004f, -0.001f), s.panelBodyCap, s.softInk, 2,
+                "We're opening creation to a few artists first.\nWant to see how a comic is made?");
+            body.lineSpacing = 1.15f;
+            var y = -h / 2f + pad + s.buttonHeight / 2f;
+            var total = s.primaryWidth + s.buttonGap + s.secondaryWidth;
+            backButton = MakeButton("Back", "back", new Vector2(-total / 2f + s.secondaryWidth / 2f, y), s.secondaryWidth, false);
+            seeButton = MakeButton("See how it's made", "see", new Vector2(total / 2f - s.primaryWidth / 2f, y), s.primaryWidth, true);
+            var perch = new GameObject("Invite mascot").transform;
+            perch.SetParent(invite, false);
+            // on the right, clear of the comic in the place to the left
+            perch.localPosition = new Vector3(w / 2f + 0.05f, -h / 2f + 0.004f, -0.01f);
+            perch.localRotation = Quaternion.Euler(0f, -18f, 0f);
+            var m = ZumiFlowKit.Mascot(mascotPrefab, perch, s.panelMascotHeight, "happy");
+            inviteMascot = m ? perch : null;
+            invite.gameObject.SetActive(false);
+        }
+
+        PanelButton MakeButton(string text, string which, Vector2 at, float width, bool primary)
+        {
+            var s = Style;
+            var b = new PanelButton();
+            var go = new GameObject($"Invite {text}");
+            go.SetActive(false);
+            b.root = go.transform;
+            b.root.SetParent(invite, false);
+            b.root.localPosition = new Vector3(at.x, at.y, -0.002f);
+            var h = s.buttonHeight;
+            var fill = ZumiDraw.Shape(flat, b.parts, "Fill", b.root, 0f, primary ? s.buttonFill : s.secondaryFill, 0, ZumiDraw.Rounded(width, h, h / 2f));
+            b.fill = fill.GetComponent<MeshRenderer>().sharedMaterial;
+            if (primary)
+            {
+                b.ring = new Material(ZumiFlowKit.RimShader) { name = "Invite ring", renderQueue = b.parts.queue + 1 };
+                var ring = new GameObject("Ring", typeof(MeshFilter), typeof(MeshRenderer));
+                ring.transform.SetParent(b.root, false);
+                ring.transform.localPosition = new Vector3(0f, 0f, -0.0004f);
+                ring.GetComponent<MeshFilter>().sharedMesh = ZumiFlowKit.RoundedBand(new Vector2(width + 0.005f, h + 0.005f), h / 2f + 0.0025f, 0.0032f);
+                ring.GetComponent<MeshRenderer>().sharedMaterial = b.ring;
+            }
+            var label = ZumiDraw.Text(flat, b.parts, "Label", b.root, new Vector3(0f, 0f, -0.001f), s.buttonCap, primary ? s.ink : s.softInk, 2, text);
+            label.fontStyle = FontStyle.Bold;
+            // a ray hits its box; a poke presses its face (a plane clipped to the button)
+            var box = go.AddComponent<BoxCollider>();
+            box.isTrigger = true;
+            box.size = new Vector3(width, h, 0.01f);
+            var surface = go.AddComponent<ColliderSurface>();
+            surface.InjectAllColliderSurface(box);
+            b.ray = go.AddComponent<RayInteractable>();
+            b.ray.InjectAllRayInteractable(surface);
+            var plane = go.AddComponent<PlaneSurface>();
+            var clipper = go.AddComponent<BoundsClipper>();
+            clipper.Size = new Vector3(width, h, 0.02f);
+            var clipped = go.AddComponent<ClippedPlaneSurface>();
+            clipped.InjectAllClippedPlaneSurface(plane, new IBoundsClipper[] { clipper });
+            b.poke = go.AddComponent<PokeInteractable>();
+            b.poke.InjectAllPokeInteractable(clipped);
+            b.views = new IInteractableView[] { b.poke, b.ray };
+            b.poke.WhenStateChanged += change =>
+            {
+                if (change.NewState == InteractableState.Select) InvitePress(which, "poke");
+            };
+            b.ray.WhenStateChanged += change =>
+            {
+                if (change.NewState == InteractableState.Select) InvitePress(which, "ray");
+            };
+            go.SetActive(true);
+            return b;
+        }
+
+        void OpenInvite()
+        {
+            if (Invite != null) return;
+            if (!invite) BuildInvite();
+            Invite = "opening";
+            inviteSince = Time.time;
+            Debug.Log("[Zumi] carousel: Create turns over: invite only");
+            InviteOpened?.Invoke();
+        }
+
+        /// <summary>The invite panel turns back into the Create card.</summary>
+        public void CloseInvite(string why = "back")
+        {
+            if (Invite is null or "closing") return;
+            Invite = "closing";
+            Debug.Log($"[Zumi] carousel: the invite panel turns back ({why})");
+        }
+
+        void InvitePress(string which, string how)
+        {
+            // only a panel fully turned, a beat after (the poke that turned it may still be pressing)
+            if (Invite != "open" || Time.time - inviteSince < InviteSettleSeconds || State != "shown") return;
+            if (which == "back")
+            {
+                Note($"{how} invite back", "Create turns back");
+                CloseInvite();
+                return;
+            }
+            Note($"{how} invite see", "See how it's made");
+            SeeHowPressed?.Invoke();
+        }
+
+        /// <summary>The invite panel's buttons take a press only this long after it has turned.</summary>
+        public const float InviteSettleSeconds = 0.25f;
+
+        /// <summary>Presses a button of the invite panel ("see", "back"), as a ray pinch does (tools and tests).</summary>
+        public void PressInvite(string which) => InvitePress(which, "tool");
+
+        // the turn over: the card turns its edge to the reader (0 to 0.5), then the panel turns in from the other side
+        void Flip(float dt)
+        {
+            if (Invite == null) return;
+            var s = Style;
+            var createIndex = items.FindIndex(x => x.kind == "create");
+            // swiping or moving to another item closes it
+            if (Invite is "opening" or "open" && State == "shown" && (Dragging != null || goTo.HasValue || Mathf.Abs(Scroll - createIndex) > 0.15f))
+                CloseInvite("the arc turned");
+            var opening = Invite is "opening" or "open";
+            flip = Mathf.MoveTowards(flip, opening ? 1f : 0f, dt / s.flipSeconds);
+            if (Invite == "opening" && flip >= 1f)
+            {
+                Invite = "open";
+                inviteSince = Time.time;
+            }
+            if (Invite == "closing" && flip <= 0f)
+            {
+                Invite = null;
+                invite.gameObject.SetActive(false);
+                InviteClosed?.Invoke();
+            }
+        }
+
+        void PlaceInvite(Item item, float fold)
+        {
+            if (!invite) return;
+            var s = Style;
+            var on = flip > 0.5f && Invite != null;
+            if (invite.gameObject.activeSelf != on) invite.gameObject.SetActive(on);
+            if (!on) return;
+            var k = (flip - 0.5f) * 2f;
+            var yaw = -90f * (1f - ZumiFlowKit.Smooth(k));
+            invite.SetPositionAndRotation(item.position - item.front * 0.008f, Quaternion.LookRotation(-item.front, Vector3.up) * Quaternion.Euler(0f, yaw, 0f));
+            invite.localScale = Vector3.one * Mathf.Lerp(0.9f, 1f, ZumiFlowKit.Smooth(k)) * (1f - 0.5f * fold);
+            var alpha = 1f - fold;
+            inviteParts.SetAlpha(alpha);
+            var live = Invite == "open" && fold <= 0f;
+            foreach (var b in new[] { seeButton, backButton })
+            {
+                if (b.ray.enabled != live) b.ray.enabled = live;
+                if (b.poke.enabled != live) b.poke.enabled = live;
+                var hovered = live && b.Touched;
+                var target = live && b.Selected ? s.buttonPressScale : hovered ? s.buttonHoverScale : 1f;
+                b.scale = Mathf.MoveTowards(b.scale, target, Time.deltaTime * 1.5f);
+                b.root.localScale = Vector3.one * b.scale;
+                b.parts.SetAlpha(alpha);
+                if (b.ring)
+                {
+                    b.ring.SetFloat("_Turn", -Time.time * 0.6f);
+                    b.ring.SetColor("_Color", new Color(1f, 1f, 1f, (hovered ? 1f : 0.8f) * alpha));
+                }
+                else
+                {
+                    var c = hovered ? s.secondaryHover : s.secondaryFill;
+                    b.fill.SetColor("_Color", new Color(c.r, c.g, c.b, alpha));
+                }
+            }
+            if (inviteMascot) inviteMascot.gameObject.SetActive(alpha > 0.05f);
         }
 
         Transform MakeEmpty()
@@ -477,10 +718,10 @@ namespace Zumi
                 Note($"{how} side {i}", $"{item.title} to the middle");
                 return;
             }
-            if (item.kind == "new")
+            if (item.kind == "create")
             {
-                Note($"{how} centre new", "New comic: Create");
-                CreatePressed?.Invoke();
+                Note($"{how} centre create", "Create: invite only");
+                OpenInvite();
                 return;
             }
             // a poke on the middle comic is a hand reaching to take it: only a ray pinch opens it
@@ -496,14 +737,14 @@ namespace Zumi
             Debug.Log($"[Zumi] carousel: {press}: {what}");
         }
 
-        void NewCardGrabbed()
+        void CreateGrabbed()
         {
             grabbedOnce = true;
-            if (Busy) return;
-            var i = items.FindIndex(x => x.kind == "new");
+            if (Busy || Invite != null) return;
+            var i = items.FindIndex(x => x.kind == "create");
             if (i != CentreIndex) return;
-            Note("grab centre new", "New comic: Create");
-            CreatePressed?.Invoke();
+            Note("grab centre create", "Create: invite only");
+            OpenInvite();
         }
 
         void RayDown(Item item)
@@ -650,6 +891,7 @@ namespace Zumi
                 Coast(dt);
             }
             Arriving();
+            Flip(dt);
             Layout(dt);
             if (State == "folding" && Time.time - foldSince >= Style.foldSeconds)
             {
@@ -743,8 +985,10 @@ namespace Zumi
                 var shown = a < 2.6f;
                 var waiting = item.book ? item.book.State == "shelf" : true;
                 var visual = item.book ? item.book.transform : item.card;
-                if (waiting && visual.gameObject.activeSelf != shown) visual.gameObject.SetActive(shown);
-                var targetable = shown && waiting && State == "shown" && arrival == null;
+                // the Create card is turned over into the invite panel past half the turn
+                var turned = item.kind == "create" && flip >= 0.5f;
+                if (waiting && visual.gameObject.activeSelf != (shown && !turned)) visual.gameObject.SetActive(shown && !turned);
+                var targetable = shown && waiting && State == "shown" && arrival == null && !(item.kind == "create" && Invite != null);
                 if (item.hit.gameObject.activeSelf != targetable) item.hit.gameObject.SetActive(targetable);
                 // no poke on the middle comic: a hand reaching through its face to take it would be taken by the
                 // poke (the rig gives a poke precedence over a grab)
@@ -800,6 +1044,7 @@ namespace Zumi
                 }
                 item.opacity = opacity;
                 Place(item, a);
+                if (item.kind == "create") PlaceInvite(item, fold);
             }
             Empties(eye, forward, right, now, fold);
             Dress(centre, now);
@@ -820,7 +1065,8 @@ namespace Zumi
             }
             else
             {
-                item.card.SetPositionAndRotation(item.position, Quaternion.LookRotation(-item.front, Vector3.up));
+                var turn = item.kind == "create" ? 180f * ZumiFlowKit.Smooth(Mathf.Min(flip, 0.5f)) : 0f;
+                item.card.SetPositionAndRotation(item.position, Quaternion.LookRotation(-item.front, Vector3.up) * Quaternion.Euler(0f, turn, 0f));
                 item.card.localScale = Vector3.one * item.scale;
                 item.parts.SetAlpha(item.opacity);
             }
@@ -872,6 +1118,8 @@ namespace Zumi
             var rot = Quaternion.LookRotation(-item.front, Vector3.up);
             var hovered = Hovered(item);
             var on = alive > 0.001f && waiting;
+            // the Create card turned over into the invite panel: its rim and the chip under it go
+            var turned = item.kind == "create" ? Mathf.Clamp01(flip * 2f) : 0f;
             glow.gameObject.SetActive(on);
             rim.gameObject.SetActive(on);
             if (on)
@@ -889,7 +1137,7 @@ namespace Zumi
                 rim.SetPositionAndRotation(item.position + item.front * 0.002f, rot);
                 rim.localScale = Vector3.one * item.scale;
                 rimMaterial.SetFloat("_Turn", -now * s.glowTurn * 1.5f);
-                rimMaterial.SetColor("_Color", new Color(1f, 1f, 1f, (hovered ? 1f : s.rimAlpha) * alive));
+                rimMaterial.SetColor("_Color", new Color(1f, 1f, 1f, (hovered ? 1f : s.rimAlpha) * alive * (1f - turned)));
             }
             // the mascot hops onto the comic's top right corner
             var hop = mascotSince > 0f ? Mathf.Clamp01((now - mascotSince) / s.hopSeconds) : 0f;
@@ -905,11 +1153,11 @@ namespace Zumi
                 perch.localScale = Vector3.one * Mathf.Lerp(0.3f, 1f, ZumiFlowKit.Smooth(hop * 1.5f));
             }
             // the pill, the chip and the dots under the middle
-            var infoAlpha = State is "folding" ? 0f : ZumiFlowKit.Smooth((now - shownSince) / s.fanSeconds) * (arrival != null ? 0f : 1f);
+            var infoAlpha = State is "folding" ? 0f : ZumiFlowKit.Smooth((now - shownSince) / s.fanSeconds) * (arrival != null ? 0f : 1f) * (1f - turned);
             info.gameObject.SetActive(infoAlpha > 0.001f);
             if (!info.gameObject.activeSelf) return;
-            // New comic names itself on its card: no pill under it, and the chip rises into the pill's place
-            var pillShown = item.kind != "new";
+            // Create names itself on its card: no pill under it, and the chip rises into the pill's place
+            var pillShown = item.kind != "create";
             var rise = pillShown ? 0f : s.pillHeight / 2f + s.chipGap + s.chipHeight / 2f;
             var below = anchor.position + anchor.rotation * new Vector3(0f, -s.drop - s.cardSize.y / 2f - s.infoBelow - s.pillHeight / 2f + rise, s.distance + s.back[0] - 0.01f);
             info.SetPositionAndRotation(below, ZumiFlowKit.Facing(below, anchor.position));
@@ -937,6 +1185,14 @@ namespace Zumi
             infoParts.Destroy();
             chipParts.Destroy();
             dotParts.Destroy();
+            inviteParts.Destroy();
+            foreach (var b in new[] { seeButton, backButton })
+            {
+                if (b == null) continue;
+                b.parts.Destroy();
+                if (b.ring) Destroy(b.ring);
+            }
+            if (invite) Destroy(invite.gameObject);
             foreach (var e in empties)
             {
                 e.parts.Destroy();
