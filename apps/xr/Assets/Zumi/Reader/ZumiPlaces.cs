@@ -117,6 +117,9 @@ namespace Zumi
             public Renderer renderer, shadowRenderer;
             public float scale, radius;
             public ZumiPropPlacer.Result placement;
+            /// <summary>Where it was placed (a floating prop bobs about it).</summary>
+            public Vector3 home;
+            public ZumiGrabbableProp grab;
             // read back from where it stands
             public string on;
             public float baseError, outside, panelClearance, seatClearance;
@@ -1071,12 +1074,38 @@ namespace Zumi
                 var rest = new Vector3(box.center.x, box.min.y, box.center.z) * prop.scale;
                 prop.root.SetPositionAndRotation(results[i].position - results[i].rotation * rest, results[i].rotation);
                 var across = 2f * Mathf.Max(box.extents.x, box.extents.z) * prop.scale * 1.5f;
-                prop.shadow.SetPositionAndRotation(results[i].position + Vector3.up * 0.003f, Quaternion.Euler(90f, 0f, 0f));
-                prop.shadow.localScale = new Vector3(across, across, 1f);
+                var lift = results[i].floating ? ZumiPropPlacer.FloatLift : 0f;
+                // a floating prop's shadow lies on the floor under it, a little wider and so softer
+                prop.shadow.SetPositionAndRotation(results[i].position + Vector3.up * (0.003f - lift), Quaternion.Euler(90f, 0f, 0f));
+                prop.shadow.localScale = new Vector3(across, across, 1f) * (results[i].floating ? 1.2f : 1f);
+                prop.home = prop.root.position;
+                if (results[i].floating) Debug.Log($"[Zumi] props: {prop.data.name} ({prop.data.surface}) floats over {results[i].surface}: no free table or shelf");
                 // a small prop can be picked up and glides back here when let go; furniture stays put
-                if (!prop.data.furniture) ZumiGrabbableProp.Attach(prop.root.gameObject, prop.glb.bounds).SetHome(prop.root.position, prop.root.rotation);
+                if (!prop.data.furniture)
+                {
+                    prop.grab = ZumiGrabbableProp.Attach(prop.root.gameObject, prop.glb.bounds);
+                    prop.grab.SetHome(prop.root.position, prop.root.rotation);
+                }
             }
             foreach (var prop in slot.props) Measure(prop);
+        }
+
+        /// <summary>A floating prop's bob: metres up and down from its place, and seconds a cycle; each prop is out of
+        /// phase with the next.</summary>
+        public const float BobMetres = 0.02f, BobSeconds = 3.5f;
+
+        // the open place's floating props bob slowly, except while a hand holds one or it glides back
+        void LateUpdate()
+        {
+            if (open == null) return;
+            for (var i = 0; i < open.props.Count; i++)
+            {
+                var prop = open.props[i];
+                if (prop.placement is not { floating: true } || !prop.root) continue;
+                if (prop.grab && (prop.grab.Held || prop.grab.Returning)) continue;
+                var phase = i * 2.1f;
+                prop.root.position = prop.home + Vector3.up * (BobMetres * Mathf.Sin(Time.time * 2f * Mathf.PI / BobSeconds + phase));
+            }
         }
 
         static SurfaceKind Kind(PropSurface surface) =>
@@ -1095,7 +1124,9 @@ namespace Zumi
             var under = t.TransformPoint(new Vector3(box.center.x, box.min.y, box.center.z));
             var support = room.SupportAt(under);
             prop.on = support?.name;
-            prop.baseError = support != null ? lowest - support.height : float.PositiveInfinity;
+            // a floating prop's base is measured against the height it hovers at
+            var lift = prop.placement.floating ? ZumiPropPlacer.FloatLift : 0f;
+            prop.baseError = support != null ? lowest - support.height - lift : float.PositiveInfinity;
             prop.outside = 0f;
             for (var c = 0; c < 4 && support != null; c++)
             {
@@ -1147,10 +1178,10 @@ namespace Zumi
                 }
                 placedNames.Add(prop.data.name);
                 var support = room.SupportAt(p.position + Vector3.up * 0.01f);
-                if (support == null || support.kind != Kind(prop.data.surface)) offKind.Add(prop.data.name);
-                // furniture: never on a kind above its own; anything else: never on the floor
-                if (support == null || (prop.data.furniture ? support.kind > Kind(prop.data.surface) : support.kind == SurfaceKind.Floor)) unsupported.Add(prop.data.name);
-                propLines.Add(Invariant($"{prop.data.name} ({prop.data.surface}, {prop.data.heightM:F2} m): on {prop.on ?? "nothing"} at ({p.position.x:F2}, {p.position.y:F2}, {p.position.z:F2}), base {prop.baseError:+0.000;-0.000} m, {prop.panelClearance:F2} m from the panel, {prop.seatClearance:F2} m from the seat"));
+                if (support == null || (support.kind != Kind(prop.data.surface))) offKind.Add(prop.data.name);
+                // furniture: never on a kind above its own; anything else: never on the floor (it floats over it)
+                if (support == null || (prop.data.furniture ? support.kind > Kind(prop.data.surface) : support.kind == SurfaceKind.Floor && !p.floating)) unsupported.Add(prop.data.name);
+                propLines.Add(Invariant($"{prop.data.name} ({prop.data.surface}, {prop.data.heightM:F2} m): {(p.floating ? "floating over" : "on")} {prop.on ?? "nothing"} at ({p.position.x:F2}, {p.position.y:F2}, {p.position.z:F2}), base {prop.baseError:+0.000;-0.000} m, {prop.panelClearance:F2} m from the panel, {prop.seatClearance:F2} m from the seat"));
                 PropBaseErrorMax = Mathf.Max(PropBaseErrorMax, Mathf.Abs(prop.baseError));
                 PropOutsideMax = Mathf.Max(PropOutsideMax, prop.outside);
                 PropPanelClearanceMin = Mathf.Min(PropPanelClearanceMin, prop.panelClearance);

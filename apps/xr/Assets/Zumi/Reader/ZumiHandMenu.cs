@@ -232,11 +232,14 @@ namespace Zumi
 
         // ---- telling the reader the menu is there ---------------------------------------------------------------
         // While reading, a small Zumi glow sits on the inside of each wrist in view (it pulses a few times the first
-        // time, then stays quiet), and until the menu has been opened once a line low in the view says how to open
-        // it, beside a little hand that turns its palm toward the reader.
+        // time, then stays quiet), and for CoachSeconds, unless the menu is opened first, a line low in the view says
+        // how to open it, beside a little hand that turns its palm toward the reader.
 
         public const float DotSize = 0.032f, DotPulseSeconds = 0.8f, CoachAhead = 0.62f, CoachBelow = 0.27f, CoachCap = 0.012f;
         public const string CoachLine = "Turn your palm toward you for the menu";
+        /// <summary>Seconds the coach mark shows before it fades for good (owner, 2026-11-16).</summary>
+        public const float CoachSeconds = 5f;
+        float coachSince = -1f;
         /// <summary>The menu has been opened at least once (the coach mark is gone for good).</summary>
         public bool EverOpened => everOpened;
         /// <summary>The coach mark is on show.</summary>
@@ -300,7 +303,8 @@ namespace Zumi
                 dot.material.SetColor("_Color", new Color(1f, 1f, 1f, 0.75f + 0.25f * pulse));
             }
             // the coach mark
-            var wanted = reading && !everOpened;
+            var wanted = reading && !everOpened && (coachSince < 0f || Time.unscaledTime - coachSince < CoachSeconds);
+            if (wanted && coachSince < 0f) coachSince = Time.unscaledTime;
             if (wanted && !coach) BuildCoach(head);
             if (!coach) return;
             coachAlpha = Mathf.MoveTowards(coachAlpha, wanted && !Open ? 1f : 0f, Time.unscaledDeltaTime / 0.4f);
@@ -407,26 +411,7 @@ namespace Zumi
             Lit(reseat, null, mark.ToArray());
             // it has no setting to show: it says that it was done, for a moment
             Label(reseat, () => reseatedAt >= 0f && Time.unscaledTime - reseatedAt < ReseatedSeconds ? "Re-seat\ndone" : "Re-seat\nhere");
-
-            // Reset demo (the creation flow forgets the comic it made, so the demo can be filmed again): a small disc
-            // beside the petal, on the settings face only
-            var reset = Add(true, "Reset", new Vector2(Pitch, -PetalDrop), PetalRadius, () =>
-            {
-                ResetDemo?.Invoke();
-                resetAt = Time.unscaledTime;
-                return "reset_demo";
-            });
-            Icon(reset, new List<Vector2[]>(ZumiDraw.Arc(0.0052f, 0.0013f, 40f, 320f, 14))
-            {
-                new[] { new Vector2(0.0058f, 0.0016f), new Vector2(0.0032f, 0.0052f), new Vector2(0.0072f, 0.0058f) },
-            }.ToArray());
-            reset.state = () => resetAt >= 0f && Time.unscaledTime - resetAt < ReseatedSeconds ? "Demo\nreset" : "Reset\ndemo";
-            reset.label = ZumiDraw.Text(flatShader, parts, "Reset label", menu, reset.button.transform.localPosition + new Vector3(0f, -PetalRadius - 0.0105f, -0.001f), LabelCap, ZumiDraw.SoftInk, 3, reset.state());
         }
-
-        /// <summary>The settings face's "Reset demo" (set by the creation flow); null: the button does nothing.</summary>
-        public Action ResetDemo { get; set; }
-        float resetAt = -1f;
 
         GameObject mainPlate, settingsPlate;
 

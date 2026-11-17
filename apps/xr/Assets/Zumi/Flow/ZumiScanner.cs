@@ -16,14 +16,16 @@ namespace Zumi
     /// furniture's top), or, without one, a fingertip that came down and holds still for TouchStillSeconds below the
     /// chest (its height is the desk's). A ripple spreads where it touched, and a guide lies centred there: one A4
     /// portrait slot, square to the surface's edge nearest the reader when the surface is known, else facing the
-    /// reader, and kept on that surface's top. The grip under the guide slides it along the table (ZumiGuideDrag).
+    /// reader, and kept on that surface's top. The small grip at the guide's far-left corner slides it along the table
+    /// (ZumiGuideDrag).
     /// The reader lays a pencil page in the guide and presses the Scan disc right of it (poked, or pointed at and
     /// pinched): one passthrough camera image is taken, the guide's corners are projected into it with the camera's
     /// pose and intrinsics and the page is straightened to full size by a homography (ZumiWarp), a light sweeps the
     /// guide, and the page flies onto a stack floating left of the guide. One press, one page. If a corner is out of
     /// the camera's image the press takes nothing: the outline flushes red and the caption asks the reader to move
     /// back. The small disc beside Scan takes the last page off the stack. The stack glows in the Zumi hues, brighter
-    /// with each page, pulsing as one lands. The reader presses Done under the stack. The discs stand a little above
+    /// with each page, pulsing as one lands; a cream badge at its top-right corner counts its pages. The reader presses
+    /// Done under the stack. The discs stand a little above
     /// the desk, tilted toward the reader, so a fingertip can press through them before it meets the table. With no
     /// camera access on the headset, or in the editor, a press takes the making-of's next pencil page instead; with
     /// the camera there but not yet giving images, the disc shakes and the caption says so.
@@ -56,9 +58,10 @@ namespace Zumi
         public const float ScanRadius = 0.028f, ScanGap = 0.075f, ScanInset = 0.06f;
         /// <summary>Undo, a small disc right of Scan: its radius, the gap between the two; a page taken off drops and fades.</summary>
         public const float UndoRadius = 0.016f, UndoGap = 0.016f, UndoSeconds = 0.4f;
-        /// <summary>The grip: a pill this far outside the guide's near edge, and its grab box.</summary>
-        public const float GripOut = 0.03f;
-        public static readonly Vector3 GripBox = new(0.14f, 0.05f, 0.04f);
+        /// <summary>The grip: a small pill just outside the guide's far-left corner (its centre this far left of the
+        /// left edge and beyond the far edge), and its grab box, which stays off the guide.</summary>
+        public static readonly Vector2 GripAt = new(0.025f, 0.018f);
+        public static readonly Vector3 GripBox = new(0.044f, 0.032f, 0.04f);
         /// <summary>The discs lean this many degrees toward the reader, their near edge this far above the desk (a
         /// fingertip must pass through a disc's plane before it meets the table); a ray or a poke counts within
         /// HitRadius of a disc's centre at least (4 cm and more across, wider than the small disc drawn).</summary>
@@ -80,6 +83,10 @@ namespace Zumi
         public static readonly Vector2 StackGlowSize = new(0.5f, 0.56f);
         public const float StackGlowFaint = 0.22f, StackGlowBright = 0.8f, StackGlowTurn = 0.35f, StackPulseSeconds = 0.7f, StackPulseGrow = 0.25f;
         public const int StackGlowFull = 10;
+        /// <summary>The page count on the stack: cream pill, its lettering's cap height, its height, and the pop when
+        /// the count changes (seconds, extra size).</summary>
+        public const float BadgeCap = 0.012f, BadgeHeight = 0.026f, BadgePopSeconds = 0.35f, BadgePopGrow = 0.35f;
+        static readonly Color BadgePlate = ZumiDraw.Hex(0xF7F4EF), BadgeInk = ZumiDraw.Hex(0x2A211B);
         /// <summary>The straightened page's pixels.</summary>
         public const int CaptureHeight = 1000;
         const string CameraPermission = "horizonos.permission.HEADSET_CAMERA";
@@ -115,6 +122,8 @@ namespace Zumi
         /// <summary>The stack's glow as drawn now: its alpha (0 with no page) and its scale over the resting size.</summary>
         public float StackGlowAlpha { get; private set; }
         public float StackGlowScale { get; private set; } = 1f;
+        /// <summary>The number the stack's badge shows ("" while it is hidden, with no page).</summary>
+        public string StackBadge => badge && badge.gameObject.activeSelf ? badgeText : "";
         /// <summary>"camera" when the passthrough camera gave the last pages, "fallback" when pencil pages stood in.</summary>
         public string LastCaptureSource { get; private set; }
         public bool CameraPlaying => cameraAccess && cameraAccess.enabled && cameraAccess.IsPlaying;
@@ -133,7 +142,7 @@ namespace Zumi
         ZumiCaption caption;
         ZumiMakingOfData data;
         Transform guide, stack, grip, stackGlow;
-        TextMesh counter, hint;
+        TextMesh hint;
         readonly ZumiDraw.Parts guideParts = new() { blended = true, queue = 3200 };
         readonly List<Capture> captures = new();
         readonly ZumiPinch pinch = new();
@@ -436,7 +445,7 @@ namespace Zumi
                 ZumiDraw.Box(-w, -0.006f, Guide.x, 0.012f), ZumiDraw.Box(-w, -0.02f, Guide.x, 0.014f));
             sweep.gameObject.SetActive(false);
 
-            // Scan: one cream disc right of the guide, a thin ring and a scan glyph; the count is a light line under it
+            // Scan: one cream disc right of the guide, a thin ring and a scan glyph
             var scanAt = new Vector2(w + ScanGap, -h + ScanInset);
             scanDisc = MakeDisc("Scan", scanAt, ScanRadius, 0.0016f, how => PressScan(how));
             const float g = 0.009f, s = 0.0045f, k = 0.0014f;
@@ -447,26 +456,25 @@ namespace Zumi
                 glyph.Add(ZumiDraw.Box(sx < 0 ? -g : g - k, sy < 0 ? -g : g - s, k, s));
             }
             ZumiDraw.Shape(flat, guideParts, "Glyph", scanDisc.face, -0.0006f, ZumiDraw.SoftInk, 3, glyph.ToArray());
-            counter = ZumiDraw.Text(flat, guideParts, "Counter", guide, new Vector3(scanAt.x, scanAt.y - ScanRadius - 0.022f, -0.001f), 0.0105f, ZumiDraw.SoftInk, 2, Count(captures.Count));
-            counter.transform.localRotation = Quaternion.identity;
             // Undo: a smaller disc right of Scan with a curved arrow, there once a page is on the stack
             undoDisc = MakeDisc("Undo", scanAt + new Vector2(ScanRadius + UndoGap + UndoRadius, 0f), UndoRadius, 0.0012f, how => PressUndo(how));
             ZumiDraw.Shape(flat, guideParts, "Arrow", undoDisc.face, -0.0006f, ZumiDraw.SoftInk, 3, UndoArrow());
             undoDisc.root.gameObject.SetActive(captures.Count > 0);
-            // the grip: a soft pill with three ridges under the guide's near edge; grabbing it slides the guide
+            // the grip: a small soft pill with three short ridges just outside the far-left corner; grabbing it
+            // slides the guide
             var gripObject = new GameObject("Grip");
             gripObject.SetActive(false);
             grip = gripObject.transform;
             grip.SetParent(guide, false);
-            grip.localPosition = new Vector3(0f, -h - GripOut, 0f);
+            grip.localPosition = new Vector3(-w - GripAt.x, h + GripAt.y, 0f);
             drag = ZumiGuideDrag.Make(gripObject, guide, GripBox, Clamp);
-            ZumiDraw.Shape(flat, guideParts, "Grip plate", grip, 0f, new Color(1f, 1f, 1f, 0.55f), 1, ZumiDraw.Rounded(0.08f, 0.018f, 0.009f));
+            ZumiDraw.Shape(flat, guideParts, "Grip plate", grip, 0f, new Color(1f, 1f, 1f, 0.55f), 1, ZumiDraw.Rounded(0.034f, 0.016f, 0.008f));
             var ridges = new List<Vector2[]>();
-            for (var r = -1; r <= 1; r++) ridges.Add(ZumiDraw.Box(-0.022f, r * 0.004f - 0.0006f, 0.044f, 0.0012f));
+            for (var r = -1; r <= 1; r++) ridges.Add(ZumiDraw.Box(-0.0095f, r * 0.0035f - 0.0005f, 0.019f, 0.001f));
             gripMaterial = ZumiDraw.Shape(flat, guideParts, "Grip ridges", grip, -0.0005f, GripColour, 2, ridges.ToArray()).GetComponent<MeshRenderer>().sharedMaterial;
             gripObject.SetActive(true);
             // everything lies flat, the right way up for the reader looking down from the seat
-            hint = ZumiDraw.Text(flat, guideParts, "Hint", guide, new Vector3(0f, -h - GripOut - 0.035f, -0.001f), 0.012f, ZumiDraw.Ink, 2, "");
+            hint = ZumiDraw.Text(flat, guideParts, "Hint", guide, new Vector3(0f, -h - 0.035f, -0.001f), 0.012f, ZumiDraw.Ink, 2, "");
             hint.transform.localRotation = Quaternion.identity;
             Hint();
             FollowGuide(true);
@@ -715,9 +723,44 @@ namespace Zumi
             ZumiDraw.Shape(flat, doneParts, "Tick", round.transform, -0.002f, ZumiDraw.Ink, 2, Tick());
             ZumiDraw.Text(flat, doneParts, "Done label", doneButton, new Vector3(0f, -DoneRadius - 0.018f, -0.002f), 0.014f, ZumiDraw.Ink, 2, "Done");
             doneButton.gameObject.SetActive(false);
+            badge = new GameObject("Stack badge").transform;
+            badge.SetParent(stack, false);
+            badge.gameObject.SetActive(false);
         }
 
-        static string Count(int n) => n == 0 ? "No pages yet" : n == 1 ? "1 page" : $"{n} pages";
+        // ---- the stack's count ---------------------------------------------------------------------------------
+
+        Transform badge;
+        string badgeText = "";
+        float badgePopAt = -10f;
+        readonly ZumiDraw.Parts badgeParts = new() { blended = true, queue = 3320 };
+
+        // the count as a bold dark number on a cream pill at the top page's top-right corner, in front of every page;
+        // it pops when it changes and hides with no page
+        void SetBadge(int n)
+        {
+            if (!badge) return;
+            var text = n.ToString();
+            badge.gameObject.SetActive(n > 0);
+            if (n <= 0 || text == badgeText) return;
+            badgeText = text;
+            badgePopAt = Time.time;
+            for (var i = badge.childCount - 1; i >= 0; i--) Destroy(badge.GetChild(i).gameObject);
+            badgeParts.Destroy();
+            var width = Mathf.Max(BadgeHeight, ZumiDraw.Width(text, BadgeCap) * 1.15f + 0.014f);
+            var page = StackPageSize(captures.Count > 0 ? captures[0].texture : null);
+            badge.localPosition = new Vector3(page.x / 2f - 0.004f, page.y / 2f - 0.004f, -0.004f * StackGlowFull - 0.008f);
+            ZumiDraw.Shape(flat, badgeParts, "Plate", badge, 0f, BadgePlate, 0, ZumiDraw.Rounded(width, BadgeHeight, BadgeHeight / 2f));
+            var label = ZumiDraw.Text(flat, badgeParts, "Count", badge, new Vector3(0f, 0f, -0.001f), BadgeCap, BadgeInk, 1, text);
+            label.fontStyle = FontStyle.Bold;
+        }
+
+        void AnimateBadge()
+        {
+            if (!badge) return;
+            var t = (Time.time - badgePopAt) / BadgePopSeconds;
+            badge.localScale = Vector3.one * (1f + (t is >= 0f and < 1f ? BadgePopGrow * Mathf.Sin(t * Mathf.PI) : 0f));
+        }
 
         Transform doneButton;
         ZumiDraw.RoundButton done;
@@ -792,6 +835,7 @@ namespace Zumi
             AnimateGrip();
             AnimateOutlines(glow);
             AnimateStackGlow();
+            AnimateBadge();
             FollowGuide(false);
         }
 
@@ -978,7 +1022,7 @@ namespace Zumi
 
         void Landed()
         {
-            counter.text = Count(captures.Count);
+            SetBadge(captures.Count);
             Hint();
             if (doneButton) doneButton.gameObject.SetActive(captures.Count > 0);
             if (undoDisc != null && undoDisc.root) undoDisc.root.gameObject.SetActive(captures.Count > 0);
@@ -1062,7 +1106,7 @@ namespace Zumi
                 c.card.SetParent(stack, true);
                 captures.Add(c);
             }
-            if (counter) counter.text = Count(captures.Count);
+            SetBadge(captures.Count);
             // a page still in the air lands first
             if (State is "flying" or "undoing") doneWanted = true;
             else if (captures.Count > 0) Finish();
@@ -1125,7 +1169,7 @@ namespace Zumi
             m.SetVector("_H2", new Vector4(g, hh, 1f, 0f));
         }
 
-        /// <summary>The guide and the counter go; the captured pages stay for the making-of to take.</summary>
+        /// <summary>The guide and the stack go; the captured pages stay for the making-of to take.</summary>
         public void Close()
         {
             State = "off";
@@ -1141,6 +1185,8 @@ namespace Zumi
             if (stack) Destroy(stack.gameObject);
             if (stackGlowMaterial) Destroy(stackGlowMaterial);
             doneParts.Destroy();
+            badgeParts.Destroy();
+            badgeText = "";
             DropTexture(taking);
             taking = null;
             if (removing != null) Drop(removing);

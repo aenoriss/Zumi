@@ -11,7 +11,8 @@ namespace Zumi
     /// height, five places in view; places the shelf has no item for show an empty grey frame (room for more). The
     /// middle item is larger, nearer and alive: a soft ring of the Zumi hues blooms behind it with a thin turning rim,
     /// it lifts a little toward the reader, and on a comic the mascot hops onto its top right corner. Under it a cream
-    /// pill names it, a chip says what a hand does ("Grab to read"), and dots say where it is in the row.
+    /// pill names a comic (New comic names itself on its card and has none), a chip says what a hand does ("Grab to
+    /// read"), and dots say where it is in the row.
     ///
     /// Every item is reached by a hand ray and a pinch from afar, or by a poke: on a side item it brings that item to
     /// the middle; on the middle comic a ray pinch opens it (a hand grab and bringing it close does too, ZumiBook); on
@@ -201,22 +202,6 @@ namespace Zumi
             foreach (var i in items)
                 if (i.book == book) return true;
             return false;
-        }
-
-        /// <summary>Takes a comic out of the row (the demo reset).</summary>
-        public void RemoveComic(ZumiBook book)
-        {
-            for (var i = 0; i < items.Count; i++)
-            {
-                if (items[i].book != book) continue;
-                Destroy(items[i].hit.gameObject);
-                Destroy(items[i].shadow.gameObject);
-                Destroy(items[i].shadowMaterial);
-                items.RemoveAt(i);
-                book.gameObject.SetActive(false);
-                Scroll = Mathf.Clamp(Scroll, 0, Mathf.Max(items.Count - 1, 0));
-                return;
-            }
         }
 
         /// <summary>"New comic", last in the row.</summary>
@@ -923,14 +908,17 @@ namespace Zumi
             var infoAlpha = State is "folding" ? 0f : ZumiFlowKit.Smooth((now - shownSince) / s.fanSeconds) * (arrival != null ? 0f : 1f);
             info.gameObject.SetActive(infoAlpha > 0.001f);
             if (!info.gameObject.activeSelf) return;
-            var below = anchor.position + anchor.rotation * new Vector3(0f, -s.drop - s.cardSize.y / 2f - s.infoBelow - s.pillHeight / 2f, s.distance + s.back[0] - 0.01f);
+            // New comic names itself on its card: no pill under it, and the chip rises into the pill's place
+            var pillShown = item.kind != "new";
+            var rise = pillShown ? 0f : s.pillHeight / 2f + s.chipGap + s.chipHeight / 2f;
+            var below = anchor.position + anchor.rotation * new Vector3(0f, -s.drop - s.cardSize.y / 2f - s.infoBelow - s.pillHeight / 2f + rise, s.distance + s.back[0] - 0.01f);
             info.SetPositionAndRotation(below, ZumiFlowKit.Facing(below, anchor.position));
             var settled = Mathf.Clamp01(1f - Mathf.Abs(Scroll - centre) * 2f);
             var titleText = item.title.ToUpperInvariant();
             if (title.text != titleText) title.text = titleText;
             if (line.text != item.line) line.text = item.line;
             if (chipText.text != item.hint) chipText.text = item.hint;
-            infoParts.SetAlpha(infoAlpha * settled);
+            infoParts.SetAlpha(pillShown ? infoAlpha * settled : 0f);
             chipParts.SetAlpha(infoAlpha * settled * (!grabbedOnce || hovered ? 1f : 0f));
             if (dotsFor != items.Count) RebuildDots();
             dotParts.SetAlpha(infoAlpha);

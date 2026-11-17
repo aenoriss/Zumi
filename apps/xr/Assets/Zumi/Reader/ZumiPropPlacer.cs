@@ -27,8 +27,10 @@ namespace Zumi
     /// when one has room for it, and otherwise switches to another kind: a floor piece to a table top then a shelf top.
     /// Anything else rests on a real table or shelf top (its own kind first, then the other; a floor prop that is not
     /// furniture, a potted plant, tries a table then a shelf), never on the window's sill: a prop in the hole broke the
-    /// place's drawing (owner, 2026-11-16). No prop comes within PortalClearance of the window (its hole, its reveal,
-    /// the wall round it, the space in front of it). A prop with nowhere to rest is not shown, and the result says why.
+    /// place's drawing (owner, 2026-11-16). A prop that is not furniture and finds no free table or shelf floats
+    /// FloatLift above a free floor spot, found as a floor piece's is, bobbing gently over a soft shadow (owner,
+    /// 2026-11-16). No prop comes within PortalClearance of the window (its hole, its reveal, the wall round it, the
+    /// space in front of it). A prop with nowhere at all is not shown, and the result says why.
     /// </summary>
     public static class ZumiPropPlacer
     {
@@ -56,13 +58,15 @@ namespace Zumi
         /// <summary>Metres every prop keeps from the window: the hole, the reveal and the wall round it, and the space
         /// in front of it. A prop in or at the hole broke the place's drawing (owner, 2026-11-16).</summary>
         public const float PortalClearance = 0.3f;
+        /// <summary>Metres a floating prop's bottom hovers over the floor.</summary>
+        public const float FloatLift = 0.15f;
         const float FloorStep = 0.1f, OpenFloorStep = 0.2f, TopStep = 0.05f, VirtualWallReach = 4f;
 
         public sealed class Request
         {
             public string name;
             public SurfaceKind kind;
-            /// <summary>Only furniture may stand on the floor.</summary>
+            /// <summary>Only furniture may stand on the floor; anything else floats over it when no top has room.</summary>
             public bool furniture;
             /// <summary>Metres: its footprint circle's radius, and its height.</summary>
             public float radius, height;
@@ -83,6 +87,8 @@ namespace Zumi
             /// <summary>Its turn about the vertical: the side the place's view shows faces the seat.</summary>
             public Quaternion rotation;
             public float radius;
+            /// <summary>It found no top and hovers FloatLift over the floor (position is under its bottom, in the air).</summary>
+            public bool floating;
         }
 
         /// <summary>One result per request, in the requests' order.</summary>
@@ -119,6 +125,21 @@ namespace Zumi
                     var away = at - seat;
                     result.rotation = Quaternion.LookRotation(new Vector3(away.x, 0f, away.y));
                     standing.Add(result);
+                }
+                // not furniture, and no top had room: it floats over the floor
+                if (!result.placed && !request.furniture)
+                {
+                    tried.Add("floor to float over");
+                    if (Best(room, SurfaceKind.Floor, request, seatEye, seat, ahead, standing, out var floor, out var spot, FloatLift))
+                    {
+                        result.placed = result.floating = true;
+                        result.on = SurfaceKind.Floor;
+                        result.surface = floor.name;
+                        result.position = new Vector3(spot.x, floor.height + FloatLift, spot.y);
+                        var away = spot - seat;
+                        result.rotation = Quaternion.LookRotation(new Vector3(away.x, 0f, away.y));
+                        standing.Add(result);
+                    }
                 }
                 if (result.placed) continue;
                 result.reason = $"no {string.Join(" or ", tried)} in view with room for it, clear of the window";
@@ -158,7 +179,7 @@ namespace Zumi
         };
 
         static bool Best(ZumiRoom room, SurfaceKind kind, Request request, Vector3 eye, Vector2 seat, Vector2 ahead,
-                         List<Result> standing, out RoomSurface on, out Vector2 at)
+                         List<Result> standing, out RoomSurface on, out Vector2 at, float lift = 0f)
         {
             on = null;
             at = default;
@@ -172,7 +193,7 @@ namespace Zumi
                     if (surface.kind != kind || (open == 1 && surface.polygon == null)) continue;
                     foreach (var p in open == 1 ? OpenFloor(surface) : Candidates(shape, surface, request))
                     {
-                        if (!Free(room, surface, p, request, eye, seat, ahead, standing, out var yaw, out var behindPanel)) continue;
+                        if (!Free(room, surface, p, request, eye, seat, ahead, standing, lift, out var yaw, out var behindPanel)) continue;
                         // beside the panel as the seat sees it rather than behind it; then by the key wall (floor) or
                         // near the seat (tops)
                         var cost = Mathf.Abs(yaw - PanelClearDegrees) + (behindPanel ? BehindPanelCost : 0f) + (kind == SurfaceKind.Floor
@@ -235,8 +256,9 @@ namespace Zumi
         }
 
         static bool Free(ZumiRoom room, RoomSurface surface, Vector2 p, Request request, Vector3 eye, Vector2 seat, Vector2 ahead,
-                         List<Result> standing, out float yaw, out bool behindPanel)
+                         List<Result> standing, float lift, out float yaw, out bool behindPanel)
         {
+            var bottom = surface.height + lift;
             yaw = 0f;
             behindPanel = false;
             var radius = request.radius;
@@ -259,10 +281,10 @@ namespace Zumi
             var shape = room.Shape;
             if (Vector2.Dot(from, ahead) < SeatRadius) return false;
             if (Vector2.Dot(p - ZumiRoom.Flat(shape.eye), ZumiRoom.Flat(shape.forward)) > shape.wallDistance - radius - WallGap) return false;
-            if (NearPortal(room, p, surface.height, request.half.magnitude, request.height)) return false;
-            if (Mathf.Atan2(surface.height + request.height / 2f - eye.y, distance) * Mathf.Rad2Deg < -MaxPitchDegrees) return false;
+            if (NearPortal(room, p, bottom, request.half.magnitude, request.height)) return false;
+            if (Mathf.Atan2(bottom + request.height / 2f - eye.y, distance) * Mathf.Rad2Deg < -MaxPitchDegrees) return false;
             var edgeYaw = yaw - Mathf.Asin(Mathf.Min(1f, radius / distance)) * Mathf.Rad2Deg;
-            var topPitch = Mathf.Atan2(surface.height + request.height - eye.y, Mathf.Max(distance - radius, 0.05f)) * Mathf.Rad2Deg;
+            var topPitch = Mathf.Atan2(bottom + request.height - eye.y, Mathf.Max(distance - radius, 0.05f)) * Mathf.Rad2Deg;
             behindPanel = edgeYaw < PanelClearDegrees && topPitch > -PanelClearDegrees;
             if (behindPanel && distance - radius < PanelDepth) return false;
             foreach (var other in standing)

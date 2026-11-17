@@ -257,7 +257,7 @@
         "model": { "$ref": "#/$defs/propPath" },
         "heightM": { "type": "number", "exclusiveMinimum": 0, "description": "Its real height in metres, bottom to top" },
         "surface": { "type": "string", "enum": ["floor", "table", "shelf"], "description": "What it rests on in a living room" },
-        "furniture": { "type": "boolean", "default": false, "description": "Furniture (a chair, stool, table, bench, cabinet): the only kind a reader stands on the room's floor. Anything else rests on a real table or shelf, clear of the place's opening (never on its sill), and is not shown when the room has no free one (owner, 2026-11-16)" },
+        "furniture": { "type": "boolean", "default": false, "description": "Furniture (a chair, stool, table, bench, cabinet): the only kind a reader stands on the room's floor. Anything else rests on a real table or shelf, clear of the place's opening (never on its sill), and when the room has no free one it floats a little above a free floor spot instead, never on the floor itself (owner, 2026-11-16)" },
         "bounds": {
           "type": "object", "required": ["min", "max"], "additionalProperties": false,
           "description": "The model's bounding box in its own units, [x, y, z]",

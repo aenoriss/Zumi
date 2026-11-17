@@ -14,14 +14,16 @@ namespace Zumi
     ///             skips it; then home again, and the new comic (Dan &amp; Buck) arrives out of the last glow
     ///   opening   the middle comic was brought close or ray-pinched and opens (ZumiBook)
     ///   reading   the reader has the episode, from its start; the hand menu is the reader's again
-    /// Whether Dan &amp; Buck was made is kept across launches (CreatedKey); the hand menu's "Reset demo" forgets it.
-    /// While the carousel, the scanner or a book own the hands, the hand menu stays shut.
+    /// Dan &amp; Buck is in the carousel only once this run's showcase has made it: every launch starts with New comic
+    /// alone. While the carousel, the scanner or a book own the hands, the hand menu stays shut.
     /// </summary>
     [RequireComponent(typeof(ZumiReader))]
     public class ZumiFlow : MonoBehaviour
     {
         public const float ProcessDelaySeconds = 1.2f;
-        public const string CreatedKey = "zumi.demo.created";
+        /// <summary>Where earlier builds kept "the comic was made" across launches; deleted at start so old installs
+        /// forget it.</summary>
+        const string StaleCreatedKey = "zumi.demo.created";
         public const string ComicTitle = "Dan & Buck", ComicLine = "Episode 1 · 28 panels · voiced";
 
         [Tooltip("Off: the reader plays the episode at launch, as before")]
@@ -39,8 +41,8 @@ namespace Zumi
         public int PagesCaptured => scanner ? scanner.PagesCaptured : 0;
         public string ScannerState => scanner ? scanner.State : null;
         public string PlaybackStage => makingOf ? makingOf.PlaybackStage : null;
-        /// <summary>Dan &amp; Buck has been made (kept across launches).</summary>
-        public bool ComicCreated => PlayerPrefs.GetInt(CreatedKey, 0) == 1;
+        /// <summary>Dan &amp; Buck has been made in this run (the showcase finished).</summary>
+        public bool ComicCreated { get; private set; }
         public ZumiCarousel Carousel => carousel;
         public ZumiScanner Scanner => scanner;
         public string CarouselState => carousel ? carousel.State : null;
@@ -74,7 +76,11 @@ namespace Zumi
             reader.HoldForBook();
             handMenu = GetComponent<ZumiHandMenu>();
             handMenu.Suppressed = true;
-            handMenu.ResetDemo = ResetDemo;
+            if (PlayerPrefs.HasKey(StaleCreatedKey))
+            {
+                PlayerPrefs.DeleteKey(StaleCreatedKey);
+                PlayerPrefs.Save();
+            }
             var flat = handMenu.FlatShader;
             caption = gameObject.AddComponent<ZumiCaption>();
             caption.Init(flat, mascot);
@@ -112,7 +118,6 @@ namespace Zumi
             comic = await ZumiBook.Create("Book dan-buck");
             if (!this || !comic) return;
             comic.Opened += () => OnBookOpened(comic);
-            if (ComicCreated) carousel.AddComic(comic, ComicTitle, ComicLine);
         }
 
         void Enter(string stage)
@@ -166,20 +171,10 @@ namespace Zumi
             handMenu.Intercept = null;
             if (comic && !carousel.Has(comic))
             {
-                PlayerPrefs.SetInt(CreatedKey, 1);
-                PlayerPrefs.Save();
+                ComicCreated = true;
                 carousel.Arrive(comic, ComicTitle, ComicLine, makingOf.EndPoint);
             }
             else carousel.Show();
-        }
-
-        /// <summary>Forgets that the comic was made (the hand menu's "Reset demo"): the next home has only New comic.</summary>
-        public void ResetDemo()
-        {
-            PlayerPrefs.DeleteKey(CreatedKey);
-            PlayerPrefs.Save();
-            if (comic) carousel.RemoveComic(comic);
-            Debug.Log("[Zumi] flow: demo reset, no comic made yet");
         }
 
         static void SetRising(ZumiBook book, ZumiMakingOfData data)

@@ -127,7 +127,7 @@ namespace Zumi.Format
         public float heightM;
         public PropSurface surface;
         /// <summary>Furniture: the only kind stood on the room's floor; anything else rests on a real table or shelf
-        /// clear of the place's opening (never on its sill), or is not shown.</summary>
+        /// clear of the place's opening (never on its sill), or, with no free one, floats a little above the floor.</summary>
         public bool furniture;
         /// <summary>The model's bounding box in its own units; null in hand-made files.</summary>
         public PropBounds bounds;
