@@ -37,7 +37,9 @@ namespace Zumi.EditorTools
                 Debug.LogError("[ZumiBuild] release refused: turn on Custom Keystore in Player > Publishing Settings, choose the keystore and alias and type both passwords");
                 return;
             }
-            if (!File.Exists(PlayerSettings.Android.keystoreName))
+            // Unity keeps a keystore outside the project relative to the user's home ("Desktop/x.keystore")
+            var home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
+            if (!File.Exists(PlayerSettings.Android.keystoreName) && !File.Exists(Path.Combine(home, PlayerSettings.Android.keystoreName)))
             {
                 Debug.LogError($"[ZumiBuild] release refused: keystore not found at {PlayerSettings.Android.keystoreName}");
                 return;
