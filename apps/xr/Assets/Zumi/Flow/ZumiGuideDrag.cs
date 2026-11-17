@@ -63,13 +63,6 @@ namespace Zumi
             return drag;
         }
 
-        /// <summary>The guide was moved by the scanner (a new layout): go on from there.</summary>
-        public void Reset(Vector3 at)
-        {
-            Target = at;
-            if (Guide) Guide.position = at;
-        }
-
         public void Initialize(IGrabbable target) => grabbable = target;
 
         public void BeginTransform()
