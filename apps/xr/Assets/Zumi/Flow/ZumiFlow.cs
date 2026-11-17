@@ -14,8 +14,8 @@ namespace Zumi
     ///             skips it; then home again, and the new comic (Dan &amp; Buck) arrives out of the last glow
     ///   opening   the middle comic was brought close or ray-pinched and opens (ZumiBook)
     ///   reading   the reader has the episode, from its start; the hand menu is the reader's again
-    /// Dan &amp; Buck is in the carousel only once this run's showcase has made it: every launch starts with New comic
-    /// alone. While the carousel, the scanner or a book own the hands, the hand menu stays shut.
+    /// Dan &amp; Buck is in the carousel from launch, beside New comic; after the showcase it arrives again into its own
+    /// place. While the carousel, the scanner or a book own the hands, the hand menu stays shut.
     /// </summary>
     [RequireComponent(typeof(ZumiReader))]
     public class ZumiFlow : MonoBehaviour
@@ -41,7 +41,7 @@ namespace Zumi
         public int PagesCaptured => scanner ? scanner.PagesCaptured : 0;
         public string ScannerState => scanner ? scanner.State : null;
         public string PlaybackStage => makingOf ? makingOf.PlaybackStage : null;
-        /// <summary>Dan &amp; Buck has been made in this run (the showcase finished).</summary>
+        /// <summary>The showcase has finished in this run (Dan &amp; Buck arrived out of it).</summary>
         public bool ComicCreated { get; private set; }
         public ZumiCarousel Carousel => carousel;
         public ZumiScanner Scanner => scanner;
@@ -118,6 +118,7 @@ namespace Zumi
             comic = await ZumiBook.Create("Book dan-buck");
             if (!this || !comic) return;
             comic.Opened += () => OnBookOpened(comic);
+            carousel.AddComic(comic, ComicTitle, ComicLine);
         }
 
         void Enter(string stage)
@@ -163,13 +164,14 @@ namespace Zumi
         /// <summary>Skips the pipeline playback to its end (as a pinch does).</summary>
         public void SkipPlayback() => makingOf.Skip();
 
-        // the playback faded out: home, and the comic just made flies in out of the glow, the first time
+        // the playback faded out: home, and the comic just made flies out of the glow into its own place (it is on
+        // the carousel from launch, so it never shows twice)
         void OnPipelineDone()
         {
             Enter("home");
             handMenu.Suppressed = true;
             handMenu.Intercept = null;
-            if (comic && !carousel.Has(comic))
+            if (comic)
             {
                 ComicCreated = true;
                 carousel.Arrive(comic, ComicTitle, ComicLine, makingOf.EndPoint);
