@@ -162,13 +162,15 @@ namespace Zumi
         /// the panel.</summary>
         public const float VirtualWallDistance = 2.0f;
         /// <summary>The window a place is seen through, at most, as the angles it spans from the seat's eye, centred on
-        /// the panel's direction: the panel at 1 m spans 55 degrees on its long side, so 64 leaves 4.5 on either side
+        /// the panel's direction: the panel at 1 m spans 55 degrees on its long side, so 72 leaves 8.5 on either side
         /// of it. Every pixel of the window draws the place's layers: at 100 by 66 the GPU sat at 94-98 % on the headset
-        /// and frames came every 18.5 ms against 13.9 (2026-11-17); 80 by 53 was still slow, so 64 by 42.4 (the same
-        /// proportion, about 40 % fewer pixels than 80 by 53). One opening on the key wall, cut to the wall less
-        /// WindowInset: it never runs past the wall's edges or onto the ceiling. Its edge is a rounded mask in the
+        /// and frames came every 18.5 ms against 13.9 (2026-11-17); 80 by 53 was still slow, 64 by 42.4 felt too small
+        /// to the owner, so 72 by 48 (the same proportion; the window's cost per pixel was cut meanwhile: arithmetic
+        /// hash, cracks on a frame, foveation High). The width stays inside the scene's full-strength view less the head
+        /// margin (ContentWidth), so a bigger window does not open a gap. One opening on the key wall, cut to the wall
+        /// less WindowInset: it never runs past the wall's edges or onto the ceiling. Its edge is a rounded mask in the
         /// place's shader (Zumi/Place), touching the rectangle's middle of each side.</summary>
-        public const float WindowWidthDegrees = 64f, WindowHeightDegrees = 42.4f;
+        public const float WindowWidthDegrees = 72f, WindowHeightDegrees = 48f;
         /// <summary>The free-standing window's least size (no room, or no wall that can hold it): across, the panel's
         /// 55 degrees plus 2 on either side, so the rift still frames the panel when a narrow place (ContentWidth)
         /// cuts the window below WindowWidthDegrees; up, the same proportion. On a real wall it does not apply
